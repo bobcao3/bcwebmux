@@ -1,0 +1,258 @@
+const std = @import("std");
+const ghostty = @import("ghostty-vt");
+const wgpu = @import("wgpu.zig");
+
+pub const std_options_debug_io: std.Io = std.Io.failing;
+
+const alloc = std.heap.wasm_allocator;
+const io = ghostty.TinyIo.init.io();
+const Handler = ghostty.TerminalStream.Handler;
+const staging_capacity = 64 * 1024;
+
+var terminal: ?ghostty.Terminal = null;
+var stream: ?ghostty.TerminalStream = null;
+var render_state: ghostty.RenderState = .empty;
+var staging: [staging_capacity]u8 = undefined;
+var busy = false;
+var cell_width_px: u32 = 8;
+var cell_height_px: u32 = 16;
+var last_mouse_cell: ?ghostty.Coordinate = null;
+
+extern "host" fn pty_write(ptr: [*]const u8, len: usize) i32;
+extern "host" fn set_title(ptr: [*]const u8, len: usize) void;
+extern "host" fn ring_bell() void;
+
+export fn term_init(cols: u16, rows: u16) i32 {
+    if (busy or terminal != null or cols == 0 or rows == 0) return 0;
+    terminal = ghostty.Terminal.init(io, alloc, .{
+        .cols = cols,
+        .rows = rows,
+        .max_scrollback_bytes = 8 * 1024 * 1024,
+    }) catch return 0;
+    const value = if (terminal) |*t| t else return 0;
+    var handler = value.vtHandler();
+    handler.terminfo_name = "xterm-256color";
+    handler.effects.write_pty = effectWritePty;
+    handler.effects.bell = effectBell;
+    handler.effects.title_changed = effectTitle;
+    handler.effects.size = effectSize;
+    handler.effects.enquiry = effectEnquiry;
+    handler.effects.xtversion = effectVersion;
+    stream = ghostty.TerminalStream.init(.{ .allocator = alloc, .handler = handler });
+    render_state.update(alloc, value) catch {
+        term_deinit();
+        return 0;
+    };
+    if (!wgpu.init(value.cols, value.rows)) {
+        term_deinit();
+        return 0;
+    }
+    last_mouse_cell = null;
+    return 1;
+}
+
+export fn term_deinit() void {
+    if (busy) return;
+    if (stream) |*value| value.deinit();
+    stream = null;
+    render_state.deinit(alloc);
+    render_state = .empty;
+    if (terminal) |*value| value.deinit(alloc);
+    terminal = null;
+    last_mouse_cell = null;
+}
+
+export fn term_reserve(len: u32) u32 {
+    if (busy or len == 0 or len > staging.len) return 0;
+    return @intCast(@intFromPtr(&staging));
+}
+
+export fn term_feed(len: u32) i32 {
+    if (busy or len > staging.len) return 0;
+    const terminal_value = if (terminal) |*t| t else return 0;
+    const value = if (stream) |*s| s else return 0;
+    const bar = terminal_value.screens.active.pages.scrollbar();
+    const follow_output = bar.offset >= bar.total -| bar.len;
+    busy = true;
+    defer busy = false;
+    value.nextSlice(staging[0..len]);
+    if (follow_output) terminal_value.scrollViewport(.bottom);
+    return 1;
+}
+
+export fn term_resize(cols: u16, rows: u16, cell_width: u16, cell_height: u16) i32 {
+    if (busy or cols == 0 or rows == 0) return 0;
+    const value = if (stream) |*s| s else return 0;
+    busy = true;
+    defer busy = false;
+    cell_width_px = @max(1, cell_width);
+    cell_height_px = @max(1, cell_height);
+    value.handler.resize(.{
+        .cols = cols,
+        .rows = rows,
+        .cell_size_px = .{ .width = cell_width_px, .height = cell_height_px },
+    }) catch return 0;
+    last_mouse_cell = null;
+    return 1;
+}
+
+export fn term_scroll_row(row: u32) i32 {
+    if (busy) return 0;
+    const value = if (terminal) |*t| t else return 0;
+    const bar = value.screens.active.pages.scrollbar();
+    const max_row = bar.total -| bar.len;
+    value.scrollViewport(.{ .row = @intCast(@min(row, max_row)) });
+    return 1;
+}
+
+export fn term_text(len: u32, paste_mode: u32) i32 {
+    if (busy or len > staging.len) return 0;
+    const value = if (terminal) |*t| t else return 0;
+    busy = true;
+    defer busy = false;
+    scrollBottom(value);
+    const data = staging[0..len];
+    if (paste_mode == 0) {
+        if (data.len == 0) return 1;
+        return pty_write(data.ptr, data.len);
+    }
+    const slices = ghostty.input.encodePaste(data, .fromTerminal(value));
+    for (slices) |slice| {
+        if (slice.len == 0) continue;
+        if (pty_write(slice.ptr, slice.len) != 1) return 0;
+    }
+    return 1;
+}
+
+export fn term_key(action_raw: u8, mods_raw: u16, consumed_raw: u16, code_len: u16, text_len: u16) i32 {
+    const total_len = @as(usize, code_len) + @as(usize, text_len);
+    if (busy or action_raw > 2 or total_len > staging.len) return 0;
+    const value = if (terminal) |*t| t else return 0;
+    const code = staging[0..code_len];
+    const text = staging[code_len..total_len];
+    const key = ghostty.input.Key.fromW3C(code) orelse .unidentified;
+    const action: ghostty.input.KeyAction = @enumFromInt(action_raw);
+    const mods: ghostty.input.KeyMods = @bitCast(mods_raw & 0x3f);
+    const consumed: ghostty.input.KeyMods = @bitCast(consumed_raw & 0x3f);
+    busy = true;
+    defer busy = false;
+    scrollBottom(value);
+    var encoded: [256]u8 = undefined;
+    var writer: std.Io.Writer = .fixed(&encoded);
+    ghostty.input.encodeKey(&writer, .{
+        .action = action,
+        .key = key,
+        .mods = mods,
+        .consumed_mods = consumed,
+        .utf8 = text,
+        .unshifted_codepoint = key.codepoint() orelse 0,
+    }, .fromTerminal(value)) catch return 0;
+    const data = writer.buffered();
+    if (data.len == 0) return 1;
+    return pty_write(data.ptr, data.len);
+}
+
+export fn term_mouse(action_raw: u8, button_raw: u8, mods_raw: u16, x: f32, y: f32, any_button_pressed: u32) i32 {
+    if (action_raw > 2 or (button_raw != 0xff and button_raw > 11) or busy) return 0;
+    const value = if (terminal) |*t| t else return 0;
+    busy = true;
+    defer busy = false;
+    var options = ghostty.input.MouseEncodeOptions.fromTerminal(value, .{
+        .screen = .{
+            .width = value.cols * cell_width_px,
+            .height = value.rows * cell_height_px,
+        },
+        .cell = .{ .width = cell_width_px, .height = cell_height_px },
+        .padding = .{},
+    });
+    options.any_button_pressed = any_button_pressed != 0;
+    options.last_cell = &last_mouse_cell;
+    var encoded: [128]u8 = undefined;
+    var writer: std.Io.Writer = .fixed(&encoded);
+    ghostty.input.encodeMouse(&writer, .{
+        .action = @enumFromInt(action_raw),
+        .button = if (button_raw == 0xff) null else @enumFromInt(button_raw),
+        .mods = @bitCast(mods_raw & 0x3f),
+        .pos = .{ .x = x, .y = y },
+    }, options) catch return 0;
+    const data = writer.buffered();
+    if (data.len == 0) return 0;
+    return pty_write(data.ptr, data.len);
+}
+
+export fn term_focus(focused: u32) i32 {
+    if (busy) return 0;
+    const value = if (terminal) |*t| t else return 0;
+    busy = true;
+    defer busy = false;
+    value.flags.focused = focused != 0;
+    if (!value.modes.get(.focus_event)) return 1;
+    var encoded: [ghostty.input.max_focus_encode_size]u8 = undefined;
+    var writer: std.Io.Writer = .fixed(&encoded);
+    ghostty.input.encodeFocus(&writer, if (focused != 0) .gained else .lost) catch return 0;
+    const data = writer.buffered();
+    if (data.len == 0) return 1;
+    return pty_write(data.ptr, data.len);
+}
+
+export fn term_frame() i32 {
+    if (busy) return -2;
+    const value = if (terminal) |*t| t else return 0;
+    busy = true;
+    defer busy = false;
+    const previous_cursor_viewport = render_state.cursor.viewport;
+    const previous_cursor_visible = render_state.cursor.visible;
+    const previous_cursor_blinking = render_state.cursor.blinking;
+    const previous_cursor_style = render_state.cursor.visual_style;
+    render_state.update(alloc, value) catch return -1;
+    const cursor_changed =
+        !cursorViewportEqual(previous_cursor_viewport, render_state.cursor.viewport) or
+        previous_cursor_visible != render_state.cursor.visible or
+        previous_cursor_blinking != render_state.cursor.blinking or
+        previous_cursor_style != render_state.cursor.visual_style;
+    if (render_state.dirty == .false and !cursor_changed) return 0;
+    wgpu.submit(&render_state, value) catch return -1;
+    render_state.clean();
+    return 1;
+}
+
+fn cursorViewportEqual(a: anytype, b: anytype) bool {
+    if (a == null or b == null) return a == null and b == null;
+    return a.?.x == b.?.x and a.?.y == b.?.y;
+}
+
+fn scrollBottom(value: *ghostty.Terminal) void {
+    const bar = value.screens.active.pages.scrollbar();
+    value.scrollViewport(.{ .row = @intCast(bar.total -| bar.len) });
+}
+
+fn effectWritePty(_: *Handler, data: [:0]const u8) void {
+    if (data.len != 0) _ = pty_write(data.ptr, data.len);
+}
+
+fn effectBell(_: *Handler) void {
+    ring_bell();
+}
+
+fn effectTitle(handler: *Handler) void {
+    const title = handler.terminal.getTitle() orelse return;
+    set_title(title.ptr, title.len);
+}
+
+fn effectSize(_: *Handler) ?ghostty.size_report.Size {
+    const value = if (terminal) |*t| t else return null;
+    return .{
+        .rows = value.rows,
+        .columns = value.cols,
+        .cell_width = cell_width_px,
+        .cell_height = cell_height_px,
+    };
+}
+
+fn effectEnquiry(_: *Handler) []const u8 {
+    return "bcwebmux";
+}
+
+fn effectVersion(_: *Handler) []const u8 {
+    return "bcwebmux 0.1.0";
+}

@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,interactive-widget=resizes-content">
+  <title>bcwebmux</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <main id="terminal" role="application" aria-label="Terminal">
+    <div id="scroll"><div id="spacer"></div><textarea id="input" aria-label="Terminal input" aria-multiline="false" autocapitalize="off" autocomplete="off" autocorrect="off" spellcheck="false" inputmode="text" enterkeyhint="enter" rows="1"></textarea></div>
+    <canvas id="screen" role="img" aria-label="Terminal screen"></canvas>
+    <div id="composition" aria-hidden="true"></div>
+    <nav id="softkeys" aria-label="Terminal soft keys">
+      <button type="button" data-code="Escape" data-key="Escape">ESC</button>
+      <button type="button" data-code="Tab" data-key="Tab">TAB</button>
+      <button type="button" data-mod="1" aria-pressed="false">SHIFT</button>
+      <button type="button" data-mod="2" aria-pressed="false">CTRL</button>
+      <button type="button" data-mod="4" aria-pressed="false">ALT</button>
+      <button type="button" data-code="Home" data-key="Home">HOME</button>
+      <button type="button" data-code="ArrowUp" data-key="ArrowUp" aria-label="Arrow up">↑</button>
+      <button type="button" data-code="ArrowDown" data-key="ArrowDown" aria-label="Arrow down">↓</button>
+      <button type="button" data-code="ArrowLeft" data-key="ArrowLeft" aria-label="Arrow left">←</button>
+      <button type="button" data-code="ArrowRight" data-key="ArrowRight" aria-label="Arrow right">→</button>
+      <button type="button" data-code="End" data-key="End">END</button>
+      <button type="button" data-code="PageUp" data-key="PageUp">PGUP</button>
+      <button type="button" data-code="PageDown" data-key="PageDown">PGDN</button>
+    </nav>
+    <span id="status" role="status" aria-label="disconnected" title="disconnected"></span>
+    <output id="perf">—</output>
+    <aside id="input-debug" hidden>
+      <header>INPUT TRACE</header>
+      <button id="input-debug-clear" type="button">CLEAR</button>
+      <button id="input-debug-copy" type="button">COPY</button>
+      <pre id="input-debug-log"></pre>
+    </aside>
+  </main>
+  <script type="module" src="/client.js"></script>
+</body>
+</html>

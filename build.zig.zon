@@ -1,0 +1,24 @@
+.{
+    .name = .bcwebmux,
+    .version = "0.1.0",
+    .fingerprint = 0xd7f1f8d55ccd9213,
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{
+        .ghostty = .{
+            .url = "https://github.com/ghostty-org/ghostty/archive/ad6e72ddc4e9e259c9b70bff6e2b389e0ce91949.tar.gz",
+            .hash = "ghostty-1.3.2-dev-5UdBCwjEQwWg0wC4rm9nDmxJ81qFgLYwQIVCh6PHIGnY",
+        },
+        .jetbrains_mono_nerd_font = .{
+            .url = "https://github.com/ryanoasis/nerd-fonts/releases/download/v3.5.0/JetBrainsMono.tar.xz",
+            .hash = "N-V-__8AAOAWRg4izSfnAMaMM1IV6_UEYFtw9NtPpHjN8F4s",
+        },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+        "web",
+        "test",
+        "README.md",
+    },
+}
