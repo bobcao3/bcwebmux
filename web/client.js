@@ -21,7 +21,10 @@ const inputDebugClear = document.querySelector("#input-debug-clear");
 const inputDebugCopy = document.querySelector("#input-debug-copy");
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
-const textRenderer = new URLSearchParams(location.search).get("renderer") === "canvas" ? "canvas" : "kb-stb";
+const strictDecoder = new TextDecoder("utf-8", { fatal: true });
+const settings = initializeSettings();
+const requestedRenderer = new URLSearchParams(location.search).get("renderer");
+const textRenderer = requestedRenderer === "kb-canvas" ? "kb-canvas" : settings.renderer;
 const resizeMessage = new Uint8Array(12);
 const resizeView = new DataView(resizeMessage.buffer);
 resizeView.setUint32(0, 0x52574342, true);
@@ -57,12 +60,14 @@ let openedOnce = false;
 let softModifiers = 0;
 let suppressScroll = false;
 let encodedRightClick = false;
+let activeMouseGesture = null;
+const suppressedMousePointerUps = new Set();
+const suppressedShortcutKeyUps = new Set();
 let pendingRxAt = 0;
 let pendingInputAt = 0;
 let rttProbeSequence = 0;
 const outstandingRttProbes = new Map();
 const rttSamples = [];
-const settings = initializeSettings();
 await Promise.all([
   document.fonts.load(`normal 400 ${settings.font.size}px "${settings.font.cssFamily}"`),
   document.fonts.load(`normal 700 ${settings.font.size}px "${settings.font.cssFamily}"`),
@@ -204,7 +209,7 @@ const inputDiagnostics = new InputDiagnostics();
 const imports = {
   host: {
     gpu_text_backend() {
-      return textRenderer === "canvas" ? 1 : 0;
+      return textRenderer === "kb-canvas" ? 1 : 0;
     },
     gpu_init(cellPtr, cellLen, maxCells, maxGlyphs, atlasSlots, cellSize) {
       try {
@@ -216,10 +221,40 @@ const imports = {
         return 0;
       }
     },
-    gpu_glyph(slot, textPtr, textLen, flags) {
+    gpu_glyph_canvas_batch(requestsPtr, requestCount, textPtr, textLen) {
       try {
-        const text = decoder.decode(new Uint8Array(wasm.memory.buffer, textPtr, textLen));
-        return renderer.glyph(slot, text, flags);
+        const memory = wasm.memory.buffer;
+        if (!Number.isSafeInteger(requestCount) || requestCount < 0 ||
+            !Number.isSafeInteger(requestsPtr) || requestsPtr < 0 ||
+            requestsPtr > memory.byteLength ||
+            requestCount > Math.floor((memory.byteLength - requestsPtr) / 24)) {
+          throw new Error("invalid glyph canvas batch request count");
+        }
+        if (!Number.isSafeInteger(textPtr) || textPtr < 0 ||
+            !Number.isSafeInteger(textLen) || textLen < 0 ||
+            textPtr > memory.byteLength ||
+            textLen > memory.byteLength - textPtr) {
+          throw new Error("invalid glyph canvas batch text block");
+        }
+        const requests = new DataView(memory, requestsPtr, requestCount * 24);
+        const textBlock = new Uint8Array(memory, textPtr, textLen);
+        for (let index = 0; index < requestCount; index += 1) {
+          const offset = requests.getUint32(index * 24 + 12, true);
+          const length = requests.getUint32(index * 24 + 16, true);
+          if (offset > textLen || length > textLen - offset) {
+            throw new Error("invalid glyph canvas batch text range");
+          }
+          if (renderer.glyphCanvasRun(
+            requests.getUint32(index * 24, true),
+            requests.getUint32(index * 24 + 4, true),
+            requests.getUint32(index * 24 + 8, true),
+            strictDecoder.decode(textBlock.subarray(offset, offset + length)),
+            requests.getUint32(index * 24 + 20, true),
+          ) !== 1) {
+            throw new Error("glyph canvas batch failed");
+          }
+        }
+        return 1;
       } catch (error) {
         console.error(error);
         return 0;
@@ -276,6 +311,7 @@ const initial = { cols: initialLayout.cols, rows: initialLayout.rows };
 settings.setOnChange(applyColorProfile);
 settings.setOnFontChange(applyFontSettings);
 settings.setOnPerfChange(applyPerfMode);
+settings.setOnRendererChange(applyTextRenderer);
 try {
   renderer = await GpuTerminal.create(screen, initialPixelViewport, textRenderer);
   renderer.setPhysicalCellMetrics(
@@ -452,6 +488,21 @@ function applyColorProfile(profile) {
   scheduleFrame(true);
 }
 
+function applyTextRenderer(rendererName) {
+  if (!wasm || !renderer) {
+    location.reload();
+    return;
+  }
+  const mode = rendererName === "kb-canvas" ? 1 : 0;
+  const result = wasm.term_set_renderer(mode);
+  if (result !== 1) {
+    setConnectionStatus(false, `WASM renderer configuration failed: ${result}`);
+    throw new Error(`WASM renderer configuration failed: ${result}`);
+  }
+  renderer.setTextRenderer(rendererName);
+  scheduleFrame(true);
+}
+
 async function configureWasmFont(font) {
   if (font.wasmId === 1 && !externalFontInstalled) {
     const responses = await Promise.all([
@@ -496,6 +547,8 @@ async function applyFontSettings(font) {
     if (generation !== fontChangeGeneration) return;
     await configureWasmFont(font);
     if (generation !== fontChangeGeneration) return;
+    const fontFamilyChanged = renderer.setFontFamily(getComputedStyle(terminal).fontFamily);
+    if (fontFamilyChanged) wasm.term_invalidate_glyph_cache();
     Object.assign(measuredMetrics, measureCells());
     resizeTerminal(latestPixelViewport);
     scheduleFrame(true);
@@ -1011,11 +1064,60 @@ function mouseButton(button) {
   return 0xff;
 }
 
+function isTerminalPointer(event) {
+  const rect = screen.getBoundingClientRect();
+  return event.clientX >= rect.left && event.clientX < rect.right &&
+    event.clientY >= rect.top && event.clientY < rect.bottom;
+}
+
 function sendMouse(event, action, button) {
   const rect = scroll.getBoundingClientRect();
   const x = Math.max(0, event.clientX - rect.left) * renderer.pixelScaleX;
   const y = Math.max(0, event.clientY - rect.top) * renderer.pixelScaleY;
   return wasm.term_mouse(action, button, modifierBits(event), x, y, event.buttons !== 0 ? 1 : 0) === 1;
+}
+
+function sendSelection(event, action) {
+  const rect = scroll.getBoundingClientRect();
+  const x = Math.max(0, event.clientX - rect.left) * renderer.pixelScaleX;
+  const y = Math.max(0, event.clientY - rect.top) * renderer.pixelScaleY;
+  const handled = wasm.term_selection(action, x, y) === 1;
+  if (handled) scheduleFrame(true);
+  return handled;
+}
+
+function getSelectedText() {
+  const status = wasm.term_selection_snapshot();
+  if (status === 0) return null;
+  if (status < 0) throw new Error(`WASM selection snapshot failed: ${status}`);
+  try {
+    const ptr = wasm.term_selection_snapshot_ptr();
+    const len = wasm.term_selection_snapshot_len();
+    return strictDecoder.decode(new Uint8Array(wasm.memory.buffer, ptr, len));
+  } finally {
+    wasm.term_selection_snapshot_release();
+  }
+}
+
+async function copySelectedText() {
+  const text = getSelectedText();
+  if (text === null) return false;
+  await navigator.clipboard.writeText(text);
+  return true;
+}
+
+function finishMouseGesture(event, cancelled = false) {
+  const gesture = activeMouseGesture;
+  if (!gesture || gesture.pointerId !== event.pointerId) return false;
+  activeMouseGesture = null;
+  if (cancelled) suppressedMousePointerUps.add(gesture.pointerId);
+  if (gesture.owner === "terminal") {
+    sendMouse(event, 1, gesture.button);
+  } else {
+    sendSelection(event, cancelled ? 3 : 1);
+  }
+  if (scroll.hasPointerCapture(event.pointerId)) scroll.releasePointerCapture(event.pointerId);
+  return true;
 }
 
 function sendResize() {
@@ -1070,24 +1172,76 @@ scroll.addEventListener("scroll", () => {
 }, { passive: true });
 
 scroll.addEventListener("pointerdown", (event) => {
+  if (event.pointerType !== "touch") suppressedMousePointerUps.delete(event.pointerId);
+  if (event.pointerType !== "touch" && !isTerminalPointer(event)) {
+    encodedRightClick = false;
+    return;
+  }
   if (event.pointerType !== "touch") terminalFocus.focus();
+  if (event.pointerType !== "touch" && activeMouseGesture) {
+    event.preventDefault();
+    return;
+  }
+  if (event.pointerType !== "touch" && event.button === 0 && event.shiftKey) {
+    encodedRightClick = false;
+    if (sendSelection(event, 0)) {
+      event.preventDefault();
+      activeMouseGesture = { pointerId: event.pointerId, button: 1, owner: "selection" };
+      scroll.setPointerCapture(event.pointerId);
+    }
+    return;
+  }
   const button = mouseButton(event.button);
   const encoded = sendMouse(event, 0, button);
   encodedRightClick = button === 2 && encoded;
-  if (encoded && event.pointerType !== "touch") {
+  if (event.pointerType !== "touch" && encoded) {
+    activeMouseGesture = { pointerId: event.pointerId, button, owner: "terminal" };
+    event.preventDefault();
+    scroll.setPointerCapture(event.pointerId);
+  } else if (event.pointerType !== "touch" && event.button === 0 && sendSelection(event, 0)) {
+    activeMouseGesture = { pointerId: event.pointerId, button: 1, owner: "selection" };
     event.preventDefault();
     scroll.setPointerCapture(event.pointerId);
   }
 }, { passive: false });
 scroll.addEventListener("pointerup", (event) => {
+  if (suppressedMousePointerUps.has(event.pointerId)) {
+    suppressedMousePointerUps.delete(event.pointerId);
+    if (event.pointerType !== "touch") event.preventDefault();
+    return;
+  }
+  if (finishMouseGesture(event)) {
+    event.preventDefault();
+    return;
+  }
+  if (event.pointerType !== "touch" && !isTerminalPointer(event)) return;
   const encoded = sendMouse(event, 1, mouseButton(event.button));
   if (encoded && event.pointerType !== "touch") event.preventDefault();
 }, { passive: false });
 scroll.addEventListener("pointermove", (event) => {
+  if (activeMouseGesture &&
+      activeMouseGesture.pointerId === event.pointerId &&
+      event.pointerType !== "touch") {
+    if (activeMouseGesture.owner === "terminal") {
+      sendMouse(event, 2, activeMouseGesture.button);
+    } else {
+      sendSelection(event, 2);
+    }
+    event.preventDefault();
+    return;
+  }
+  if (event.pointerType !== "touch" && !isTerminalPointer(event)) return;
   const encoded = sendMouse(event, 2, 0xff);
   if (encoded && event.pointerType !== "touch") event.preventDefault();
 }, { passive: false });
+scroll.addEventListener("pointercancel", (event) => {
+  if (finishMouseGesture(event, true)) event.preventDefault();
+}, { passive: false });
+scroll.addEventListener("lostpointercapture", (event) => {
+  finishMouseGesture(event, true);
+});
 scroll.addEventListener("wheel", (event) => {
+  if (!isTerminalPointer(event)) return;
   if (event.deltaY === 0) return;
   if (sendMouse(event, 0, event.deltaY < 0 ? 4 : 5)) event.preventDefault();
 }, { passive: false });
@@ -1097,14 +1251,29 @@ scroll.addEventListener("contextmenu", (event) => {
   event.preventDefault();
 });
 scroll.addEventListener("click", (event) => {
+  if (!isTerminalPointer(event)) return;
   event.preventDefault();
   terminalFocus.focus();
 });
 input.addEventListener("keydown", async (event) => {
   if (!terminalInput.keyDown(event)) return;
   const code = eventCode(event);
+  if (code === "KeyC" && ((event.ctrlKey && event.shiftKey) || event.metaKey)) {
+    const selectedText = getSelectedText();
+    if (selectedText !== null) {
+      event.preventDefault();
+      suppressedShortcutKeyUps.add(code);
+      try {
+        await navigator.clipboard.writeText(selectedText);
+      } catch (error) {
+        console.error("clipboard copy failed", error);
+      }
+      return;
+    }
+  }
   if (event.ctrlKey && event.shiftKey && event.code === "KeyV") {
     event.preventDefault();
+    suppressedShortcutKeyUps.add(code);
     sendText(await navigator.clipboard.readText(), true);
     return;
   }
@@ -1116,6 +1285,8 @@ input.addEventListener("keydown", async (event) => {
 });
 input.addEventListener("keyup", (event) => {
   terminalInput.keyUp();
+  const code = eventCode(event);
+  if (suppressedShortcutKeyUps.delete(code)) return;
   if (event.isComposing || isImeKeyEvent(event)) return;
   sendKey(event, 0);
 });
@@ -1127,6 +1298,12 @@ input.addEventListener("paste", (event) => {
   event.preventDefault();
   sendText(event.clipboardData.getData("text/plain"), true);
   terminalInput.clear();
+});
+input.addEventListener("copy", (event) => {
+  const text = getSelectedText();
+  if (text === null) return;
+  event.clipboardData.setData("text/plain", text);
+  event.preventDefault();
 });
 input.addEventListener("focus", () => {
   terminalInput.sync();
@@ -1149,7 +1326,10 @@ softkeys.addEventListener("click", (event) => {
   terminalFocus.focus();
 });
 window.addEventListener("focus", () => terminalFocus.windowFocus());
-window.addEventListener("blur", () => terminalFocus.windowBlur());
+window.addEventListener("blur", () => {
+  suppressedShortcutKeyUps.clear();
+  terminalFocus.windowBlur();
+});
 document.addEventListener("visibilitychange", () => {
   if (!document.hidden) {
     terminalFocus.windowFocus();
@@ -1162,6 +1342,8 @@ window.bcwebmux = {
   get connected() { return state.connected; },
   get state() { return { ...state, ...renderer.stats }; },
   get inputTrace() { return inputDiagnostics.text(); },
+  selectionText() { return getSelectedText(); },
+  copySelection() { return copySelectedText(); },
   write(text) { sendText(text); },
   paste(text) { sendText(text, true); },
 };

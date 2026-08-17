@@ -58,13 +58,13 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("src/wasm.zig"),
             .target = wasm_target,
             .optimize = wasm_optimize,
-            .imports = &.{.{
+            .imports = &.{ .{
                 .name = "ghostty-vt",
                 .module = ghostty.module("ghostty-vt"),
             }, .{
                 .name = "fonts",
                 .module = fonts_module,
-            }},
+            } },
         }),
     });
     wasm.root_module.addCSourceFile(.{
@@ -151,6 +151,16 @@ pub fn build(b: *std.Build) void {
         b.getInstallPath(.bin, "bcwebmux-server"),
         b.getInstallPath(.prefix, "web"),
     });
+    const mouse_selection_cmd = b.addSystemCommand(&.{
+        "node",
+        "test/mouse-selection-e2e.mjs",
+    });
+    mouse_selection_cmd.step.dependOn(b.getInstallStep());
+    mouse_selection_cmd.addArgs(&.{
+        b.getInstallPath(.bin, "bcwebmux-server"),
+        b.getInstallPath(.prefix, "web"),
+    });
+    e2e_cmd.step.dependOn(&mouse_selection_cmd.step);
     const e2e_step = b.step("e2e", "Run the physical-GPU browser-to-PTY end-to-end test");
     e2e_step.dependOn(&e2e_cmd.step);
 

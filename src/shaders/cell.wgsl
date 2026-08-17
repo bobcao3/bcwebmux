@@ -46,6 +46,21 @@ fn rgb(value: u32) -> vec3<f32> {
   return vec3<f32>(f32((value >> 16u) & 255u), f32((value >> 8u) & 255u), f32(value & 255u)) / 255.0;
 }
 
+fn srgb_to_linear(value: vec3<f32>) -> vec3<f32> {
+  return select(
+    value / 12.92,
+    pow((value + vec3<f32>(0.055)) / 1.055, vec3<f32>(2.4)),
+    value > vec3<f32>(0.04045)
+  );
+}
+
+fn relative_luminance(value: u32) -> f32 {
+  return dot(
+    srgb_to_linear(rgb(value)),
+    vec3<f32>(0.2126, 0.7152, 0.0722)
+  );
+}
+
 @vertex
 fn vertex(@builtin(vertex_index) vertex_index: u32, @builtin(instance_index) instance_index: u32) -> VertexOutput {
   let corners = array<vec2<f32>, 6>(
@@ -84,8 +99,21 @@ fn fragment(input: VertexOutput) -> @location(0) vec4<f32> {
   var fg = cell.fg;
   var bg = cell.bg;
   if ((flags & 64u) != 0u) {
-    fg = fg ^ 0x00ffffffu;
-    bg = bg ^ 0x00ffffffu;
+    let original_fg = fg;
+    let original_bg = bg;
+    let invisible = (original_fg & 0x00ffffffu) == (original_bg & 0x00ffffffu);
+    let selected_bg_rgb = select(
+      0x000000u,
+      0x00ffffffu,
+      relative_luminance(original_bg) <= 0.1791288
+    );
+    let selected_fg_rgb = select(
+      select(0x00ffffffu, 0x000000u, selected_bg_rgb == 0x00ffffffu),
+      selected_bg_rgb,
+      invisible
+    );
+    fg = (original_fg & 0xff000000u) | selected_fg_rgb;
+    bg = (original_bg & 0xff000000u) | selected_bg_rgb;
   }
   var result = rgb(bg);
   let y = input.local.y;

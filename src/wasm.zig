@@ -23,6 +23,8 @@ var cell_height_px: u32 = 16;
 var last_mouse_cell: ?ghostty.Coordinate = null;
 var theme_colors: [18]u32 = undefined;
 var theme_dirty = false;
+var selection_gesture: ghostty.SelectionGesture = .init;
+var selection_snapshot: ?[:0]const u8 = null;
 
 extern "host" fn pty_write(ptr: [*]const u8, len: usize) i32;
 extern "host" fn set_title(ptr: [*]const u8, len: usize) void;
@@ -56,6 +58,17 @@ export fn term_set_font(font_raw: u32, ligatures_raw: u32) i32 {
     return 1;
 }
 
+export fn term_set_renderer(renderer_raw: u32) i32 {
+    if (!wgpu.setTextBackend(renderer_raw)) return 0;
+    theme_dirty = true;
+    return 1;
+}
+
+export fn term_invalidate_glyph_cache() void {
+    wgpu.invalidateGlyphCache();
+    theme_dirty = true;
+}
+
 export fn term_init(cols: u16, rows: u16) i32 {
     if (busy or terminal != null or cols == 0 or rows == 0) return 0;
     terminal = ghostty.Terminal.init(io, alloc, .{
@@ -82,6 +95,8 @@ export fn term_init(cols: u16, rows: u16) i32 {
         term_deinit();
         return 0;
     }
+    selection_gesture = .init;
+    freeSelectionSnapshot();
     last_mouse_cell = null;
     return 1;
 }
@@ -107,7 +122,12 @@ export fn term_deinit() void {
     stream = null;
     render_state.deinit(alloc);
     render_state = .empty;
-    if (terminal) |*value| value.deinit(alloc);
+    if (terminal) |*value| {
+        selection_gesture.deinit(value);
+        value.deinit(alloc);
+    }
+    selection_gesture = .init;
+    freeSelectionSnapshot();
     terminal = null;
     last_mouse_cell = null;
 }
@@ -233,6 +253,107 @@ export fn term_mouse(action_raw: u8, button_raw: u8, mods_raw: u16, x: f32, y: f
     const data = writer.buffered();
     if (data.len == 0) return 0;
     return pty_write(data.ptr, data.len);
+}
+
+fn freeSelectionSnapshot() void {
+    if (selection_snapshot) |snapshot| alloc.free(snapshot);
+    selection_snapshot = null;
+}
+
+fn selectionPin(value: *ghostty.Terminal, x: f32, y: f32) ?ghostty.Pin {
+    if (!std.math.isFinite(x) or !std.math.isFinite(y)) return null;
+    const screen = value.screens.active;
+    const px_float = @min(
+        @as(f32, @floatFromInt(value.cols - 1)),
+        @max(0, @floor(x / @as(f32, @floatFromInt(cell_width_px)))),
+    );
+    const py_float = @min(
+        @as(f32, @floatFromInt(value.rows - 1)),
+        @max(0, @floor(y / @as(f32, @floatFromInt(cell_height_px)))),
+    );
+    const px: u16 = @intFromFloat(px_float);
+    const py: u16 = @intFromFloat(py_float);
+    return screen.pages.pin(.{ .viewport = .{ .x = px, .y = py } });
+}
+
+export fn term_selection(action_raw: u8, x: f32, y: f32) i32 {
+    if (busy or action_raw > 3) return 0;
+    const value = if (terminal) |*t| t else return 0;
+    if (action_raw == 3) {
+        busy = true;
+        defer busy = false;
+        selection_gesture.reset(value);
+        return 1;
+    }
+    const pin = selectionPin(value, x, y) orelse return 0;
+    const screen = value.screens.active;
+    busy = true;
+    defer busy = false;
+    switch (action_raw) {
+        0 => {
+            const selection = (selection_gesture.press(value, .{
+                .time = null,
+                .pin = pin,
+                .xpos = x,
+                .ypos = y,
+                .max_distance = @floatFromInt(cell_width_px),
+                .repeat_interval = 500 * std.time.ns_per_ms,
+                .word_boundary_codepoints = &.{},
+            }) catch return 0) orelse {
+                screen.clearSelection();
+                return 1;
+            };
+            screen.select(selection) catch return 0;
+        },
+        1 => selection_gesture.release(value, .{ .pin = pin }),
+        2 => {
+            const selection = selection_gesture.drag(value, .{
+                .pin = pin,
+                .xpos = x,
+                .ypos = y,
+                .rectangle = false,
+                .word_boundary_codepoints = &.{},
+                .geometry = .{
+                    .columns = @intCast(value.cols),
+                    .cell_width = cell_width_px,
+                    .padding_left = 0,
+                    .screen_height = value.rows * cell_height_px,
+                },
+            });
+            screen.select(selection) catch return 0;
+        },
+        else => unreachable,
+    }
+    return 1;
+}
+
+export fn term_selection_snapshot() i32 {
+    if (busy) return -1;
+    freeSelectionSnapshot();
+    const value = if (terminal) |*t| t else return -1;
+    const screen = value.screens.active;
+    const selection = screen.selection orelse return 0;
+    busy = true;
+    defer busy = false;
+    const snapshot = screen.selectionString(alloc, .{ .sel = selection, .trim = true }) catch return -2;
+    if (snapshot.len == 0) {
+        alloc.free(snapshot);
+        return 2;
+    }
+    selection_snapshot = snapshot;
+    return 1;
+}
+
+export fn term_selection_snapshot_ptr() u32 {
+    return if (selection_snapshot) |snapshot| @intCast(@intFromPtr(snapshot.ptr)) else 0;
+}
+
+export fn term_selection_snapshot_len() u32 {
+    return if (selection_snapshot) |snapshot| @intCast(snapshot.len) else 0;
+}
+
+export fn term_selection_snapshot_release() void {
+    freeSelectionSnapshot();
 }
 
 export fn term_focus(focused: u32) i32 {

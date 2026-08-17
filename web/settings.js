@@ -14,11 +14,54 @@ export const FONT_OPTIONS = Object.freeze({
     boldUrl: "https://cdn.jsdelivr.net/npm/firacode@6.2.0/distr/ttf/FiraCode-Bold.ttf",
   },
 });
+export const DEFAULT_FONT_FALLBACKS = Object.freeze({
+  "jetbrains-mono": Object.freeze([
+    "ui-monospace", "SFMono-Regular", "Cascadia Mono", "Noto Sans Mono CJK SC", "Noto Sans CJK SC",
+    "Microsoft YaHei UI", "PingFang SC", "Noto Sans Symbols 2", "monospace",
+  ]),
+  "fira-code": Object.freeze([
+    "ui-monospace", "SFMono-Regular", "Cascadia Mono", "Noto Sans Mono CJK SC", "Noto Sans CJK SC",
+    "Microsoft YaHei UI", "PingFang SC", "JetBrains Mono Nerd Font", "Noto Sans Symbols 2", "monospace",
+  ]),
+});
+
+export function normalizeFontFamilies(value, fallback = DEFAULT_FONT_FALLBACKS["jetbrains-mono"]) {
+  const source = Array.isArray(value) ? value : fallback;
+  const families = [];
+  const seen = new Set();
+  for (const entry of source) {
+    if (typeof entry !== "string") continue;
+    let family = entry.trim();
+    if (family.length >= 2
+      && ((family.startsWith('"') && family.endsWith('"'))
+        || (family.startsWith("'") && family.endsWith("'")))) {
+      family = family.slice(1, -1).trim();
+    }
+    if (!family || /[\u0000-\u001f\u007f-\u009f;{}]/.test(family)) continue;
+    const key = family.toLowerCase();
+    if (seen.has(key) || key === "monospace") continue;
+    seen.add(key);
+    families.push(family);
+    if (families.length === 31) break;
+  }
+  families.push("monospace");
+  return families;
+}
+
+export function renderFontFamily(families) {
+  return families.map(family => {
+    const generic = family.toLowerCase();
+    if (generic === "monospace" || generic === "ui-monospace") return generic;
+    return `"${family.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+  }).join(", ");
+}
+
 const DEFAULT_SETTINGS = Object.freeze({
   fontFamily: "jetbrains-mono",
   fontSize: 15,
   ligatures: true,
   perfMode: "simple",
+  renderer: "kb-stb",
 });
 
 export const BUILTIN_PROFILES = Object.freeze({
@@ -65,6 +108,9 @@ function customAnsi(custom) {
 function loadSettings() {
   const fallback = {
     ...DEFAULT_SETTINGS,
+    fontFallbacks: Object.fromEntries(Object.keys(FONT_OPTIONS).map(id => [
+      id, normalizeFontFamilies(undefined, DEFAULT_FONT_FALLBACKS[id]),
+    ])),
     selected: DEFAULT_PROFILE,
     custom: { ...DEFAULT_CUSTOM, ansi: [...DEFAULT_CUSTOM.ansi] },
   };
@@ -81,7 +127,11 @@ function loadSettings() {
       : DEFAULT_SETTINGS.fontSize;
     const ligatures = typeof saved.ligatures === "boolean" ? saved.ligatures : DEFAULT_SETTINGS.ligatures;
     const perfMode = ["off", "simple", "detailed"].includes(saved.perfMode) ? saved.perfMode : DEFAULT_SETTINGS.perfMode;
-    return { fontFamily, fontSize, ligatures, perfMode, selected, custom };
+    const renderer = ["kb-stb", "kb-canvas"].includes(saved.renderer) ? saved.renderer : DEFAULT_SETTINGS.renderer;
+    const fontFallbacks = Object.fromEntries(Object.keys(FONT_OPTIONS).map(id => [
+      id, normalizeFontFamilies(saved.fontFallbacks?.[id], DEFAULT_FONT_FALLBACKS[id]),
+    ]));
+    return { fontFamily, fontSize, ligatures, perfMode, renderer, fontFallbacks, selected, custom };
   } catch {
     return fallback;
   }
@@ -94,7 +144,10 @@ function saveSettings(settings) {
       fontFamily: settings.fontFamily,
       fontSize: settings.fontSize,
       ligatures: settings.ligatures,
+      fontFallbacks: Object.fromEntries(Object.entries(settings.fontFallbacks)
+        .map(([id, fallbacks]) => [id, [...fallbacks]])),
       perfMode: settings.perfMode,
+      renderer: settings.renderer,
       selected: settings.selected,
       custom,
     }));
@@ -108,11 +161,18 @@ function resolveProfile(settings) {
 }
 
 function resolveFont(settings) {
-  return { ...FONT_OPTIONS[settings.fontFamily], id: settings.fontFamily, size: settings.fontSize, ligatures: settings.ligatures };
+  return {
+    ...FONT_OPTIONS[settings.fontFamily],
+    id: settings.fontFamily,
+    size: settings.fontSize,
+    ligatures: settings.ligatures,
+    fallbacks: [...settings.fontFallbacks[settings.fontFamily]],
+  };
 }
 
 function applyDocumentFont(font) {
-  document.documentElement.style.setProperty("--terminal-font", `"${font.cssFamily}", monospace`);
+  const families = normalizeFontFamilies([font.cssFamily, ...font.fallbacks]);
+  document.documentElement.style.setProperty("--terminal-font", renderFontFamily(families));
   document.querySelector("#terminal").style.fontSize = `${font.size}px`;
 }
 
@@ -137,6 +197,7 @@ export function initializeSettings() {
   let onChange = () => {};
   let onFontChange = () => {};
   let onPerfChange = () => {};
+  let onRendererChange = () => {};
   let onOpen = () => {};
   let onClose = () => {};
 
@@ -220,8 +281,10 @@ export function initializeSettings() {
   openButton.addEventListener("click", () => {
     for (const field of COLOR_FIELDS) customForm.elements[field].value = settings.custom[field];
     fontSettingsForm.elements.fontFamily.value = settings.fontFamily;
+    fontSettingsForm.elements.fontFallbacks.value = settings.fontFallbacks[settings.fontFamily].join("\n");
     fontSettingsForm.elements.fontSize.value = settings.fontSize;
     fontSettingsForm.elements.ligatures.checked = settings.ligatures;
+    fontSettingsForm.elements.renderer.value = settings.renderer;
     for (const input of perfModeInputs) input.checked = input.value === settings.perfMode;
     onOpen();
     dialog.showModal();
@@ -261,13 +324,34 @@ export function initializeSettings() {
     activate("custom");
   });
   fontSettingsForm.elements.fontFamily.value = settings.fontFamily;
+  fontSettingsForm.elements.fontFallbacks.value = settings.fontFallbacks[settings.fontFamily].join("\n");
   fontSettingsForm.elements.fontSize.value = settings.fontSize;
   fontSettingsForm.elements.ligatures.checked = settings.ligatures;
-  fontSettingsForm.addEventListener("change", () => {
+  fontSettingsForm.elements.renderer.value = settings.renderer;
+  fontSettingsForm.addEventListener("change", event => {
+    const renderer = ["kb-stb", "kb-canvas"].includes(fontSettingsForm.elements.renderer.value)
+      ? fontSettingsForm.elements.renderer.value
+      : DEFAULT_SETTINGS.renderer;
+    if (renderer !== settings.renderer) {
+      settings.renderer = renderer;
+      saveSettings(settings);
+      onRendererChange(renderer);
+      return;
+    }
     settings.ligatures = fontSettingsForm.elements.ligatures.checked;
     settings.fontFamily = Object.hasOwn(FONT_OPTIONS, fontSettingsForm.elements.fontFamily.value)
       ? fontSettingsForm.elements.fontFamily.value
       : DEFAULT_SETTINGS.fontFamily;
+    if (event.target === fontSettingsForm.elements.fontFamily) {
+      fontSettingsForm.elements.fontFallbacks.value = settings.fontFallbacks[settings.fontFamily].join("\n");
+    } else if (event.target === fontSettingsForm.elements.fontFallbacks) {
+      const activeId = settings.fontFamily;
+      settings.fontFallbacks[activeId] = normalizeFontFamilies(
+        fontSettingsForm.elements.fontFallbacks.value.split(/\r?\n/),
+        DEFAULT_FONT_FALLBACKS[activeId],
+      );
+      fontSettingsForm.elements.fontFallbacks.value = settings.fontFallbacks[activeId].join("\n");
+    }
     settings.fontSize = Number.isInteger(Number(fontSettingsForm.elements.fontSize.value))
       ? Math.min(32, Math.max(8, Number(fontSettingsForm.elements.fontSize.value)))
       : DEFAULT_SETTINGS.fontSize;
@@ -295,9 +379,11 @@ export function initializeSettings() {
     get profile() { return resolveProfile(settings); },
     get font() { return resolveFont(settings); },
     get perfMode() { return settings.perfMode; },
+    get renderer() { return settings.renderer; },
     setOnChange(callback) { onChange = callback || (() => {}); },
     setOnFontChange(callback) { onFontChange = callback || (() => {}); },
     setOnPerfChange(callback) { onPerfChange = callback || (() => {}); },
+    setOnRendererChange(callback) { onRendererChange = callback || (() => {}); },
     setLifecycle(callbacks = {}) {
       onOpen = typeof callbacks.onOpen === "function" ? callbacks.onOpen : () => {};
       onClose = typeof callbacks.onClose === "function" ? callbacks.onClose : () => {};

@@ -53,7 +53,7 @@ const [serverPath, webRoot] = process.argv.slice(2);
 assert.ok(serverPath && webRoot, "usage: gpu-e2e.mjs SERVER WEB_ROOT");
 const serverPort = await freePort();
 const debugPort = await freePort();
-const rendererQuery = process.env.TEXT_RENDERER === "canvas" ? "&renderer=canvas" : "";
+const rendererQuery = process.env.TEXT_RENDERER === "kb-canvas" ? "&renderer=kb-canvas" : "";
 const profile = await mkdtemp(path.join(os.tmpdir(), "bcwebmux-gpu-e2e-"));
 const server = spawn(serverPath, ["--web-root", webRoot, "--port", String(serverPort)], {
   stdio: ["ignore", "pipe", "pipe"],
@@ -287,6 +287,21 @@ try {
       document.getElementById(tab.getAttribute("aria-controls") || ""),
     ]));
     if (Object.values(panels).some(panel => !panel)) throw new Error("settings panels are missing");
+    const rendererSelect = panels.FONT.querySelector("select");
+    if (!rendererSelect) throw new Error("renderer select is missing");
+    const rendererValues = [...rendererSelect.options].map(option => option.value);
+    if (JSON.stringify(rendererValues) !== JSON.stringify(["kb-stb", "kb-canvas"])) {
+      throw new Error("renderer select options are invalid: " + JSON.stringify(rendererValues));
+    }
+    const fontFallbacks = panels.FONT.querySelector('textarea[name="fontFallbacks"]');
+    if (!fontFallbacks) throw new Error("font fallbacks textarea is missing");
+    const fallbackFamilies = fontFallbacks.value.split(/\\r?\\n/).map(family => family.trim());
+    if (fallbackFamilies[0]?.toLowerCase() !== "ui-monospace" || fallbackFamilies.at(-1)?.toLowerCase() !== "monospace") {
+      throw new Error("font fallbacks must start with ui-monospace and end with monospace");
+    }
+    if (new Set(fallbackFamilies.map(family => family.toLowerCase())).size !== fallbackFamilies.length) {
+      throw new Error("font fallbacks contain duplicate family names");
+    }
     const perfOutput = document.querySelector("#perf");
     if (!perfOutput) throw new Error("performance output is missing");
     const simple = settingsDialog.querySelector('input[type="radio"][value="simple"]');
@@ -547,7 +562,7 @@ try {
   assert.equal(state.atlasRequiredSlots, Math.ceil(state.rows * state.cols * 1.25));
   assert.ok(state.atlasCapacity >= state.atlasRequiredSlots);
   assert.ok(state.atlasGlyphs >= 1);
-  if (state.textRenderer === "kb-stb") {
+  if (["kb-stb", "kb-canvas"].includes(state.textRenderer)) {
     assert.ok(state.cacheHits > 0);
     assert.ok(state.cacheMisses >= 0);
     assert.ok(state.atlasGlyphs < state.atlasRequiredSlots);

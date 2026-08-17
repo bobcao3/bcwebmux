@@ -10,11 +10,7 @@ const { instance } = await WebAssembly.instantiate(wasmBytes, {
     ring_bell() {},
     gpu_text_backend() { return 0; }, // kb-stb
     gpu_init() { return 1; },
-    gpu_glyph(slot, ptr, len, flags) {
-      const bytes = new Uint8Array(instance.exports.memory.buffer, ptr, len);
-      glyphs.push({ slot, text: new TextDecoder().decode(bytes), flags });
-      return 1;
-    },
+    gpu_glyph_canvas_batch() { return 1; },
     gpu_glyph_bitmap(slot, ptr, width, height, stride) {
       const bytes = new Uint8Array(instance.exports.memory.buffer, ptr, stride * height);
       const mask = new Uint8Array(width * height);
@@ -42,7 +38,6 @@ const { instance } = await WebAssembly.instantiate(wasmBytes, {
   },
 });
 const e = instance.exports;
-const glyphs = [];
 const bitmaps = [];
 const frames = [];
 const cellList = [];

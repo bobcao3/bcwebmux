@@ -110,6 +110,54 @@ fn initFace(face: *Face, data: []const u8) !void {
         return error.RasterFontInitFailed;
 }
 
+pub fn shape(
+    font: u1,
+    style: u2,
+    ligatures: bool,
+    input: []const Input,
+) !RenderStats {
+    const shape_context = context orelse return error.NotInitialized;
+    if (input.len == 0) return error.EmptyRun;
+
+    const face = try ensureFace(font, style);
+    if (c.kbts_ShapePushFont(shape_context, &face.shape) == null)
+        return error.ShapeFontPushFailed;
+    defer _ = c.kbts_ShapePopFont(shape_context);
+
+    if (!ligatures) {
+        c.kbts_ShapePushFeature(shape_context, c.KBTS_FEATURE_TAG_liga, 0);
+        defer _ = c.kbts_ShapePopFeature(shape_context, c.KBTS_FEATURE_TAG_liga);
+        c.kbts_ShapePushFeature(shape_context, c.KBTS_FEATURE_TAG_clig, 0);
+        defer _ = c.kbts_ShapePopFeature(shape_context, c.KBTS_FEATURE_TAG_clig);
+        c.kbts_ShapePushFeature(shape_context, c.KBTS_FEATURE_TAG_dlig, 0);
+        defer _ = c.kbts_ShapePopFeature(shape_context, c.KBTS_FEATURE_TAG_dlig);
+        c.kbts_ShapePushFeature(shape_context, c.KBTS_FEATURE_TAG_calt, 0);
+        defer _ = c.kbts_ShapePopFeature(shape_context, c.KBTS_FEATURE_TAG_calt);
+    }
+
+    c.kbts_ShapeBegin(shape_context, c.KBTS_DIRECTION_LTR, c.KBTS_LANGUAGE_DONT_KNOW);
+    for (input) |item|
+        c.kbts_ShapeCodepointWithUserId(shape_context, item.codepoint, item.cell);
+    c.kbts_ShapeEnd(shape_context);
+    if (c.kbts_ShapeError(shape_context) != c.KBTS_SHAPE_ERROR_NONE)
+        return error.ShapeFailed;
+
+    var glyph_count: u32 = 0;
+    var run: c.kbts_run = undefined;
+    while (c.kbts_ShapeRun(shape_context, &run) != 0) {
+        var glyph: ?*c.kbts_glyph = null;
+        while (c.kbts_GlyphIteratorNext(&run.Glyphs, &glyph) != 0) {
+            if (glyph == null) return error.InvalidGlyph;
+            glyph_count += 1;
+        }
+    }
+
+    return .{
+        .glyphs = glyph_count,
+        .ligatures = if (glyph_count < input.len) @intCast(input.len - glyph_count) else 0,
+    };
+}
+
 pub fn render(
     font: u1,
     style: u2,

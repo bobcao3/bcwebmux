@@ -11,11 +11,12 @@ class GlyphAtlas {
     this.fontFamily = font.fontFamily;
     this.fontSize = Math.max(1, Math.round(fontSize));
     this.baseline = Math.min(this.tileHeight - 1, Math.round((this.tileHeight - this.fontSize) * 0.5 + this.fontSize * 0.82));
+    this.runCanvas = new OffscreenCanvas(1, 1);
+    this.runContext = this.runCanvas.getContext("2d", { alpha: true, willReadFrequently: true });
     this.nextSlot = 0;
     this.dirtyStart = null;
     this.staging = new Uint8Array(0);
     this.rows = 0;
-    this.glyphs = new Map();
     this.ensureCapacity(requiredSlots);
   }
 
@@ -46,15 +47,6 @@ class GlyphAtlas {
     return true;
   }
 
-  set(slot, text, flags) {
-    if (slot >= this.capacity) throw new Error("glyph atlas slot out of range");
-    this.nextSlot = Math.max(this.nextSlot, slot + 1);
-    this.glyphs.set(slot, { text, flags });
-    this.rasterize(slot, text, flags);
-    this.dirtyStart = this.dirtyStart === null ? slot : Math.min(this.dirtyStart, slot);
-    return slot + 1;
-  }
-
   setBitmap(slot, pixels, width, height, stride) {
     if (slot >= this.capacity) throw new Error("glyph atlas slot out of range");
     if (!Number.isInteger(width) || !Number.isInteger(height) ||
@@ -63,7 +55,6 @@ class GlyphAtlas {
       throw new Error("invalid glyph bitmap dimensions");
     }
     this.nextSlot = Math.max(this.nextSlot, slot + 1);
-    this.glyphs.delete(slot);
     const x = (slot % this.columns) * this.tileWidth;
     const y = Math.floor(slot / this.columns) * this.tileHeight;
     this.context.clearRect(x, y, this.tileWidth, this.tileHeight);
@@ -83,19 +74,48 @@ class GlyphAtlas {
     return slot + 1;
   }
 
-  rasterize(slot, text, flags) {
-    const x = (slot % this.columns) * this.tileWidth;
-    const y = Math.floor(slot / this.columns) * this.tileHeight;
-    this.context.save();
-    this.context.beginPath();
-    this.context.rect(x, y, this.tileWidth, this.tileHeight);
-    this.context.clip();
-    this.context.clearRect(x, y, this.tileWidth, this.tileHeight);
+  setCanvasRun(firstSlot, slotCount, spanCells, text, flags) {
+    if (!Number.isInteger(firstSlot) || !Number.isInteger(slotCount) || !Number.isInteger(spanCells) ||
+        firstSlot < 0 || slotCount <= 0 || spanCells <= 0 ||
+        (slotCount !== 1 && slotCount !== spanCells) || firstSlot + slotCount > this.capacity) {
+      throw new Error("invalid glyph atlas run");
+    }
+    if (slotCount === 1 && spanCells > 2) throw new Error("invalid glyph atlas run");
+    const cellWidth = this.tileWidth / 2;
+    this.runCanvas.width = spanCells * cellWidth;
+    this.runCanvas.height = this.tileHeight;
+    this.runContext = this.runCanvas.getContext("2d", { alpha: true, willReadFrequently: true });
+    this.runContext.textBaseline = "alphabetic";
+    this.runContext.fillStyle = "white";
+    this.runContext.clearRect(0, 0, this.runCanvas.width, this.runCanvas.height);
     const weight = (flags & 1) !== 0 ? "700" : "400";
     const italic = (flags & 2) !== 0 ? "italic" : "normal";
-    this.context.font = `${italic} ${weight} ${this.fontSize}px ${this.fontFamily}`;
-    this.context.fillText(text, x, y + this.baseline);
-    this.context.restore();
+    this.runContext.font = `${italic} ${weight} ${this.fontSize}px ${this.fontFamily}`;
+    this.runContext.fillText(text, 0, this.baseline);
+    for (let index = 0; index < slotCount; index += 1) {
+      const slot = firstSlot + index;
+      const x = (slot % this.columns) * this.tileWidth;
+      const y = Math.floor(slot / this.columns) * this.tileHeight;
+      const width = slotCount === 1 ? spanCells * cellWidth : cellWidth;
+      const image = this.runContext.getImageData(index * cellWidth, 0, width, this.tileHeight);
+      this.context.clearRect(x, y, this.tileWidth, this.tileHeight);
+      this.context.putImageData(image, x, y);
+    }
+    this.nextSlot = Math.max(this.nextSlot, firstSlot + slotCount);
+    this.dirtyStart = this.dirtyStart === null ? firstSlot : Math.min(this.dirtyStart, firstSlot);
+    return firstSlot + slotCount;
+  }
+
+  setFontFamily(fontFamily) {
+    if (typeof fontFamily !== "string" || fontFamily.trim() === "") {
+      throw new Error("invalid glyph font family");
+    }
+    if (fontFamily === this.fontFamily) return false;
+    this.fontFamily = fontFamily;
+    this.context.clearRect(0, 0, this.canvas.width, this.canvas.height);
+    this.nextSlot = 0;
+    this.dirtyStart = null;
+    return true;
   }
 
   setPhysicalMetrics(cellWidth, cellHeight, fontSize) {
@@ -129,8 +149,8 @@ class GlyphAtlas {
       format: "r8unorm",
       usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
     });
-    for (const [slot, glyph] of this.glyphs) this.rasterize(slot, glyph.text, glyph.flags);
-    this.dirtyStart = this.nextSlot > 0 ? 0 : null;
+    this.nextSlot = 0;
+    this.dirtyStart = null;
     oldTexture?.destroy();
     return true;
   }
@@ -319,10 +339,13 @@ export class GpuTerminal {
     if (this.rows) this.draw();
   }
 
-  glyph(slot, text, flags) {
-    if (slot >= this.maxGlyphs) throw new Error("glyph slot out of range");
-    if (this.atlas.ensureCapacity(slot + 1)) this.rebuildCellBundle();
-    this.atlas.set(slot, text, flags);
+  glyphCanvasRun(firstSlot, slotCount, spanCells, text, flags) {
+    const endSlot = firstSlot + slotCount;
+    if (firstSlot < 0 || slotCount <= 0 || endSlot > this.maxGlyphs) {
+      throw new Error("glyph slot out of range");
+    }
+    if (this.atlas.ensureCapacity(endSlot)) this.rebuildCellBundle();
+    this.atlas.setCanvasRun(firstSlot, slotCount, spanCells, text, flags);
     return 1;
   }
 
@@ -331,6 +354,18 @@ export class GpuTerminal {
     if (this.atlas.ensureCapacity(slot + 1)) this.rebuildCellBundle();
     this.atlas.setBitmap(slot, pixels, width, height, stride);
     return 1;
+  }
+
+  setFontFamily(fontFamily) {
+    if (!this.initialized) return false;
+    return this.atlas.setFontFamily(fontFamily);
+  }
+
+  setTextRenderer(textRenderer) {
+    if (textRenderer !== "kb-stb" && textRenderer !== "kb-canvas") {
+      throw new Error("invalid text renderer");
+    }
+    this.textRenderer = textRenderer;
   }
 
   update(memory, framePtr, cellsPtr) {

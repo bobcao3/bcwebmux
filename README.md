@@ -1,7 +1,7 @@
 # bcwebmux
 
 Requires Zig 0.16, GNU tar, zstd, libzstd development headers/library, woff2_compress, Node.js/npm, Linux PTY support, a WebGPU-capable browser, and Chromium for tests. WebGPU requires HTTPS except on loopback.
-Zig fetches the pinned Nerd Fonts v3.5.0 archive and converts the four selected JetBrainsMono Nerd Font Mono faces to WOFF2 during the build; the SIL OFL remains at `web/fonts/OFL.txt`. No font CDN or runtime network request is needed.
+Zig fetches the pinned Nerd Fonts v3.5.0 archive and converts the four selected JetBrainsMono Nerd Font Mono faces to WOFF2 during the build; the SIL OFL remains at `web/fonts/OFL.txt`. JetBrains Mono remains bundled, while optional Fira Code is fetched from jsDelivr when selected.
 
 ```sh
 zig build server -Doptimize=ReleaseSmall
@@ -13,7 +13,10 @@ For development, `zig build server` passes `zig-out/web` as a live overlay. Rebu
 
 PTY output uses the negotiated `bcw.zstd.v1` WebSocket subprotocol, with one persistent Zstandard level-1 stream per live connection, a 128 KiB window, and flushes without routine stream resets. The browser decodes it with the bundled same-origin `fzstd` module. Telemetry's decoded/wire compression ratio is decoded PTY bytes divided by bytes sent on the wire; higher values indicate more compression.
 
+Select `KB + stb_truetype` or `KB + Canvas` from Settings → FONT; switching applies live. Settings → FONT also provides an independently persisted fallback-family priority list for each primary font; Fira's default stack includes the bundled JetBrains Mono Nerd Font late in the list for symbols. Editing the active fallback list invalidates and repopulates the bounded glyph cache. `KB + Canvas` keeps Ghostty/KB shaping boundaries and Zig cache/slot ownership, but rasterizes complete UTF-8 runs through Canvas for hinting and fallback. It batches all cache-miss run descriptors and text into one WASM-to-JS raster call per frame, stores alpha-only `r8` masks, and intentionally does not support colored emoji. The old `?renderer=canvas` path no longer exists.
+
 Open <http://127.0.0.1:8080>. Pass server options after `--`, for example `-- --port 9000 --shell /bin/bash`. The default listener is loopback-only.
+Drag to select terminal text when application mouse reporting is inactive. When a TUI captures mouse input, hold Shift before pressing to force local selection. Copy with Ctrl+Shift+C or Meta+C; plain Ctrl+C is sent to the terminal application.
 Remote exposure requires `--host` and the exact browser `--origin`, and should be placed behind an authenticated TLS reverse proxy.
 
 ```sh

@@ -84,11 +84,21 @@
     </section>
     <section id="settings-panel-font" role="tabpanel" aria-labelledby="settings-tab-font" hidden>
       <form id="font-settings-form">
+        <label>Text renderer
+          <select name="renderer">
+            <option value="kb-stb">KB + stb_truetype</option>
+            <option value="kb-canvas">KB + Canvas</option>
+          </select>
+        </label>
         <label>Font family
           <select name="fontFamily">
             <option value="jetbrains-mono">JetBrains Mono Nerd Font</option>
             <option value="fira-code">Fira Code (CDN)</option>
           </select>
+        </label>
+        <label class="font-fallbacks">Fallback families
+          <textarea name="fontFallbacks" rows="6" spellcheck="false"></textarea>
+          <small>One CSS font family per line, in priority order.</small>
         </label>
         <label>Font size
           <span><input type="number" id="font-size" name="fontSize" min="8" max="32" step="1"> px</span>
