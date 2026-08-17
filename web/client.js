@@ -1,7 +1,12 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Cheng Cao
+
 import { GpuTerminal } from "./gpu.js";
 import { Decompress } from "/fzstd.js";
+import { initializeSettings } from "./settings.js";
 
 const terminal = document.querySelector("#terminal");
+const terminalViewport = document.querySelector("#terminal-viewport");
 const perf = document.querySelector("#perf");
 const scroll = document.querySelector("#scroll");
 const spacer = document.querySelector("#spacer");
@@ -16,6 +21,7 @@ const inputDebugClear = document.querySelector("#input-debug-clear");
 const inputDebugCopy = document.querySelector("#input-debug-copy");
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
+const textRenderer = new URLSearchParams(location.search).get("renderer") === "canvas" ? "canvas" : "kb-stb";
 const resizeMessage = new Uint8Array(12);
 const resizeView = new DataView(resizeMessage.buffer);
 resizeView.setUint32(0, 0x52574342, true);
@@ -54,6 +60,7 @@ let pendingInputAt = 0;
 let rttProbeSequence = 0;
 const outstandingRttProbes = new Map();
 const rttSamples = [];
+const settings = initializeSettings();
 await Promise.all([
   document.fonts.load("normal 400 15px 'JetBrains Mono Nerd Font'"),
   document.fonts.load("normal 700 15px 'JetBrains Mono Nerd Font'"),
@@ -61,7 +68,8 @@ await Promise.all([
   document.fonts.load("italic 700 15px 'JetBrains Mono Nerd Font'"),
 ]);
 await document.fonts.ready;
-const metrics = measureCells();
+const measuredMetrics = measureCells();
+const cssCellMetrics = { ...measuredMetrics };
 const coarsePointer = window.matchMedia("(hover: none) and (pointer: coarse)");
 const namedEventCodes = {
   Enter: "Enter",
@@ -193,6 +201,9 @@ const inputDiagnostics = new InputDiagnostics();
 
 const imports = {
   host: {
+    gpu_text_backend() {
+      return textRenderer === "canvas" ? 1 : 0;
+    },
     gpu_init(cellPtr, cellLen, maxCells, maxGlyphs, atlasSlots, cellSize) {
       try {
         const memory = wasm.memory.buffer;
@@ -207,6 +218,15 @@ const imports = {
       try {
         const text = decoder.decode(new Uint8Array(wasm.memory.buffer, textPtr, textLen));
         return renderer.glyph(slot, text, flags);
+      } catch (error) {
+        console.error(error);
+        return 0;
+      }
+    },
+    gpu_glyph_bitmap(slot, pixelsPtr, width, height, stride) {
+      try {
+        const pixels = new Uint8Array(wasm.memory.buffer, pixelsPtr, stride * height);
+        return renderer.glyphBitmap(slot, pixels, width, height, stride);
       } catch (error) {
         console.error(error);
         return 0;
@@ -247,10 +267,18 @@ const imports = {
   },
 };
 
-const initial = dimensions();
 const initialPixelViewport = nativePixelViewport();
+let latestPixelViewport = initialPixelViewport;
+const initialLayout = physicalLayout(initialPixelViewport);
+const initial = { cols: initialLayout.cols, rows: initialLayout.rows };
+settings.setOnChange(applyColorProfile);
 try {
-  renderer = await GpuTerminal.create(screen, metrics, initialPixelViewport);
+  renderer = await GpuTerminal.create(screen, initialPixelViewport, textRenderer);
+  renderer.setPhysicalCellMetrics(
+    initialLayout.cellWidth,
+    initialLayout.cellHeight,
+    initialLayout.fontSize,
+  );
 } catch (error) {
   setConnectionStatus(false, error.message || "gpu error");
   throw error;
@@ -259,6 +287,7 @@ const result = await WebAssembly.instantiateStreaming(fetch("/terminal.wasm"), i
 wasm = result.instance.exports;
 if (wasm.term_init(initial.cols, initial.rows) !== 1) throw new Error("terminal initialization failed");
 resizeTerminal();
+applyColorProfile(settings.profile);
 connect();
 scheduleFrame();
 updateTelemetry();
@@ -269,21 +298,31 @@ function measureCells() {
   const probe = document.createElement("span");
   probe.textContent = "MMMMMMMMMM";
   probe.style.cssText = "position:absolute;visibility:hidden;white-space:pre;font:inherit";
-  terminal.append(probe);
+  terminalViewport.append(probe);
   const rect = probe.getBoundingClientRect();
   probe.remove();
   const width = Math.max(1, rect.width / 10);
   const height = Math.max(1, rect.height);
-  terminal.style.setProperty("--cell-width", `${width}px`);
-  terminal.style.setProperty("--cell-height", `${height}px`);
   return { width, height };
 }
 
 function dimensions() {
-  return {
-    cols: Math.max(2, Math.floor(screen.clientWidth / metrics.width)),
-    rows: Math.max(2, Math.floor(screen.clientHeight / metrics.height)),
-  };
+  const { cols, rows } = physicalLayout(latestPixelViewport ?? nativePixelViewport());
+  return { cols, rows };
+}
+
+function physicalLayout(pixelViewport) {
+  const scaleX = pixelViewport.width / Math.max(1, screen.clientWidth);
+  const scaleY = pixelViewport.height / Math.max(1, screen.clientHeight);
+  const cellWidth = Math.max(1, Math.min(pixelViewport.width, Math.round(measuredMetrics.width * scaleX)));
+  const cellHeight = Math.max(1, Math.min(pixelViewport.height, Math.round(measuredMetrics.height * scaleY)));
+  const fontSize = Math.max(1, Math.round(parseFloat(getComputedStyle(terminal).fontSize) * scaleY));
+  const cols = Math.max(1, Math.floor(pixelViewport.width / cellWidth));
+  const rows = Math.max(1, Math.floor(pixelViewport.height / cellHeight));
+  if (cols * cellWidth > pixelViewport.width || rows * cellHeight > pixelViewport.height) {
+    throw new Error("physical layout exceeds viewport");
+  }
+  return { cols, rows, cellWidth, cellHeight, fontSize, scaleX, scaleY };
 }
 
 function nativePixelViewport(entry) {
@@ -316,8 +355,8 @@ function submitGpuFrame(framePtr, cellsPtr) {
   }
   state.cols = metadata.cols;
   state.rows = metadata.rows;
-  spacer.style.height = `${Math.max(metadata.scrollTotal, metadata.scrollLength) * metrics.height}px`;
-  const targetScroll = metadata.scrollOffset * metrics.height;
+  spacer.style.height = `${Math.max(metadata.scrollTotal, metadata.scrollLength) * cssCellMetrics.height}px`;
+  const targetScroll = metadata.scrollOffset * cssCellMetrics.height;
   if (Math.abs(scroll.scrollTop - targetScroll) > 0.5) {
     suppressScroll = true;
     scroll.scrollTop = targetScroll;
@@ -390,18 +429,37 @@ function formatCompressionRatio(decoded, wire) {
   return `${(decoded / wire).toFixed(2)}x`;
 }
 
+function packedColor(color) {
+  return Number.parseInt(color.slice(1), 16) >>> 0;
+}
+
+function applyColorProfile(profile) {
+  if (!wasm) return;
+  const colors = [profile.background, profile.foreground, ...profile.ansi];
+  const view = new DataView(wasm.memory.buffer);
+  const ptr = wasm.term_theme_ptr();
+  colors.forEach((color, index) => {
+    view.setUint32(ptr + index * 4, packedColor(color), true);
+  });
+  const result = wasm.term_apply_theme();
+  if (result !== 1) throw new Error(`WASM theme application failed: ${result}`);
+  scheduleFrame(true);
+}
+
 function updateTelemetry() {
   const stats = renderer.stats;
   const atlasUsed = stats.atlasGlyphs ?? 0;
   const atlasCapacity = stats.atlasCapacity ?? 0;
   const atlasPercent = atlasCapacity ? Math.round(atlasUsed * 100 / atlasCapacity) : 0;
+  const cacheHits = stats.cacheHits ?? 0;
+  const cacheMisses = stats.cacheMisses ?? 0;
   const line = [
     `WASM frame: ${formatMs(state.wasmFrameMs)} ms · parse: ${formatMs(state.wasmParseMs)} ms`,
     `GPU submit: ${formatMs(stats.frameMs)} ms · presentation opportunity: ${formatMs(stats.presentationOpportunityMs)} ms`,
     `Queue drain: ${formatMs(stats.queueDrainMs)} ms`,
     `Socket → frame: ${formatMs(state.rxLatencyMs)} ms · Input → echo frame: ${formatMs(state.inputLatencyMs)} ms`,
     `WebSocket RTT latest / median / p95: ${formatMs(state.wsRttLatestMs)} / ${formatMs(state.wsRttMedianMs)} / ${formatMs(state.wsRttP95Ms)} ms`,
-    `Viewport: ${state.cols} × ${state.rows} · Glyph atlas: ${atlasUsed} / ${atlasCapacity} (${atlasPercent}%)`,
+    `Viewport: ${state.cols} × ${state.rows} · cell: ${stats.physicalCellWidth}x${stats.physicalCellHeight} px · font: ${stats.physicalFontSize} px · Glyph atlas: ${atlasUsed} / ${atlasCapacity} (${atlasPercent}%) · cache: ${cacheHits} hit / ${cacheMisses} miss`,
     `Network received: ${formatBytes(state.rxBytes)} decoded · wire: ${formatBytes(state.rxWireBytes)} · compression: ${formatCompressionRatio(state.rxBytes, state.rxWireBytes)} · sent: ${formatBytes(state.txBytes)}`,
   ].join("\n");
   perf.value = line;
@@ -449,8 +507,7 @@ function connect() {
     setConnectionStatus(true, "connected");
     sendResize();
     sendRttProbe();
-    wasm.term_focus(document.hasFocus() ? 1 : 0);
-    input.focus({ preventScroll: true });
+    terminalFocus.windowFocus();
   });
   socket.addEventListener("message", (event) => {
     if (typeof event.data === "string") {
@@ -648,25 +705,25 @@ class TerminalInput {
 
   sync() {
     if (!this.isComposing) return;
-    const x = Math.max(0, renderer.cursorX === 0xffff ? 0 : renderer.cursorX) * metrics.width;
-    const y = Math.max(0, renderer.cursorY === 0xffff ? 0 : renderer.cursorY) * metrics.height;
+    const x = Math.max(0, renderer.cursorX === 0xffff ? 0 : renderer.cursorX) * cssCellMetrics.width;
+    const y = Math.max(0, renderer.cursorY === 0xffff ? 0 : renderer.cursorY) * cssCellMetrics.height;
     if (coarsePointer.matches) {
       input.style.paddingLeft = `${x}px`;
       input.style.paddingTop = `${y}px`;
-      input.style.lineHeight = `${metrics.height}px`;
+      input.style.lineHeight = `${cssCellMetrics.height}px`;
     } else {
       input.style.left = `${x}px`;
       input.style.top = `${y}px`;
-      input.style.width = `${Math.max(1, metrics.width)}px`;
-      input.style.height = `${Math.max(1, metrics.height)}px`;
-      input.style.lineHeight = `${metrics.height}px`;
+      input.style.width = `${Math.max(1, cssCellMetrics.width)}px`;
+      input.style.height = `${Math.max(1, cssCellMetrics.height)}px`;
+      input.style.lineHeight = `${cssCellMetrics.height}px`;
     }
     compositionView.style.left = `${x}px`;
     compositionView.style.top = `${y}px`;
-    compositionView.style.width = `${Math.max(1, Math.min(state.cols || 1, compositionView.textContent.length || 1)) * metrics.width}px`;
-    compositionView.style.height = `${Math.max(1, metrics.height)}px`;
-    compositionView.style.maxWidth = `${Math.max(1, (state.cols || 1) - Math.floor(x / metrics.width)) * metrics.width}px`;
-    compositionView.style.lineHeight = `${metrics.height}px`;
+    compositionView.style.width = `${Math.max(1, Math.min(state.cols || 1, compositionView.textContent.length || 1)) * cssCellMetrics.width}px`;
+    compositionView.style.height = `${Math.max(1, cssCellMetrics.height)}px`;
+    compositionView.style.maxWidth = `${Math.max(1, (state.cols || 1) - Math.floor(x / cssCellMetrics.width)) * cssCellMetrics.width}px`;
+    compositionView.style.lineHeight = `${cssCellMetrics.height}px`;
   }
 
   compositionStart() {
@@ -780,23 +837,54 @@ class TerminalInput {
 }
 
 const terminalInput = new TerminalInput();
+class TerminalFocusController {
+  suspended = false;
+
+  focus() {
+    if (this.suspended || document.hidden) return;
+    input.focus({ preventScroll: true });
+    terminalInput.sync();
+    if (wasm && document.hasFocus()) wasm.term_focus(1);
+  }
+
+  restore() {
+    requestAnimationFrame(() => {
+      const active = document.activeElement;
+      if (active !== input && active !== document.body && active !== document.documentElement) return;
+      this.focus();
+    });
+  }
+
+  suspend() {
+    this.suspended = true;
+    if (document.activeElement === input) input.blur();
+    if (wasm) wasm.term_focus(0);
+  }
+
+  resume() {
+    this.suspended = false;
+    if (wasm) wasm.term_focus(document.hasFocus() ? 1 : 0);
+  }
+
+  windowFocus() {
+    if (wasm) wasm.term_focus(this.suspended ? 0 : 1);
+    this.restore();
+  }
+
+  windowBlur() {
+    if (wasm) wasm.term_focus(0);
+  }
+}
+
+const terminalFocus = new TerminalFocusController();
+settings.setLifecycle({
+  onOpen: () => terminalFocus.suspend(),
+  onClose: () => terminalFocus.resume(),
+});
 coarsePointer.addEventListener("change", () => {
   terminalInput.resetGeometry();
   if (terminalInput.isComposing) terminalInput.sync();
 });
-
-function focusTerminalInput() {
-  input.focus({ preventScroll: true });
-  terminalInput.sync();
-}
-
-function restoreTerminalInputFocus() {
-  requestAnimationFrame(() => {
-    const active = document.activeElement;
-    if (softkeys.contains(active) || inputDebugPanel?.contains(active)) return;
-    focusTerminalInput();
-  });
-}
 
 function setSoftModifiers(value) {
   softModifiers = value;
@@ -854,8 +942,8 @@ function mouseButton(button) {
 
 function sendMouse(event, action, button) {
   const rect = scroll.getBoundingClientRect();
-  const x = Math.max(0, event.clientX - rect.left);
-  const y = Math.max(0, event.clientY - rect.top);
+  const x = Math.max(0, event.clientX - rect.left) * renderer.pixelScaleX;
+  const y = Math.max(0, event.clientY - rect.top) * renderer.pixelScaleY;
   return wasm.term_mouse(action, button, modifierBits(event), x, y, event.buttons !== 0 ? 1 : 0) === 1;
 }
 
@@ -867,16 +955,28 @@ function sendResize() {
 }
 
 function resizeTerminal(pixelViewport = nativePixelViewport()) {
+  const layout = physicalLayout(pixelViewport);
+  cssCellMetrics.width = layout.cellWidth / layout.scaleX;
+  cssCellMetrics.height = layout.cellHeight / layout.scaleY;
+  renderer.setPhysicalCellMetrics(layout.cellWidth, layout.cellHeight, layout.fontSize);
   renderer.resize(pixelViewport.width, pixelViewport.height);
-  const size = dimensions();
-  state.cols = size.cols;
-  state.rows = size.rows;
-  wasm.term_resize(size.cols, size.rows, Math.ceil(metrics.width), Math.ceil(metrics.height));
+  terminal.style.setProperty("--cell-width", `${cssCellMetrics.width}px`);
+  terminal.style.setProperty("--cell-height", `${cssCellMetrics.height}px`);
+  state.cols = layout.cols;
+  state.rows = layout.rows;
+  wasm.term_resize(
+    layout.cols,
+    layout.rows,
+    layout.cellWidth,
+    layout.cellHeight,
+    layout.cellWidth,
+    layout.cellHeight,
+    layout.fontSize,
+  );
   sendResize();
   scheduleFrame();
 }
 
-let latestPixelViewport = initialPixelViewport;
 const screenResizeObserver = new ResizeObserver((entries) => {
   latestPixelViewport = nativePixelViewport(entries[0]);
   if (resizePending) return;
@@ -894,12 +994,12 @@ try {
 
 scroll.addEventListener("scroll", () => {
   if (suppressScroll) return;
-  const row = Math.max(0, Math.round(scroll.scrollTop / metrics.height));
+  const row = Math.max(0, Math.round(scroll.scrollTop / cssCellMetrics.height));
   if (wasm.term_scroll_row(row) === 1) scheduleFrame(true);
 }, { passive: true });
 
 scroll.addEventListener("pointerdown", (event) => {
-  if (event.pointerType !== "touch") focusTerminalInput();
+  if (event.pointerType !== "touch") terminalFocus.focus();
   const button = mouseButton(event.button);
   const encoded = sendMouse(event, 0, button);
   encodedRightClick = button === 2 && encoded;
@@ -925,16 +1025,9 @@ scroll.addEventListener("contextmenu", (event) => {
   encodedRightClick = false;
   event.preventDefault();
 });
-
-terminal.addEventListener("pointerdown", (event) => {
-  if (scroll.contains(event.target) || softkeys.contains(event.target) || inputDebugPanel?.contains(event.target)) return;
-  if (event.pointerType !== "touch") focusTerminalInput();
-});
-terminal.addEventListener("click", (event) => {
-  if (event.target === input) return;
-  if (!scroll.contains(event.target) || softkeys.contains(event.target) || inputDebugPanel?.contains(event.target)) return;
+scroll.addEventListener("click", (event) => {
   event.preventDefault();
-  focusTerminalInput();
+  terminalFocus.focus();
 });
 input.addEventListener("keydown", async (event) => {
   if (!terminalInput.keyDown(event)) return;
@@ -968,12 +1061,12 @@ input.addEventListener("focus", () => {
   terminalInput.sync();
 });
 softkeys.addEventListener("pointerdown", (event) => {
-  const button = event.target.closest("button");
-  if (button && softkeys.contains(button)) event.preventDefault();
+  const button = event.target.closest?.("button");
+  if (button) event.preventDefault();
 });
 softkeys.addEventListener("click", (event) => {
   const button = event.target.closest("button");
-  if (!button || !softkeys.contains(button)) return;
+  if (!button) return;
   if (button.dataset.mod) {
     setSoftModifiers(softModifiers ^ Number(button.dataset.mod));
   } else {
@@ -982,17 +1075,13 @@ softkeys.addEventListener("click", (event) => {
     }
     sendSoftKey(button.dataset.code, button.dataset.key);
   }
-  focusTerminalInput();
+  terminalFocus.focus();
 });
-window.addEventListener("focus", () => {
-  wasm.term_focus(1);
-  restoreTerminalInputFocus();
-});
-window.addEventListener("blur", () => wasm.term_focus(0));
+window.addEventListener("focus", () => terminalFocus.windowFocus());
+window.addEventListener("blur", () => terminalFocus.windowBlur());
 document.addEventListener("visibilitychange", () => {
   if (!document.hidden) {
-    wasm.term_focus(1);
-    restoreTerminalInputFocus();
+    terminalFocus.windowFocus();
     scheduleFrame();
   }
 });

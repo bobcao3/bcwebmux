@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Cheng Cao
+
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import net from "node:net";
@@ -50,6 +53,7 @@ const [serverPath, webRoot] = process.argv.slice(2);
 assert.ok(serverPath && webRoot, "usage: gpu-e2e.mjs SERVER WEB_ROOT");
 const serverPort = await freePort();
 const debugPort = await freePort();
+const rendererQuery = process.env.TEXT_RENDERER === "canvas" ? "&renderer=canvas" : "";
 const profile = await mkdtemp(path.join(os.tmpdir(), "bcwebmux-gpu-e2e-"));
 const server = spawn(serverPath, ["--web-root", webRoot, "--port", String(serverPort)], {
   stdio: ["ignore", "pipe", "pipe"],
@@ -136,7 +140,7 @@ try {
     "--disable-background-networking",
     `--remote-debugging-port=${debugPort}`,
     `--user-data-dir=${profile}`,
-    `http://127.0.0.1:${serverPort}/?gpu-test=1`,
+    `http://127.0.0.1:${serverPort}/?gpu-test=1${rendererQuery}`,
   ], { stdio: ["ignore", "ignore", "pipe"] });
   let chromiumLog = "";
   chromium.stderr.on("data", data => { chromiumLog += data; });
@@ -145,7 +149,7 @@ try {
     const response = await fetch(`http://127.0.0.1:${debugPort}/json/list`).catch(() => null);
     if (!response?.ok) return null;
     const targets = await response.json();
-    return targets.find(item => item.type === "page" && item.url.startsWith(`http://127.0.0.1:${serverPort}/?gpu-test=1`));
+    return targets.find(item => item.type === "page" && item.url.startsWith(`http://127.0.0.1:${serverPort}/?gpu-test=1${rendererQuery}`));
   }, 15000, () => `Chromium failed to expose the page\n${chromiumLog}`);
 
   const version = await (await fetch(`http://127.0.0.1:${debugPort}/json/version`)).json();
@@ -181,6 +185,22 @@ try {
 
     const canvas = document.querySelector("#screen");
     const terminal = document.querySelector("#terminal");
+    const viewport = document.querySelector("#terminal-viewport");
+    const input = document.querySelector("#input");
+    const chrome = document.querySelector("#terminal-chrome");
+    const settingsDialog = document.querySelector("#settings-dialog");
+    const settingsButton = document.querySelector("#settings-button");
+    const settingsClose = document.querySelector("#settings-close");
+    const scroll = document.querySelector("#scroll");
+    const softkeys = document.querySelector("#softkeys");
+    if (!viewport.contains(scroll)) throw new Error("viewport does not contain scroll");
+    if (!viewport.contains(canvas)) throw new Error("viewport does not contain canvas");
+    if (!viewport.contains(input)) throw new Error("viewport does not contain input");
+    if (!chrome.contains(softkeys)) throw new Error("chrome does not contain softkeys");
+    if (!chrome.contains(settingsButton)) throw new Error("chrome does not contain settings button");
+    if (viewport.contains(chrome)) throw new Error("viewport contains chrome");
+    if (viewport.contains(softkeys)) throw new Error("viewport contains softkeys");
+    if (terminal.contains(settingsDialog)) throw new Error("terminal contains settings dialog");
     const capture = async () => {
       await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
       const image = await window.bcwebmux.readPixels();
@@ -238,12 +258,10 @@ try {
       if (/^[0-9]$/.test(character)) return "Digit" + character;
       return ({ " ": "Space", "'": "Quote", "\\\\": "Backslash", "[": "BracketLeft", "]": "BracketRight", ";": "Semicolon" })[character] || "Unidentified";
     };
-    const input = document.querySelector("#input");
     if (terminal.tabIndex !== -1) throw new Error("terminal is focusable via tabIndex");
     const inputRect = input.getBoundingClientRect();
     if (!(inputRect.width > 0 && inputRect.height > 0)) throw new Error("hidden textarea has no rendered size");
     input.blur();
-    const scroll = document.querySelector("#scroll");
     for (const type of ["pointerdown", "pointerup"]) {
       scroll.dispatchEvent(new PointerEvent(type, { bubbles: true, cancelable: true, pointerType: "touch", pointerId: 1 }));
     }
@@ -256,6 +274,15 @@ try {
     window.dispatchEvent(new Event("focus"));
     await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
     if (document.activeElement !== input) throw new Error("desktop focus was not restored");
+    settingsButton.click();
+    if (settingsDialog.open !== true) throw new Error("settings dialog did not open");
+    if (document.activeElement === input) throw new Error("settings dialog did not move focus");
+    settingsClose.click();
+    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    if (settingsDialog.open !== false) throw new Error("settings dialog did not close");
+    if (document.activeElement !== settingsButton) throw new Error("settings close did not restore focus");
+    scroll.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+    if (document.activeElement !== input) throw new Error("completed tap did not focus input");
     for (const character of ${JSON.stringify(rgbCommand)}) {
       const code = keyCode(character);
       input.dispatchEvent(new KeyboardEvent("keydown", { key: character, code, bubbles: true }));
@@ -286,7 +313,6 @@ try {
     input.dispatchEvent(new KeyboardEvent("keyup", { key: "Enter", code: "", keyCode: 13, bubbles: true }));
     const imePixels = await waitPixels(probe => near(probe.first[0], 255) && near(probe.first[1], 255) && near(probe.first[2], 0) && probe.wideGlyph > 4, "IME-to-GPU pattern did not render");
 
-    const softkeys = document.querySelector("#softkeys");
     window.bcwebmux.write(${JSON.stringify(softCommand)});
     await waitPixels(probe => near(probe.first[0], 64) && near(probe.first[1], 64) && near(probe.first[2], 64), "softkey readiness pattern did not render");
     softkeys.querySelector('[data-code="Escape"]').click();
@@ -355,7 +381,10 @@ try {
   })()`;
 
   const response = await pageCdp.call("Runtime.evaluate", { expression, awaitPromise: true, returnByValue: true });
-  if (response.exceptionDetails) throw new Error(response.exceptionDetails.exception?.description || "browser evaluation failed");
+  if (response.exceptionDetails) {
+    const runtimeExceptions = pageCdp.events.filter(event => event.method === "Runtime.exceptionThrown");
+    throw new Error(`${response.exceptionDetails.exception?.description || "browser evaluation failed"}\nRuntime exceptions: ${JSON.stringify(runtimeExceptions)}`);
+  }
   const value = response.result.value;
   const screenshot = await pageCdp.call("Page.captureScreenshot", { format: "png" });
   const viewportResponse = await pageCdp.call("Runtime.evaluate", {
@@ -465,6 +494,11 @@ try {
   assert.equal(nativeViewport.height, Math.round(nativeViewport.clientHeight * nativeViewport.devicePixelRatio));
   assert.equal(state.viewportWidth, nativeViewport.width);
   assert.equal(state.viewportHeight, nativeViewport.height);
+  for (const name of ["physicalCellWidth", "physicalCellHeight", "physicalFontSize"]) {
+    assert.ok(Number.isInteger(state[name]) && state[name] > 0, `${name} is invalid`);
+  }
+  assert.ok(state.cols * state.physicalCellWidth <= state.viewportWidth);
+  assert.ok(state.rows * state.physicalCellHeight <= state.viewportHeight);
   assert.ok(Math.abs(state.pixelScaleX - nativeViewport.width / nativeViewport.clientWidth) <= 0.01);
   assert.ok(Math.abs(state.pixelScaleY - nativeViewport.height / nativeViewport.clientHeight) <= 0.01);
   assert.ok(Number.isFinite(state.rxWireBytes) && state.rxWireBytes > 0);
@@ -487,6 +521,11 @@ try {
   assert.equal(state.atlasRequiredSlots, Math.ceil(state.rows * state.cols * 1.25));
   assert.ok(state.atlasCapacity >= state.atlasRequiredSlots);
   assert.ok(state.atlasGlyphs >= 1);
+  if (state.textRenderer === "kb-stb") {
+    assert.ok(state.cacheHits > 0);
+    assert.ok(state.cacheMisses >= 0);
+    assert.ok(state.atlasGlyphs < state.atlasRequiredSlots);
+  }
   assert.ok(value.readbacks >= 5);
   assert.ok(value.elapsed < 3000, `GPU E2E took ${value.elapsed}ms`);
   await pageCdp.call("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 5 });
@@ -498,8 +537,11 @@ try {
     expression: `(() => {
       const input = document.querySelector("#input");
       const screen = document.querySelector("#screen");
+      const viewport = document.querySelector("#terminal-viewport");
+      const chrome = document.querySelector("#terminal-chrome");
       const inputRect = input.getBoundingClientRect();
       const screenRect = screen.getBoundingClientRect();
+      const viewportRect = viewport.getBoundingClientRect();
       const center = document.elementFromPoint(
         screenRect.left + screenRect.width / 2,
         screenRect.top + screenRect.height / 2,
@@ -516,10 +558,13 @@ try {
       return {
         coarse: matchMedia("(pointer: coarse)").matches,
         inputParentId: input.parentElement?.id || null,
+        viewportParentId: viewport.parentElement?.id || null,
+        chromeParentId: chrome.parentElement?.id || null,
         position: inputStyle.position,
         pointerEvents: inputStyle.pointerEvents,
         inputRect: rect(inputRect),
         screenRect: rect(screenRect),
+        viewportRect: rect(viewportRect),
         centerElementId: center?.id || null,
       };
     })()`,
@@ -530,11 +575,16 @@ try {
   }
   const mobileInput = mobileInputResponse.result.value;
   assert.equal(mobileInput.coarse, true);
-  assert.equal(mobileInput.inputParentId, "scroll");
-  assert.equal(mobileInput.position, "fixed");
+  assert.equal(mobileInput.inputParentId, "terminal-viewport");
+  assert.equal(mobileInput.viewportParentId, "terminal");
+  assert.equal(mobileInput.chromeParentId, "terminal");
+  assert.equal(mobileInput.position, "absolute");
   assert.notEqual(mobileInput.pointerEvents, "none");
   for (const edge of ["left", "top", "right", "bottom", "width", "height"]) {
-    assert.ok(Math.abs(mobileInput.inputRect[edge] - mobileInput.screenRect[edge]) <= 1, `${edge} does not match ${JSON.stringify(mobileInput)}`);
+    assert.ok(Math.abs(mobileInput.inputRect[edge] - mobileInput.screenRect[edge]) <= 1, `${edge} does not match screen ${JSON.stringify(mobileInput)}`);
+  }
+  for (const edge of ["left", "top", "bottom"]) {
+    assert.ok(Math.abs(mobileInput.inputRect[edge] - mobileInput.viewportRect[edge]) <= 1, `${edge} does not match viewport ${JSON.stringify(mobileInput)}`);
   }
   assert.equal(mobileInput.centerElementId, "input");
   const exceptions = pageCdp.events.filter(event => event.method === "Runtime.exceptionThrown");

@@ -1,4 +1,6 @@
 <!doctype html>
+<!-- SPDX-License-Identifier: MIT -->
+<!-- Copyright (c) 2026 Cheng Cao -->
 <html lang="en">
 <head>
   <meta charset="utf-8">
@@ -7,34 +9,79 @@
   <link rel="stylesheet" href="/style.css">
 </head>
 <body>
-  <main id="terminal" role="application" aria-label="Terminal">
-    <div id="scroll"><div id="spacer"></div><textarea id="input" aria-label="Terminal input" aria-multiline="false" autocapitalize="off" autocomplete="off" autocorrect="off" spellcheck="false" inputmode="text" enterkeyhint="enter" rows="1"></textarea></div>
-    <canvas id="screen" role="img" aria-label="Terminal screen"></canvas>
-    <div id="composition" aria-hidden="true"></div>
-    <nav id="softkeys" aria-label="Terminal soft keys">
-      <button type="button" data-code="Escape" data-key="Escape">ESC</button>
-      <button type="button" data-code="Tab" data-key="Tab">TAB</button>
-      <button type="button" data-mod="1" aria-pressed="false">SHIFT</button>
-      <button type="button" data-mod="2" aria-pressed="false">CTRL</button>
-      <button type="button" data-mod="4" aria-pressed="false">ALT</button>
-      <button type="button" data-code="Home" data-key="Home">HOME</button>
-      <button type="button" data-code="ArrowUp" data-key="ArrowUp" aria-label="Arrow up">↑</button>
-      <button type="button" data-code="ArrowDown" data-key="ArrowDown" aria-label="Arrow down">↓</button>
-      <button type="button" data-code="ArrowLeft" data-key="ArrowLeft" aria-label="Arrow left">←</button>
-      <button type="button" data-code="ArrowRight" data-key="ArrowRight" aria-label="Arrow right">→</button>
-      <button type="button" data-code="End" data-key="End">END</button>
-      <button type="button" data-code="PageUp" data-key="PageUp">PGUP</button>
-      <button type="button" data-code="PageDown" data-key="PageDown">PGDN</button>
-    </nav>
-    <span id="status" role="status" aria-label="disconnected" title="disconnected"></span>
-    <output id="perf">—</output>
-    <aside id="input-debug" hidden>
-      <header>INPUT TRACE</header>
-      <button id="input-debug-clear" type="button">CLEAR</button>
-      <button id="input-debug-copy" type="button">COPY</button>
-      <pre id="input-debug-log"></pre>
-    </aside>
+  <main id="terminal">
+    <section id="terminal-viewport" role="application" aria-label="Terminal">
+      <div id="scroll">
+        <div id="spacer"></div>
+      </div>
+      <textarea id="input" aria-label="Terminal input" aria-multiline="false" autocapitalize="off" autocomplete="off" autocorrect="off" spellcheck="false" inputmode="text" enterkeyhint="enter" rows="1"></textarea>
+      <canvas id="screen" role="img" aria-label="Terminal screen"></canvas>
+      <div id="composition" aria-hidden="true"></div>
+      <output id="perf">—</output>
+    </section>
+    <footer id="terminal-chrome">
+      <nav id="softkeys" aria-label="Terminal soft keys">
+        <button type="button" data-code="Escape" data-key="Escape">ESC</button>
+        <button type="button" data-code="Tab" data-key="Tab">TAB</button>
+        <button type="button" data-mod="1" aria-pressed="false">SHIFT</button>
+        <button type="button" data-mod="2" aria-pressed="false">CTRL</button>
+        <button type="button" data-mod="4" aria-pressed="false">ALT</button>
+        <button type="button" data-code="Home" data-key="Home">HOME</button>
+        <button type="button" data-code="ArrowUp" data-key="ArrowUp" aria-label="Arrow up">↑</button>
+        <button type="button" data-code="ArrowDown" data-key="ArrowDown" aria-label="Arrow down">↓</button>
+        <button type="button" data-code="ArrowLeft" data-key="ArrowLeft" aria-label="Arrow left">←</button>
+        <button type="button" data-code="ArrowRight" data-key="ArrowRight" aria-label="Arrow right">→</button>
+        <button type="button" data-code="End" data-key="End">END</button>
+        <button type="button" data-code="PageUp" data-key="PageUp">PGUP</button>
+        <button type="button" data-code="PageDown" data-key="PageDown">PGDN</button>
+      </nav>
+      <div id="terminal-controls">
+        <span id="status" role="status" aria-label="disconnected" title="disconnected"></span>
+        <button id="settings-button" type="button" aria-label="Open settings" title="Settings">
+          <svg aria-hidden="true" viewBox="0 0 24 24" width="1em" height="1em" focusable="false">
+            <path d="M19.43 12.98c.04-.32.07-.65.07-.98s-.02-.66-.07-.98l2.11-1.65a.5.5 0 0 0 .12-.64l-2-3.46a.5.5 0 0 0-.61-.22l-2.49 1a7.2 7.2 0 0 0-1.7-.98L14.5 2.42A.49.49 0 0 0 14 2h-4a.49.49 0 0 0-.49.42L9.13 5.07c-.61.25-1.18.58-1.7.98l-2.49-1a.5.5 0 0 0-.61.22l-2 3.46a.5.5 0 0 0 .12.64l2.11 1.65c-.04.32-.08.65-.08.98s.03.66.08.98l-2.11 1.65a.5.5 0 0 0-.12.64l2 3.46c.12.21.37.3.61.22l2.49-1c.52.4 1.09.73 1.7.98l.38 2.65c.04.24.24.42.49.42h4c.25 0 .46-.18.49-.42l.38-2.65c.61-.25 1.18-.58 1.7-.98l2.49 1c.23.08.49-.01.61-.22l2-3.46a.5.5 0 0 0-.12-.64l-2.11-1.65ZM12 15.5A3.5 3.5 0 1 1 12 8a3.5 3.5 0 0 1 0 7.5Z"/>
+          </svg>
+        </button>
+      </div>
+    </footer>
   </main>
+  <aside id="input-debug" hidden>
+    <header>INPUT TRACE</header>
+    <button id="input-debug-clear" type="button">CLEAR</button>
+    <button id="input-debug-copy" type="button">COPY</button>
+    <pre id="input-debug-log"></pre>
+  </aside>
+  <dialog id="settings-dialog" aria-labelledby="settings-title">
+    <header>
+      <h1 id="settings-title">[ SETTINGS ]</h1>
+      <button id="settings-close" type="button" aria-label="Close settings">×</button>
+    </header>
+    <div role="tablist" aria-label="Settings sections">
+      <button id="settings-tab-profiles" type="button" role="tab" aria-selected="true" aria-controls="settings-panel-profiles" data-settings-tab="profiles">PROFILES</button>
+      <button id="settings-tab-custom" type="button" role="tab" aria-selected="false" aria-controls="settings-panel-custom" data-settings-tab="custom">CUSTOM</button>
+    </div>
+    <section id="settings-panel-profiles" role="tabpanel" aria-labelledby="settings-tab-profiles">
+      <p>Select a terminal profile to apply its color scheme.</p>
+      <fieldset>
+        <legend>Available profiles</legend>
+        <div id="profile-list"></div>
+      </fieldset>
+    </section>
+    <section id="settings-panel-custom" role="tabpanel" aria-labelledby="settings-tab-custom" hidden>
+      <p>Customize the colors used by the terminal.</p>
+      <form id="custom-profile-form">
+        <label>Background <input type="color" name="background" id="custom-background"></label>
+        <label>Foreground <input type="color" name="foreground" id="custom-foreground"></label>
+        <label>Surface <input type="color" name="surface" id="custom-surface"></label>
+        <label>Border <input type="color" name="border" id="custom-border"></label>
+        <label>Accent <input type="color" name="accent" id="custom-accent"></label>
+        <label>Muted <input type="color" name="muted" id="custom-muted"></label>
+        <label>Success <input type="color" name="success" id="custom-success"></label>
+        <label>Danger <input type="color" name="danger" id="custom-danger"></label>
+        <button type="submit">SAVE + APPLY</button>
+      </form>
+    </section>
+  </dialog>
   <script type="module" src="/client.js"></script>
 </body>
 </html>

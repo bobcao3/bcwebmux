@@ -1,15 +1,15 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Cheng Cao
+
 class GlyphAtlas {
-  constructor(device, metrics, font, requiredSlots, scaleX, scaleY) {
+  constructor(device, font, requiredSlots, cellWidth, cellHeight, fontSize) {
     this.device = device;
-    this.metrics = metrics;
     this.font = font;
-    this.scaleX = Math.max(Number.EPSILON, scaleX);
-    this.scaleY = Math.max(Number.EPSILON, scaleY);
-    this.tileWidth = Math.max(2, Math.round(metrics.width * this.scaleX) * 2);
-    this.tileHeight = Math.max(2, Math.round(metrics.height * this.scaleY));
+    this.tileWidth = Math.max(2, Math.round(cellWidth) * 2);
+    this.tileHeight = Math.max(2, Math.round(cellHeight));
     this.columns = Math.max(1, Math.floor(device.limits.maxTextureDimension2D / this.tileWidth));
     this.fontFamily = font.fontFamily;
-    this.fontSize = Math.max(1, Math.round(Number.parseFloat(font.fontSize) * this.scaleY));
+    this.fontSize = Math.max(1, Math.round(fontSize));
     this.baseline = Math.min(this.tileHeight - 1, Math.round((this.tileHeight - this.fontSize) * 0.5 + this.fontSize * 0.82));
     this.nextSlot = 0;
     this.dirtyStart = null;
@@ -55,6 +55,34 @@ class GlyphAtlas {
     return slot + 1;
   }
 
+  setBitmap(slot, pixels, width, height, stride) {
+    if (slot >= this.capacity) throw new Error("glyph atlas slot out of range");
+    if (!Number.isInteger(width) || !Number.isInteger(height) ||
+        width <= 0 || height <= 0 || width > this.tileWidth || height > this.tileHeight ||
+        !Number.isInteger(stride) || stride < width) {
+      throw new Error("invalid glyph bitmap dimensions");
+    }
+    this.nextSlot = Math.max(this.nextSlot, slot + 1);
+    this.glyphs.delete(slot);
+    const x = (slot % this.columns) * this.tileWidth;
+    const y = Math.floor(slot / this.columns) * this.tileHeight;
+    this.context.clearRect(x, y, this.tileWidth, this.tileHeight);
+    const image = new ImageData(this.tileWidth, this.tileHeight);
+    for (let i = 0; i < image.data.length; i += 4) {
+      image.data[i] = 255;
+      image.data[i + 1] = 255;
+      image.data[i + 2] = 255;
+    }
+    for (let row = 0; row < height; row += 1) {
+      for (let column = 0; column < width; column += 1) {
+        image.data[(row * this.tileWidth + column) * 4 + 3] = pixels[row * stride + column];
+      }
+    }
+    this.context.putImageData(image, x, y);
+    this.dirtyStart = this.dirtyStart === null ? slot : Math.min(this.dirtyStart, slot);
+    return slot + 1;
+  }
+
   rasterize(slot, text, flags) {
     const x = (slot % this.columns) * this.tileWidth;
     const y = Math.floor(slot / this.columns) * this.tileHeight;
@@ -70,13 +98,15 @@ class GlyphAtlas {
     this.context.restore();
   }
 
-  rescale(scaleX, scaleY) {
-    scaleX = Math.max(Number.EPSILON, scaleX);
-    scaleY = Math.max(Number.EPSILON, scaleY);
-    if (Math.abs(scaleX - this.scaleX) < 1e-6 && Math.abs(scaleY - this.scaleY) < 1e-6) return false;
+  setPhysicalMetrics(cellWidth, cellHeight, fontSize) {
+    if (!Number.isInteger(cellWidth) || !Number.isInteger(cellHeight) || !Number.isInteger(fontSize) ||
+        cellWidth <= 0 || cellHeight <= 0 || fontSize <= 0) {
+      throw new Error("invalid physical cell metrics");
+    }
     const maxDimension = this.device.limits.maxTextureDimension2D;
-    const tileWidth = Math.max(2, Math.round(this.metrics.width * scaleX) * 2);
-    const tileHeight = Math.max(2, Math.round(this.metrics.height * scaleY));
+    const tileWidth = cellWidth * 2;
+    const tileHeight = cellHeight;
+    if (tileWidth === this.tileWidth && tileHeight === this.tileHeight && fontSize === this.fontSize) return false;
     const columns = Math.max(1, Math.floor(maxDimension / tileWidth));
     const rows = Math.max(1, Math.ceil(Math.max(this.nextSlot, this.capacity) / columns));
     if (tileWidth > maxDimension || tileHeight > maxDimension ||
@@ -84,12 +114,10 @@ class GlyphAtlas {
       throw new Error("glyph atlas capacity exceeded");
     }
     const oldTexture = this.texture;
-    this.scaleX = scaleX;
-    this.scaleY = scaleY;
     this.tileWidth = tileWidth;
     this.tileHeight = tileHeight;
     this.columns = columns;
-    this.fontSize = Math.max(1, Math.round(Number.parseFloat(this.font.fontSize) * scaleY));
+    this.fontSize = fontSize;
     this.baseline = Math.min(this.tileHeight - 1, Math.round((this.tileHeight - this.fontSize) * 0.5 + this.fontSize * 0.82));
     this.rows = rows;
     this.canvas = new OffscreenCanvas(this.columns * this.tileWidth, this.rows * this.tileHeight);
@@ -133,21 +161,22 @@ class GlyphAtlas {
   }
 }
 
+// JS drives WebGPU, but WASM owns the data-driven frame/cell/bitmap buffers shared across this boundary. CSS/DPR is converted once to integer raw-pixel font/cell metrics, which are then the single source of truth for both WASM rasterization and GPU uniforms.
 export class GpuTerminal {
-  static async create(canvas, metrics, pixelViewport) {
+  static async create(canvas, pixelViewport, textRenderer) {
     if (!navigator.gpu) throw new Error("WebGPU is unavailable; use an HTTPS or loopback origin with WebGPU support");
     const adapter = await navigator.gpu.requestAdapter({ powerPreference: "high-performance" });
     if (!adapter) throw new Error("WebGPU adapter unavailable");
     const device = await adapter.requestDevice();
-    const terminal = new GpuTerminal(canvas, metrics, device, adapter);
+    const terminal = new GpuTerminal(canvas, device, adapter, textRenderer);
     terminal.resize(pixelViewport.width, pixelViewport.height);
     return terminal;
   }
 
-  constructor(canvas, metrics, device, adapter) {
+  constructor(canvas, device, adapter, textRenderer) {
     this.canvas = canvas;
-    this.metrics = metrics;
     this.device = device;
+    this.textRenderer = textRenderer;
     this.adapterInfo = {
       vendor: adapter.info?.vendor || "",
       architecture: adapter.info?.architecture || "",
@@ -168,6 +197,9 @@ export class GpuTerminal {
     this.viewportHeight = 0;
     this.pixelScaleX = 1;
     this.pixelScaleY = 1;
+    this.physicalCellWidth = 1;
+    this.physicalCellHeight = 1;
+    this.physicalFontSize = 1;
     this.maxGlyphs = 0;
     this.atlasRequiredSlots = 0;
     this.background = 0x111111;
@@ -185,6 +217,8 @@ export class GpuTerminal {
     this.bundleExecutions = 0;
     this.rasterPasses = 0;
     this.drawnCellCount = 0;
+    this.cacheHits = 0;
+    this.cacheMisses = 0;
     this.indirectData = new Uint32Array([6, 0, 0, 0]);
     this.error = null;
     this.initialized = false;
@@ -210,7 +244,14 @@ export class GpuTerminal {
       usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_DST,
     });
     const font = getComputedStyle(this.canvas.parentElement);
-    this.atlas = new GlyphAtlas(device, this.metrics, font, atlasSlots, this.pixelScaleX, this.pixelScaleY);
+    this.atlas = new GlyphAtlas(
+      device,
+      font,
+      atlasSlots,
+      this.physicalCellWidth,
+      this.physicalCellHeight,
+      this.physicalFontSize,
+    );
     this.uniformBuffer = device.createBuffer({ size: 64, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
     this.cellBuffer = device.createBuffer({ size: maxCellsValue * cellSize, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
     this.drawIndirectBuffer = device.createBuffer({ size: 16, usage: GPUBufferUsage.INDIRECT | GPUBufferUsage.COPY_DST });
@@ -242,6 +283,17 @@ export class GpuTerminal {
     this.cellBundle = encoder.finish();
   }
 
+  setPhysicalCellMetrics(width, height, fontSize) {
+    if (!Number.isInteger(width) || !Number.isInteger(height) || !Number.isInteger(fontSize) ||
+        width <= 0 || height <= 0 || fontSize <= 0) {
+      throw new Error("invalid physical cell metrics");
+    }
+    this.physicalCellWidth = width;
+    this.physicalCellHeight = height;
+    this.physicalFontSize = fontSize;
+    if (this.initialized && this.atlas.setPhysicalMetrics(width, height, fontSize)) this.rebuildCellBundle();
+  }
+
   resize(widthValue, heightValue) {
     const width = Math.round(Number(widthValue));
     const height = Math.round(Number(heightValue));
@@ -254,7 +306,6 @@ export class GpuTerminal {
     this.viewportHeight = height;
     this.pixelScaleX = width / Math.max(1, this.canvas.clientWidth);
     this.pixelScaleY = height / Math.max(1, this.canvas.clientHeight);
-    if (this.initialized && this.atlas.rescale(this.pixelScaleX, this.pixelScaleY)) this.rebuildCellBundle();
     if (this.canvas.width === width && this.canvas.height === height && this.offscreen) return;
     this.canvas.width = width;
     this.canvas.height = height;
@@ -275,6 +326,13 @@ export class GpuTerminal {
     return 1;
   }
 
+  glyphBitmap(slot, pixels, width, height, stride) {
+    if (slot >= this.maxGlyphs) throw new Error("glyph slot out of range");
+    if (this.atlas.ensureCapacity(slot + 1)) this.rebuildCellBundle();
+    this.atlas.setBitmap(slot, pixels, width, height, stride);
+    return 1;
+  }
+
   update(memory, framePtr, cellsPtr) {
     const frame = new DataView(memory, framePtr, 64);
     if (frame.getUint32(0, true) !== 0x46574342 || frame.getUint32(4, true) !== 2) throw new Error("invalid renderer frame");
@@ -284,6 +342,9 @@ export class GpuTerminal {
     if (cellCount !== cols * rows || cellCount > this.maxCells) throw new Error(`terminal grid exceeds ${this.maxCells} GPU cells`);
     this.cols = cols;
     this.rows = rows;
+    const cacheData = frame.getUint32(20, true);
+    this.cacheHits = cacheData >>> 16;
+    this.cacheMisses = cacheData & 0xffff;
     this.background = frame.getUint32(24, true);
     this.foreground = frame.getUint32(28, true);
     this.cursorX = frame.getUint32(32, true);
@@ -314,10 +375,10 @@ export class GpuTerminal {
     const drawStartedAt = performance.now();
     this.uniformU32[0] = this.cols;
     this.uniformU32[1] = this.rows;
-    this.uniformF32[2] = this.metrics.width * this.pixelScaleX;
-    this.uniformF32[3] = this.metrics.height * this.pixelScaleY;
-    this.uniformF32[4] = this.canvas.width;
-    this.uniformF32[5] = this.canvas.height;
+    this.uniformU32[2] = this.physicalCellWidth;
+    this.uniformU32[3] = this.physicalCellHeight;
+    this.uniformU32[4] = this.canvas.width;
+    this.uniformU32[5] = this.canvas.height;
     this.uniformU32[6] = this.background;
     this.uniformU32[7] = this.foreground;
     this.uniformU32[8] = this.cursorX;
@@ -418,6 +479,7 @@ export class GpuTerminal {
   get stats() {
     return {
       backend: "webgpu",
+      textRenderer: this.textRenderer,
       gpuFrames: this.frames,
       frameMs: this.frameMs,
       queueDrainMs: this.gpuFrameMs,
@@ -425,12 +487,17 @@ export class GpuTerminal {
       presentationOpportunityMs: this.presentationOpportunityMs,
       bundleExecutions: this.bundleExecutions,
       rasterPasses: this.rasterPasses,
+      cacheHits: this.cacheHits,
+      cacheMisses: this.cacheMisses,
       atlasGlyphs: this.atlas.nextSlot,
       atlasFormat: "r8unorm",
       atlasCapacity: this.atlas.capacity,
       atlasRequiredSlots: this.atlasRequiredSlots,
       viewportWidth: this.viewportWidth,
       viewportHeight: this.viewportHeight,
+      physicalCellWidth: this.physicalCellWidth,
+      physicalCellHeight: this.physicalCellHeight,
+      physicalFontSize: this.physicalFontSize,
       pixelScaleX: this.pixelScaleX,
       pixelScaleY: this.pixelScaleY,
       gpuAdapter: this.adapterInfo,

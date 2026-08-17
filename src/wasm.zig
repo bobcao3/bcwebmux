@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Cheng Cao
+
 const std = @import("std");
 const ghostty = @import("ghostty-vt");
 const wgpu = @import("wgpu.zig");
@@ -17,16 +20,34 @@ var busy = false;
 var cell_width_px: u32 = 8;
 var cell_height_px: u32 = 16;
 var last_mouse_cell: ?ghostty.Coordinate = null;
+var theme_colors: [18]u32 = undefined;
+var theme_dirty = false;
 
 extern "host" fn pty_write(ptr: [*]const u8, len: usize) i32;
 extern "host" fn set_title(ptr: [*]const u8, len: usize) void;
 extern "host" fn ring_bell() void;
+
+export fn bc_font_alloc(len: u32) u32 {
+    const total = std.math.add(usize, @as(usize, len), 16) catch return 0;
+    const memory = alloc.alignedAlloc(u8, .@"16", total) catch return 0;
+    const header: *usize = @ptrCast(@alignCast(memory.ptr));
+    header.* = total;
+    return @intCast(@intFromPtr(memory.ptr) + 16);
+}
+
+export fn bc_font_free(ptr: u32) void {
+    if (ptr == 0) return;
+    const base: [*]align(16) u8 = @ptrFromInt(@as(usize, ptr) - 16);
+    const header: *usize = @ptrCast(@alignCast(base));
+    alloc.free(base[0..header.*]);
+}
 
 export fn term_init(cols: u16, rows: u16) i32 {
     if (busy or terminal != null or cols == 0 or rows == 0) return 0;
     terminal = ghostty.Terminal.init(io, alloc, .{
         .cols = cols,
         .rows = rows,
+        .default_modes = .{ .grapheme_cluster = true },
         .max_scrollback_bytes = 8 * 1024 * 1024,
     }) catch return 0;
     const value = if (terminal) |*t| t else return 0;
@@ -48,6 +69,21 @@ export fn term_init(cols: u16, rows: u16) i32 {
         return 0;
     }
     last_mouse_cell = null;
+    return 1;
+}
+
+export fn term_theme_ptr() u32 {
+    return @intCast(@intFromPtr(&theme_colors));
+}
+
+export fn term_apply_theme() i32 {
+    if (busy or terminal == null) return 0;
+    wgpu.setTheme(
+        theme_colors[0],
+        theme_colors[1],
+        @ptrCast(&theme_colors[2]),
+    );
+    theme_dirty = true;
     return 1;
 }
 
@@ -80,13 +116,18 @@ export fn term_feed(len: u32) i32 {
     return 1;
 }
 
-export fn term_resize(cols: u16, rows: u16, cell_width: u16, cell_height: u16) i32 {
+export fn term_resize(cols: u16, rows: u16, cell_width: u16, cell_height: u16, glyph_cell_width: u16, glyph_cell_height: u16, glyph_font_size_px: u16) i32 {
     if (busy or cols == 0 or rows == 0) return 0;
     const value = if (stream) |*s| s else return 0;
     busy = true;
     defer busy = false;
     cell_width_px = @max(1, cell_width);
     cell_height_px = @max(1, cell_height);
+    wgpu.setFontMetrics(
+        @max(1, glyph_cell_width),
+        @max(1, glyph_cell_height),
+        @max(1, glyph_font_size_px),
+    );
     value.handler.resize(.{
         .cols = cols,
         .rows = rows,
@@ -210,8 +251,9 @@ export fn term_frame() i32 {
         previous_cursor_visible != render_state.cursor.visible or
         previous_cursor_blinking != render_state.cursor.blinking or
         previous_cursor_style != render_state.cursor.visual_style;
-    if (render_state.dirty == .false and !cursor_changed) return 0;
+    if (render_state.dirty == .false and !cursor_changed and !theme_dirty) return 0;
     wgpu.submit(&render_state, value) catch return -1;
+    theme_dirty = false;
     render_state.clean();
     return 1;
 }

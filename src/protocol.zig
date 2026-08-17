@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Cheng Cao
+
 const std = @import("std");
 
 pub const resize_magic: u32 = 0x52574342;

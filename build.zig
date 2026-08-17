@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Cheng Cao
+
 const std = @import("std");
 
 pub fn build(b: *std.Build) void {
@@ -11,12 +14,43 @@ pub fn build(b: *std.Build) void {
     };
     wasm_query.cpu_features_add.addFeature(@intFromEnum(std.Target.wasm.Feature.simd128));
     const wasm_target = b.resolveTargetQuery(wasm_query);
+    const kb = b.dependency("kb", .{ .target = wasm_target, .optimize = wasm_optimize });
+    const stb = b.dependency("stb", .{ .target = wasm_target, .optimize = wasm_optimize });
+    const jetbrains_mono_nerd_font = b.dependency("jetbrains_mono_nerd_font", .{});
     const ghostty = b.dependency("ghostty", .{
         .target = wasm_target,
         .optimize = wasm_optimize,
         .simd = false,
         .@"emit-lib-vt" = true,
         .@"vt-features" = "-all,+render-state,+input-encode,+selection",
+    });
+    const terminal_fonts = b.addWriteFiles();
+    _ = terminal_fonts.addCopyFile(
+        jetbrains_mono_nerd_font.path("JetBrainsMonoNerdFontMono-Regular.ttf"),
+        "regular.ttf",
+    );
+    _ = terminal_fonts.addCopyFile(
+        jetbrains_mono_nerd_font.path("JetBrainsMonoNerdFontMono-Bold.ttf"),
+        "bold.ttf",
+    );
+    _ = terminal_fonts.addCopyFile(
+        jetbrains_mono_nerd_font.path("JetBrainsMonoNerdFontMono-Italic.ttf"),
+        "italic.ttf",
+    );
+    _ = terminal_fonts.addCopyFile(
+        jetbrains_mono_nerd_font.path("JetBrainsMonoNerdFontMono-BoldItalic.ttf"),
+        "bold_italic.ttf",
+    );
+    const fonts_module = b.createModule(.{
+        .root_source_file = terminal_fonts.add("fonts.zig",
+            \\pub const regular = @embedFile("regular.ttf");
+            \\pub const bold = @embedFile("bold.ttf");
+            \\pub const italic = @embedFile("italic.ttf");
+            \\pub const bold_italic = @embedFile("bold_italic.ttf");
+            \\
+        ),
+        .target = wasm_target,
+        .optimize = wasm_optimize,
     });
     const wasm = b.addExecutable(.{
         .name = "terminal",
@@ -27,15 +61,24 @@ pub fn build(b: *std.Build) void {
             .imports = &.{.{
                 .name = "ghostty-vt",
                 .module = ghostty.module("ghostty-vt"),
+            }, .{
+                .name = "fonts",
+                .module = fonts_module,
             }},
         }),
     });
+    wasm.root_module.addCSourceFile(.{
+        .file = b.path("src/font_engine.c"),
+        .flags = &.{"-std=c23"},
+    });
+    wasm.root_module.addIncludePath(b.path("src"));
+    wasm.root_module.addIncludePath(kb.path(""));
+    wasm.root_module.addIncludePath(stb.path(""));
     wasm.entry = .disabled;
     wasm.rdynamic = true;
     wasm.export_memory = true;
 
     const web_assets = b.addWriteFiles();
-    const jetbrains_mono_nerd_font = b.dependency("jetbrains_mono_nerd_font", .{});
     _ = web_assets.addCopyDirectory(b.path("web"), "", .{ .exclude_extensions = &.{".woff2"} });
     _ = web_assets.addCopyFile(b.path("node_modules/fzstd/esm/index.mjs"), "fzstd.js");
     for ([_][]const u8{ "Regular", "Bold", "Italic", "BoldItalic" }) |style| {

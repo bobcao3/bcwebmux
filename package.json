@@ -1,5 +1,6 @@
 {
   "name": "bcwebmux",
+  "license": "MIT",
   "private": true,
   "type": "module",
   "devDependencies": {

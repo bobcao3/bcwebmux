@@ -1,10 +1,13 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Cheng Cao
+
 struct Uniforms {
   cols: u32,
   rows: u32,
-  cell_width: f32,
-  cell_height: f32,
-  viewport_width: f32,
-  viewport_height: f32,
+  cell_width: u32,
+  cell_height: u32,
+  viewport_width: u32,
+  viewport_height: u32,
   default_bg: u32,
   default_fg: u32,
   cursor_x: u32,
@@ -32,6 +35,7 @@ struct VertexOutput {
   @builtin(position) position: vec4<f32>,
   @location(0) local: vec2<f32>,
   @location(1) @interpolate(flat) cell_index: u32,
+  @location(2) @interpolate(flat) cell_size: vec2<u32>,
 }
 
 @group(0) @binding(0) var<uniform> uniforms: Uniforms;
@@ -52,20 +56,21 @@ fn vertex(@builtin(vertex_index) vertex_index: u32, @builtin(instance_index) ins
   let cell = cells[instance_index];
   let corner = corners[vertex_index];
   let width = cell.width;
-  let origin = vec2<f32>(
-    round(f32(cell.x) * uniforms.cell_width),
-    round(f32(cell.y) * uniforms.cell_height)
+  let origin = vec2<u32>(
+    cell.x * uniforms.cell_width,
+    cell.y * uniforms.cell_height
   );
-  let end = vec2<f32>(
-    round(f32(cell.x + width) * uniforms.cell_width),
-    round(f32(cell.y + 1u) * uniforms.cell_height)
+  let end = vec2<u32>(
+    (cell.x + width) * uniforms.cell_width,
+    (cell.y + 1u) * uniforms.cell_height
   );
   let size = end - origin;
-  let pixel = origin + corner * size;
+  let pixel = vec2<f32>(origin) + corner * vec2<f32>(size);
   var output: VertexOutput;
-  output.position = vec4<f32>(pixel.x / uniforms.viewport_width * 2.0 - 1.0, 1.0 - pixel.y / uniforms.viewport_height * 2.0, 0.0, 1.0);
-  output.local = corner * size;
+  output.position = vec4<f32>(pixel.x / f32(uniforms.viewport_width) * 2.0 - 1.0, 1.0 - pixel.y / f32(uniforms.viewport_height) * 2.0, 0.0, 1.0);
+  output.local = corner * vec2<f32>(size);
   output.cell_index = cell_index;
+  output.cell_size = size;
   if (cell.enabled == 0u) {
     output.position = vec4<f32>(2.0, 2.0, 0.0, 1.0);
   }
@@ -84,8 +89,8 @@ fn fragment(input: VertexOutput) -> @location(0) vec4<f32> {
   }
   var result = rgb(bg);
   let y = input.local.y;
-  let decoration = ((flags & 8u) != 0u && y >= uniforms.cell_height - 2.0 && y < uniforms.cell_height - 1.0) ||
-    ((flags & 16u) != 0u && y >= floor(uniforms.cell_height * 0.52) && y < floor(uniforms.cell_height * 0.52) + 1.0) ||
+  let decoration = ((flags & 8u) != 0u && y >= f32(input.cell_size.y) - 2.0 && y < f32(input.cell_size.y) - 1.0) ||
+    ((flags & 16u) != 0u && y >= floor(f32(input.cell_size.y) * 0.52) && y < floor(f32(input.cell_size.y) * 0.52) + 1.0) ||
     ((flags & 32u) != 0u && y < 1.0);
   if (decoration) {
     result = rgb(fg);
@@ -94,7 +99,7 @@ fn fragment(input: VertexOutput) -> @location(0) vec4<f32> {
   if (cursor_visible && cell.x == uniforms.cursor_x && cell.y == uniforms.cursor_y) {
     if (uniforms.cursor_style == 0u && input.local.x < 2.0) {
       result = rgb(uniforms.default_fg);
-    } else if (uniforms.cursor_style == 2u && y >= uniforms.cell_height - 2.0) {
+    } else if (uniforms.cursor_style == 2u && y >= f32(input.cell_size.y) - 2.0) {
       result = rgb(uniforms.default_fg);
     } else if (uniforms.cursor_style != 0u && uniforms.cursor_style != 2u) {
       result = mix(result, rgb(uniforms.default_fg), 0.45);

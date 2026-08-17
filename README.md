@@ -25,3 +25,7 @@ zig build test -Doptimize=ReleaseSmall
 Rendered terminal/telemetry/bottom-bar regressions use PSNR comparisons against `test/golden` lossless WebP fixtures; intentional visual changes update them with `UPDATE_GOLDEN=1 zig build e2e` followed by a normal test run.
 
 `zig build e2e` requires a physical Vulkan GPU exposed to Chromium and intentionally rejects SwiftShader and llvmpipe. The browser test uses a 1024×720 window at fractional DPR 1.25 and verifies that the WebGPU backing texture matches the native device-pixel content box. It validates truecolor cells, normal and Nerd-font glyph pixels, IME/Backspace/Enter, softkeys, mouse, and scrollback using GPU texture readbacks plus a CDP compositor screenshot—not CPU cell or text inspection.
+
+## License
+
+This project is licensed under the [MIT License](LICENSE).
