@@ -57,29 +57,54 @@
       <button id="settings-close" type="button" aria-label="Close settings">×</button>
     </header>
     <div role="tablist" aria-label="Settings sections">
-      <button id="settings-tab-profiles" type="button" role="tab" aria-selected="true" aria-controls="settings-panel-profiles" data-settings-tab="profiles">PROFILES</button>
-      <button id="settings-tab-custom" type="button" role="tab" aria-selected="false" aria-controls="settings-panel-custom" data-settings-tab="custom">CUSTOM</button>
+      <button id="settings-tab-color" type="button" role="tab" aria-selected="true" aria-controls="settings-panel-color" data-settings-tab="color">COLOR</button>
+      <button id="settings-tab-font" type="button" role="tab" aria-selected="false" aria-controls="settings-panel-font" data-settings-tab="font">FONT</button>
+      <button id="settings-tab-perf" type="button" role="tab" aria-selected="false" aria-controls="settings-panel-perf" data-settings-tab="perf">PERF</button>
     </div>
-    <section id="settings-panel-profiles" role="tabpanel" aria-labelledby="settings-tab-profiles">
+    <section id="settings-panel-color" role="tabpanel" aria-labelledby="settings-tab-color">
       <p>Select a terminal profile to apply its color scheme.</p>
       <fieldset>
         <legend>Available profiles</legend>
         <div id="profile-list"></div>
       </fieldset>
+      <div id="custom-color-editor" hidden>
+        <p>Customize the colors used by the terminal.</p>
+        <form id="custom-profile-form">
+          <label>Background <input type="color" name="background" id="custom-background"></label>
+          <label>Foreground <input type="color" name="foreground" id="custom-foreground"></label>
+          <label>Surface <input type="color" name="surface" id="custom-surface"></label>
+          <label>Border <input type="color" name="border" id="custom-border"></label>
+          <label>Accent <input type="color" name="accent" id="custom-accent"></label>
+          <label>Muted <input type="color" name="muted" id="custom-muted"></label>
+          <label>Success <input type="color" name="success" id="custom-success"></label>
+          <label>Danger <input type="color" name="danger" id="custom-danger"></label>
+          <button type="submit">SAVE + APPLY</button>
+        </form>
+      </div>
     </section>
-    <section id="settings-panel-custom" role="tabpanel" aria-labelledby="settings-tab-custom" hidden>
-      <p>Customize the colors used by the terminal.</p>
-      <form id="custom-profile-form">
-        <label>Background <input type="color" name="background" id="custom-background"></label>
-        <label>Foreground <input type="color" name="foreground" id="custom-foreground"></label>
-        <label>Surface <input type="color" name="surface" id="custom-surface"></label>
-        <label>Border <input type="color" name="border" id="custom-border"></label>
-        <label>Accent <input type="color" name="accent" id="custom-accent"></label>
-        <label>Muted <input type="color" name="muted" id="custom-muted"></label>
-        <label>Success <input type="color" name="success" id="custom-success"></label>
-        <label>Danger <input type="color" name="danger" id="custom-danger"></label>
-        <button type="submit">SAVE + APPLY</button>
+    <section id="settings-panel-font" role="tabpanel" aria-labelledby="settings-tab-font" hidden>
+      <form id="font-settings-form">
+        <label>Font family
+          <select name="fontFamily">
+            <option value="jetbrains-mono">JetBrains Mono Nerd Font</option>
+            <option value="fira-code">Fira Code (CDN)</option>
+          </select>
+        </label>
+        <label>Font size
+          <span><input type="number" id="font-size" name="fontSize" min="8" max="32" step="1"> px</span>
+        </label>
+        <label><input type="checkbox" name="ligatures"> Enable ligatures</label>
       </form>
+    </section>
+    <section id="settings-panel-perf" role="tabpanel" aria-labelledby="settings-tab-perf" hidden>
+      <fieldset>
+        <legend>Performance display</legend>
+        <div class="inline-toggle" role="radiogroup" aria-label="Performance display">
+          <label><input type="radio" name="perfMode" value="off"> OFF</label>
+          <label><input type="radio" name="perfMode" value="simple"> SIMPLE</label>
+          <label><input type="radio" name="perfMode" value="detailed"> DETAILED</label>
+        </div>
+      </fieldset>
     </section>
   </dialog>
   <script type="module" src="/client.js"></script>

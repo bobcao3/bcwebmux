@@ -277,6 +277,32 @@ try {
     settingsButton.click();
     if (settingsDialog.open !== true) throw new Error("settings dialog did not open");
     if (document.activeElement === input) throw new Error("settings dialog did not move focus");
+    const tabs = Object.fromEntries(["COLOR", "FONT", "PERF"].map(label => [
+      label,
+      [...settingsDialog.querySelectorAll("button")].find(button => button.textContent.trim() === label),
+    ]));
+    if (Object.values(tabs).some(tab => !tab)) throw new Error("settings tabs are missing");
+    const panels = Object.fromEntries(Object.entries(tabs).map(([label, tab]) => [
+      label,
+      document.getElementById(tab.getAttribute("aria-controls") || ""),
+    ]));
+    if (Object.values(panels).some(panel => !panel)) throw new Error("settings panels are missing");
+    const perfOutput = document.querySelector("#perf");
+    if (!perfOutput) throw new Error("performance output is missing");
+    const simple = settingsDialog.querySelector('input[type="radio"][value="simple"]');
+    const detailed = settingsDialog.querySelector('input[type="radio"][value="detailed"]');
+    if (!simple || !detailed) throw new Error("performance mode radios are missing");
+    tabs.PERF.click();
+    simple.click();
+    await new Promise(resolve => requestAnimationFrame(resolve));
+    if (perfOutput.dataset.mode !== "simple") throw new Error("performance mode did not become simple");
+    if (getComputedStyle(perfOutput).display === "none" || getComputedStyle(perfOutput).visibility === "hidden") {
+      throw new Error("performance panel is not visible");
+    }
+    if (perfOutput.value.includes("\\n")) throw new Error("simple performance output contains a newline");
+    detailed.click();
+    if (perfOutput.dataset.mode !== "detailed") throw new Error("performance mode did not become detailed");
+    tabs.COLOR.click();
     settingsClose.click();
     await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
     if (settingsDialog.open !== false) throw new Error("settings dialog did not close");

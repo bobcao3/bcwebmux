@@ -35,6 +35,9 @@ const Face = struct {
 var context: ?*c.kbts_shape_context = null;
 var faces: [4]Face = undefined;
 var face_ready = [_]bool{false} ** 4;
+var external_faces: [4]Face = undefined;
+var external_face_ready = [_]bool{false} ** 4;
+var external_face_data = [_]?[]u8{null} ** 4;
 
 pub fn cAlloc(len: usize) ?*anyopaque {
     const total = std.math.add(usize, len, 16) catch return null;
@@ -65,7 +68,11 @@ pub fn init() !void {
     context = c.kbts_CreateShapeContext(&kbAllocator, null) orelse return error.ShapeContextInitFailed;
 }
 
-fn ensureFace(style: u2) !*Face {
+fn ensureFace(font: u1, style: u2) !*Face {
+    if (font == 1) {
+        if (external_face_ready[style]) return &external_faces[style];
+        return error.ExternalFontMissing;
+    }
     if (face_ready[style]) return &faces[style];
     const data = switch (style) {
         0 => fonts.regular,
@@ -78,6 +85,22 @@ fn ensureFace(style: u2) !*Face {
     return &faces[style];
 }
 
+pub fn installExternalFace(style: u2, data: []u8) !void {
+    if (data.len == 0) return error.EmptyFont;
+    if (external_face_ready[style]) {
+        c.kbts_FreeFont(&external_faces[style].shape);
+        if (external_face_data[style]) |old_data| cFree(@ptrCast(old_data.ptr));
+        external_face_ready[style] = false;
+        external_face_data[style] = null;
+    }
+    initFace(&external_faces[style], data) catch |err| {
+        cFree(@ptrCast(data.ptr));
+        return err;
+    };
+    external_face_data[style] = data;
+    external_face_ready[style] = true;
+}
+
 fn initFace(face: *Face, data: []const u8) !void {
     if (data.len > std.math.maxInt(c_int)) return error.FontTooLarge;
     face.shape = c.kbts_FontFromMemory(@ptrCast(@constCast(data.ptr)), @intCast(data.len), 0, &kbAllocator, null);
@@ -88,7 +111,9 @@ fn initFace(face: *Face, data: []const u8) !void {
 }
 
 pub fn render(
+    font: u1,
     style: u2,
+    ligatures: bool,
     input: []const Input,
     span_cells: u16,
     metrics: Metrics,
@@ -101,10 +126,21 @@ pub fn render(
     if (mask.len < required) return error.MaskTooSmall;
     @memset(mask[0..required], 0);
 
-    const face = try ensureFace(style);
+    const face = try ensureFace(font, style);
     if (c.kbts_ShapePushFont(shape_context, &face.shape) == null)
         return error.ShapeFontPushFailed;
     defer _ = c.kbts_ShapePopFont(shape_context);
+
+    if (!ligatures) {
+        c.kbts_ShapePushFeature(shape_context, c.KBTS_FEATURE_TAG_liga, 0);
+        defer _ = c.kbts_ShapePopFeature(shape_context, c.KBTS_FEATURE_TAG_liga);
+        c.kbts_ShapePushFeature(shape_context, c.KBTS_FEATURE_TAG_clig, 0);
+        defer _ = c.kbts_ShapePopFeature(shape_context, c.KBTS_FEATURE_TAG_clig);
+        c.kbts_ShapePushFeature(shape_context, c.KBTS_FEATURE_TAG_dlig, 0);
+        defer _ = c.kbts_ShapePopFeature(shape_context, c.KBTS_FEATURE_TAG_dlig);
+        c.kbts_ShapePushFeature(shape_context, c.KBTS_FEATURE_TAG_calt, 0);
+        defer _ = c.kbts_ShapePopFeature(shape_context, c.KBTS_FEATURE_TAG_calt);
+    }
 
     c.kbts_ShapeBegin(shape_context, c.KBTS_DIRECTION_LTR, c.KBTS_LANGUAGE_DONT_KNOW);
     for (input) |item|

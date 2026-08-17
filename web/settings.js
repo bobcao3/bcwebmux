@@ -4,6 +4,22 @@
 const STORAGE_KEY = "bcwebmux.settings.v1";
 const DEFAULT_PROFILE = "github-dark-high-contrast";
 const COLOR_FIELDS = ["background", "foreground", "surface", "border", "accent", "muted", "success", "danger"];
+export const FONT_OPTIONS = Object.freeze({
+  "jetbrains-mono": { name: "JetBrains Mono Nerd Font", cssFamily: "JetBrains Mono Nerd Font", wasmId: 0 },
+  "fira-code": {
+    name: "Fira Code",
+    cssFamily: "Fira Code",
+    wasmId: 1,
+    regularUrl: "https://cdn.jsdelivr.net/npm/firacode@6.2.0/distr/ttf/FiraCode-Regular.ttf",
+    boldUrl: "https://cdn.jsdelivr.net/npm/firacode@6.2.0/distr/ttf/FiraCode-Bold.ttf",
+  },
+});
+const DEFAULT_SETTINGS = Object.freeze({
+  fontFamily: "jetbrains-mono",
+  fontSize: 15,
+  ligatures: true,
+  perfMode: "simple",
+});
 
 export const BUILTIN_PROFILES = Object.freeze({
   "github-dark-high-contrast": {
@@ -47,7 +63,11 @@ function customAnsi(custom) {
 }
 
 function loadSettings() {
-  const fallback = { selected: DEFAULT_PROFILE, custom: { ...DEFAULT_CUSTOM, ansi: [...DEFAULT_CUSTOM.ansi] } };
+  const fallback = {
+    ...DEFAULT_SETTINGS,
+    selected: DEFAULT_PROFILE,
+    custom: { ...DEFAULT_CUSTOM, ansi: [...DEFAULT_CUSTOM.ansi] },
+  };
   try {
     const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || "null");
     if (!saved || typeof saved !== "object") return fallback;
@@ -55,7 +75,13 @@ function loadSettings() {
     for (const field of COLOR_FIELDS) custom[field] = normalizeColor(saved.custom?.[field], custom[field]);
     custom.ansi = customAnsi(custom);
     const selected = saved.selected === "custom" || BUILTIN_PROFILES[saved.selected] ? saved.selected : DEFAULT_PROFILE;
-    return { selected, custom };
+    const fontFamily = Object.hasOwn(FONT_OPTIONS, saved.fontFamily) ? saved.fontFamily : DEFAULT_SETTINGS.fontFamily;
+    const fontSize = Number.isInteger(saved.fontSize)
+      ? Math.min(32, Math.max(8, saved.fontSize))
+      : DEFAULT_SETTINGS.fontSize;
+    const ligatures = typeof saved.ligatures === "boolean" ? saved.ligatures : DEFAULT_SETTINGS.ligatures;
+    const perfMode = ["off", "simple", "detailed"].includes(saved.perfMode) ? saved.perfMode : DEFAULT_SETTINGS.perfMode;
+    return { fontFamily, fontSize, ligatures, perfMode, selected, custom };
   } catch {
     return fallback;
   }
@@ -64,7 +90,14 @@ function loadSettings() {
 function saveSettings(settings) {
   try {
     const custom = Object.fromEntries(COLOR_FIELDS.map(field => [field, settings.custom[field]]));
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({ selected: settings.selected, custom }));
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({
+      fontFamily: settings.fontFamily,
+      fontSize: settings.fontSize,
+      ligatures: settings.ligatures,
+      perfMode: settings.perfMode,
+      selected: settings.selected,
+      custom,
+    }));
   } catch {
     // Storage can be unavailable in private or locked-down contexts; the active theme still works.
   }
@@ -72,6 +105,15 @@ function saveSettings(settings) {
 
 function resolveProfile(settings) {
   return settings.selected === "custom" ? settings.custom : BUILTIN_PROFILES[settings.selected];
+}
+
+function resolveFont(settings) {
+  return { ...FONT_OPTIONS[settings.fontFamily], id: settings.fontFamily, size: settings.fontSize, ligatures: settings.ligatures };
+}
+
+function applyDocumentFont(font) {
+  document.documentElement.style.setProperty("--terminal-font", `"${font.cssFamily}", monospace`);
+  document.querySelector("#terminal").style.fontSize = `${font.size}px`;
 }
 
 function applyDocumentTheme(profile, id) {
@@ -87,9 +129,14 @@ export function initializeSettings() {
   const closeButton = document.querySelector("#settings-close");
   const profileList = document.querySelector("#profile-list");
   const customForm = document.querySelector("#custom-profile-form");
+  const customColorEditor = document.querySelector("#custom-color-editor");
+  const fontSettingsForm = document.querySelector("#font-settings-form");
+  const perfModeInputs = document.querySelectorAll('input[name="perfMode"]');
   const tablist = dialog.querySelector('[role="tablist"]');
   const settings = loadSettings();
   let onChange = () => {};
+  let onFontChange = () => {};
+  let onPerfChange = () => {};
   let onOpen = () => {};
   let onClose = () => {};
 
@@ -97,6 +144,10 @@ export function initializeSettings() {
     settings.selected = id;
     const profile = resolveProfile(settings);
     applyDocumentTheme(profile, id);
+    customColorEditor.hidden = id !== "custom";
+    if (id === "custom") {
+      for (const field of COLOR_FIELDS) customForm.elements[field].value = settings.custom[field];
+    }
     profileList.querySelectorAll("input").forEach(input => { input.checked = input.value === id; });
     if (persist) saveSettings(settings);
     onChange(profile);
@@ -128,6 +179,32 @@ export function initializeSettings() {
     label.append(radio, copy, swatches);
     profileList.append(label);
   }
+  {
+    const label = document.createElement("label");
+    label.className = "profile-option";
+    const radio = document.createElement("input");
+    radio.type = "radio";
+    radio.name = "color-profile";
+    radio.value = "custom";
+    radio.checked = settings.selected === "custom";
+    const copy = document.createElement("span");
+    copy.className = "profile-copy";
+    const title = document.createElement("strong");
+    title.textContent = settings.custom.name;
+    const description = document.createElement("small");
+    description.textContent = settings.custom.description;
+    copy.append(title, description);
+    const swatches = document.createElement("span");
+    swatches.className = "profile-swatches";
+    swatches.setAttribute("aria-hidden", "true");
+    for (const color of [settings.custom.background, settings.custom.foreground, settings.custom.accent, settings.custom.success, settings.custom.danger]) {
+      const swatch = document.createElement("i");
+      swatch.style.background = color;
+      swatches.append(swatch);
+    }
+    label.append(radio, copy, swatches);
+    profileList.append(label);
+  }
 
   const setTab = id => {
     dialog.querySelectorAll('[role="tab"]').forEach(tab => {
@@ -135,12 +212,17 @@ export function initializeSettings() {
       tab.setAttribute("aria-selected", String(active));
       tab.tabIndex = active ? 0 : -1;
     });
-    dialog.querySelector("#settings-panel-profiles").hidden = id !== "profiles";
-    dialog.querySelector("#settings-panel-custom").hidden = id !== "custom";
+    dialog.querySelectorAll('[role="tabpanel"]').forEach(panel => {
+      panel.hidden = panel.id !== `settings-panel-${id}`;
+    });
   };
 
   openButton.addEventListener("click", () => {
     for (const field of COLOR_FIELDS) customForm.elements[field].value = settings.custom[field];
+    fontSettingsForm.elements.fontFamily.value = settings.fontFamily;
+    fontSettingsForm.elements.fontSize.value = settings.fontSize;
+    fontSettingsForm.elements.ligatures.checked = settings.ligatures;
+    for (const input of perfModeInputs) input.checked = input.value === settings.perfMode;
     onOpen();
     dialog.showModal();
     dialog.querySelector('[role="tab"][aria-selected="true"]').focus();
@@ -173,13 +255,49 @@ export function initializeSettings() {
     event.preventDefault();
     for (const field of COLOR_FIELDS) settings.custom[field] = normalizeColor(customForm.elements[field].value, DEFAULT_CUSTOM[field]);
     settings.custom.ansi = customAnsi(settings.custom);
+    const customOption = profileList.querySelector('input[value="custom"]').closest(".profile-option");
+    [settings.custom.background, settings.custom.foreground, settings.custom.accent, settings.custom.success, settings.custom.danger]
+      .forEach((color, index) => { customOption.querySelectorAll(".profile-swatches i")[index].style.background = color; });
     activate("custom");
   });
+  fontSettingsForm.elements.fontFamily.value = settings.fontFamily;
+  fontSettingsForm.elements.fontSize.value = settings.fontSize;
+  fontSettingsForm.elements.ligatures.checked = settings.ligatures;
+  fontSettingsForm.addEventListener("change", () => {
+    settings.ligatures = fontSettingsForm.elements.ligatures.checked;
+    settings.fontFamily = Object.hasOwn(FONT_OPTIONS, fontSettingsForm.elements.fontFamily.value)
+      ? fontSettingsForm.elements.fontFamily.value
+      : DEFAULT_SETTINGS.fontFamily;
+    settings.fontSize = Number.isInteger(Number(fontSettingsForm.elements.fontSize.value))
+      ? Math.min(32, Math.max(8, Number(fontSettingsForm.elements.fontSize.value)))
+      : DEFAULT_SETTINGS.fontSize;
+    const font = resolveFont(settings);
+    applyDocumentFont(font);
+    saveSettings(settings);
+    onFontChange(font);
+  });
+  for (const input of perfModeInputs) {
+    input.checked = input.value === settings.perfMode;
+    input.addEventListener("change", () => {
+      if (!input.checked) return;
+      settings.perfMode = ["off", "simple", "detailed"].includes(input.value)
+        ? input.value
+        : DEFAULT_SETTINGS.perfMode;
+      saveSettings(settings);
+      onPerfChange(settings.perfMode);
+    });
+  }
 
   applyDocumentTheme(resolveProfile(settings), settings.selected);
+  customColorEditor.hidden = settings.selected !== "custom";
+  applyDocumentFont(resolveFont(settings));
   return {
     get profile() { return resolveProfile(settings); },
+    get font() { return resolveFont(settings); },
+    get perfMode() { return settings.perfMode; },
     setOnChange(callback) { onChange = callback || (() => {}); },
+    setOnFontChange(callback) { onFontChange = callback || (() => {}); },
+    setOnPerfChange(callback) { onPerfChange = callback || (() => {}); },
     setLifecycle(callbacks = {}) {
       onOpen = typeof callbacks.onOpen === "function" ? callbacks.onOpen : () => {};
       onClose = typeof callbacks.onClose === "function" ? callbacks.onClose : () => {};

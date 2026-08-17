@@ -20,6 +20,8 @@ var text_backend: TextBackend = .kb_stb;
 var font_cell_width: u16 = 0;
 var font_cell_height: u16 = 0;
 var font_size_px: u16 = 0;
+var selected_font: u1 = 0;
+var ligatures_enabled = true;
 var run_mask: [4 * 1024 * 1024]u8 align(64) = undefined;
 var font_inputs: [max_cells]font_engine.Input = undefined;
 const Theme = struct {
@@ -156,6 +158,12 @@ pub fn setFontMetrics(cell_width: u16, cell_height: u16, font_size_px_value: u16
     font_size_px = font_size_px_value;
 }
 
+pub fn setFont(font: u1, ligatures: bool) void {
+    if (selected_font != font or ligatures_enabled != ligatures) bitmap_cache_reset = true;
+    selected_font = font;
+    ligatures_enabled = ligatures;
+}
+
 pub fn init(cols: usize, rows: usize) bool {
     const backend_value = gpu_text_backend();
     if (backend_value > 1) return false;
@@ -236,7 +244,7 @@ fn submitKbStb(state: *ghostty.RenderState, terminal: *ghostty.Terminal) !void {
             }
             const start = x;
             var end = @min(cols, x + @as(usize, raw.gridWidth()));
-            if (raw.wide == .narrow and !raw.hasGrapheme() and isLigatureCandidate(raw.codepoint())) {
+            if (ligatures_enabled and raw.wide == .narrow and !raw.hasGrapheme() and isLigatureCandidate(raw.codepoint())) {
                 const first = cells[y * cols + start];
                 const cursor_x: ?usize = if (cursor != null and cursor.?.y == y) cursor.?.x else null;
                 if (cursor_x != start) {
@@ -285,7 +293,7 @@ fn submitKbStb(state: *ghostty.RenderState, terminal: *ghostty.Terminal) !void {
                 }
             } else {
                 cache_misses += 1;
-                _ = try font_engine.render(style_index, font_inputs[0..input_count], span, .{
+                _ = try font_engine.render(selected_font, style_index, ligatures_enabled, font_inputs[0..input_count], span, .{
                     .cell_width = font_cell_width,
                     .cell_height = font_cell_height,
                     .font_size_px = font_size_px,

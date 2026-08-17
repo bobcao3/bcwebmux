@@ -46,6 +46,8 @@ let wasm;
 let socket;
 let renderer;
 let outputDecoder;
+let externalFontInstalled = false;
+let fontChangeGeneration = 0;
 let framePending = false;
 let frameDirty = false;
 let submittedSinceAnimationFrame = false;
@@ -62,10 +64,10 @@ const outstandingRttProbes = new Map();
 const rttSamples = [];
 const settings = initializeSettings();
 await Promise.all([
-  document.fonts.load("normal 400 15px 'JetBrains Mono Nerd Font'"),
-  document.fonts.load("normal 700 15px 'JetBrains Mono Nerd Font'"),
-  document.fonts.load("italic 400 15px 'JetBrains Mono Nerd Font'"),
-  document.fonts.load("italic 700 15px 'JetBrains Mono Nerd Font'"),
+  document.fonts.load(`normal 400 ${settings.font.size}px "${settings.font.cssFamily}"`),
+  document.fonts.load(`normal 700 ${settings.font.size}px "${settings.font.cssFamily}"`),
+  document.fonts.load(`italic 400 ${settings.font.size}px "${settings.font.cssFamily}"`),
+  document.fonts.load(`italic 700 ${settings.font.size}px "${settings.font.cssFamily}"`),
 ]);
 await document.fonts.ready;
 const measuredMetrics = measureCells();
@@ -272,6 +274,8 @@ let latestPixelViewport = initialPixelViewport;
 const initialLayout = physicalLayout(initialPixelViewport);
 const initial = { cols: initialLayout.cols, rows: initialLayout.rows };
 settings.setOnChange(applyColorProfile);
+settings.setOnFontChange(applyFontSettings);
+settings.setOnPerfChange(applyPerfMode);
 try {
   renderer = await GpuTerminal.create(screen, initialPixelViewport, textRenderer);
   renderer.setPhysicalCellMetrics(
@@ -288,6 +292,8 @@ wasm = result.instance.exports;
 if (wasm.term_init(initial.cols, initial.rows) !== 1) throw new Error("terminal initialization failed");
 resizeTerminal();
 applyColorProfile(settings.profile);
+await applyFontSettings(settings.font);
+applyPerfMode(settings.perfMode);
 connect();
 scheduleFrame();
 updateTelemetry();
@@ -446,14 +452,79 @@ function applyColorProfile(profile) {
   scheduleFrame(true);
 }
 
+async function configureWasmFont(font) {
+  if (font.wasmId === 1 && !externalFontInstalled) {
+    const responses = await Promise.all([
+      fetch(font.regularUrl),
+      fetch(font.boldUrl),
+    ]);
+    for (const response of responses) {
+      if (!response.ok) throw new Error(`font fetch failed: ${response.status}`);
+    }
+    const [regular, bold] = await Promise.all(responses.map((response) => response.arrayBuffer()));
+    for (const [style, bytes] of [
+      [0, regular],
+      [2, regular],
+      [1, bold],
+      [3, bold],
+    ]) {
+      const data = new Uint8Array(bytes);
+      const ptr = wasm.bc_font_alloc(data.length);
+      if (!ptr) throw new Error("WASM font allocation failed");
+      new Uint8Array(wasm.memory.buffer, ptr, data.length).set(data);
+      if (wasm.term_font_install(style, ptr, data.length) !== 1) {
+        throw new Error("WASM font installation failed");
+      }
+    }
+    externalFontInstalled = true;
+  }
+  if (wasm.term_set_font(font.wasmId, font.ligatures ? 1 : 0) !== 1) {
+    throw new Error("WASM font configuration failed");
+  }
+}
+
+async function applyFontSettings(font) {
+  const generation = ++fontChangeGeneration;
+  try {
+    await Promise.all([
+      document.fonts.load(`normal 400 ${font.size}px "${font.cssFamily}"`),
+      document.fonts.load(`normal 700 ${font.size}px "${font.cssFamily}"`),
+      document.fonts.load(`italic 400 ${font.size}px "${font.cssFamily}"`),
+      document.fonts.load(`italic 700 ${font.size}px "${font.cssFamily}"`),
+    ]);
+    await document.fonts.ready;
+    if (generation !== fontChangeGeneration) return;
+    await configureWasmFont(font);
+    if (generation !== fontChangeGeneration) return;
+    Object.assign(measuredMetrics, measureCells());
+    resizeTerminal(latestPixelViewport);
+    scheduleFrame(true);
+  } catch (error) {
+    if (generation === fontChangeGeneration) {
+      setConnectionStatus(false, error.message || "font error");
+    }
+  }
+}
+
+function applyPerfMode(mode) {
+  const normalized = ["off", "simple", "detailed"].includes(mode) ? mode : "detailed";
+  perf.dataset.mode = normalized;
+  perf.hidden = normalized === "off";
+  if (renderer) updateTelemetry();
+}
+
 function updateTelemetry() {
+  const mode = perf.dataset.mode || "detailed";
+  if (mode === "off") return;
   const stats = renderer.stats;
   const atlasUsed = stats.atlasGlyphs ?? 0;
   const atlasCapacity = stats.atlasCapacity ?? 0;
   const atlasPercent = atlasCapacity ? Math.round(atlasUsed * 100 / atlasCapacity) : 0;
   const cacheHits = stats.cacheHits ?? 0;
   const cacheMisses = stats.cacheMisses ?? 0;
-  const line = [
+  const line = mode === "simple"
+    ? `R: ${formatBytes(state.rxWireBytes)} · S: ${formatBytes(state.txBytes)} · WS RTT: ${formatMs(state.wsRttLatestMs)} ms · WASM: ${formatMs(state.wasmFrameMs)} ms`
+    : [
     `WASM frame: ${formatMs(state.wasmFrameMs)} ms · parse: ${formatMs(state.wasmParseMs)} ms`,
     `GPU submit: ${formatMs(stats.frameMs)} ms · presentation opportunity: ${formatMs(stats.presentationOpportunityMs)} ms`,
     `Queue drain: ${formatMs(stats.queueDrainMs)} ms`,

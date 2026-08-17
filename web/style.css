@@ -33,6 +33,22 @@
   font-display: block;
 }
 
+@font-face {
+  font-family: "Fira Code";
+  src: url("https://cdn.jsdelivr.net/npm/firacode@6.2.0/distr/ttf/FiraCode-Regular.ttf") format("truetype");
+  font-style: normal;
+  font-weight: 400;
+  font-display: block;
+}
+
+@font-face {
+  font-family: "Fira Code";
+  src: url("https://cdn.jsdelivr.net/npm/firacode@6.2.0/distr/ttf/FiraCode-Bold.ttf") format("truetype");
+  font-style: normal;
+  font-weight: 700;
+  font-display: block;
+}
+
 :root {
   color-scheme: dark;
   --color-background: #0a0c10;
@@ -246,6 +262,8 @@ body {
   pointer-events: none;
 }
 
+#perf[data-mode="simple"] { white-space: nowrap; }
+
 #terminal.flash {
   filter: brightness(1.35);
 }
@@ -452,12 +470,25 @@ body {
 #custom-profile-form button:hover,
 #custom-profile-form button:focus-visible { background: var(--color-foreground); border-color: var(--color-foreground); outline: 0; }
 
+#custom-color-editor { margin-top: 18px; }
+#font-settings-form { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 18px; }
+#font-settings-form label { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 12px; padding: 8px 10px; border: 2px solid var(--color-border); color: var(--color-muted); font-size: 11px; text-transform: uppercase; }
+#font-settings-form select,
+#font-settings-form input[type="number"] { min-width: 0; height: 30px; padding: 0 6px; border: 2px solid var(--color-border); border-radius: 0; background: var(--color-background); color: var(--color-foreground); font: inherit; }
+.inline-toggle { display: grid; grid-template-columns: repeat(3, 1fr); }
+.inline-toggle input { position: absolute; width: 1px; height: 1px; opacity: 0; }
+.inline-toggle label { padding: 9px 8px; border: 2px solid var(--color-border); border-right: 0; background: var(--color-background); color: var(--color-muted); font-size: 11px; text-align: center; }
+.inline-toggle label:last-child { border-right: 2px solid var(--color-border); }
+.inline-toggle label:has(input:checked) { border-color: var(--color-accent); background: var(--color-accent); color: var(--color-background); }
+
 @media (max-width: 560px) {
   #settings-dialog { width: calc(100vw - 24px); max-height: calc(100vh - 48px); }
   #settings-dialog [role="tabpanel"] { max-height: calc(100vh - 142px); padding: 12px; }
+  #settings-dialog [role="tab"] { flex: 1 1 0; min-width: 0; padding: 0 8px; }
   #settings-dialog fieldset { padding: 10px; }
   .profile-option { grid-template-columns: 1fr; }
   .profile-swatches { justify-self: start; }
   #custom-profile-form { grid-template-columns: 1fr; }
+  #font-settings-form { grid-template-columns: 1fr; }
   #custom-profile-form button { grid-column: auto; }
 }
