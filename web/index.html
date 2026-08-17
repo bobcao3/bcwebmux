@@ -5,14 +5,23 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,interactive-widget=resizes-content">
+  <meta name="theme-color" content="#0a0c10">
+  <meta name="application-name" content="bcwebmux">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="bcwebmux">
   <title>bcwebmux</title>
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="icon" type="image/svg+xml" href="/icons/bcwebmux.svg">
+  <link rel="apple-touch-icon" sizes="180x180" href="/icons/bcwebmux-180.png">
   <link rel="stylesheet" href="/style.css">
 </head>
 <body>
   <main id="terminal">
     <section id="terminal-viewport" role="application" aria-label="Terminal">
       <div id="scroll">
-        <div id="spacer"></div>
+        <div id="spacer"><div id="text-view" aria-hidden="true"></div></div>
       </div>
       <textarea id="input" aria-label="Terminal input" aria-multiline="false" autocapitalize="off" autocomplete="off" autocorrect="off" spellcheck="false" inputmode="text" enterkeyhint="enter" rows="1"></textarea>
       <canvas id="screen" role="img" aria-label="Terminal screen"></canvas>

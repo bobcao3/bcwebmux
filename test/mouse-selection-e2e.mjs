@@ -229,9 +229,66 @@ try {
     },
   });
 
+  const touch = point(1, 1);
+  const dispatchTouch = async type => await evaluate(`(() => {
+    document.querySelector("#scroll").dispatchEvent(new PointerEvent(${JSON.stringify(type)}, {
+      bubbles: true,
+      pointerId: 7,
+      pointerType: "touch",
+      isPrimary: true,
+      clientX: ${touch.x},
+      clientY: ${touch.y},
+      button: ${type === "pointerdown" ? 0 : -1},
+      buttons: ${type === "pointerdown" ? 1 : 0},
+    }));
+  })()`);
+  const dispatchTouchClick = async () => await evaluate(`document.querySelector("#scroll").dispatchEvent(new MouseEvent("click", {
+    bubbles: true,
+    clientX: ${touch.x},
+    clientY: ${touch.y},
+  }))`);
+  await runTranscript({
+    mode: 1000,
+    expected: "\\033[<0;2;2M\\033[<0;2;2m",
+    input: async () => {
+      await dispatchTouch("pointerdown");
+      await dispatchTouch("pointerup");
+      await dispatchTouchClick();
+    },
+  });
+
+  const longPressScreen = "printf '\\033[?1000h\\033[2J\\033[H\\033[48;2;255;128;0m \\033[0m'\r";
+  await evaluate(`window.bcwebmux.write(${JSON.stringify(longPressScreen)})`);
+  await waitCellColor(0, 0, [255, 128, 0], "long-touch fixture did not render");
+  await evaluate("document.querySelector('#input').blur()");
+  assert.notEqual(await evaluate("document.activeElement === document.querySelector('#input')"), true, "keyboard input was active before long touch");
+  const txBeforeLongTouch = await evaluate("window.bcwebmux.state.txBytes");
+  await dispatchTouch("pointerdown");
+  await new Promise(resolve => setTimeout(resolve, 450));
+  await dispatchTouch("pointerup");
+  await dispatchTouchClick();
+  assert.equal(await evaluate("window.bcwebmux.state.txBytes"), txBeforeLongTouch, "long touch emitted PTY mouse reports");
+  assert.notEqual(await evaluate("document.activeElement === document.querySelector('#input')"), true, "long touch refocused keyboard input");
+  await evaluate(`window.bcwebmux.write(${JSON.stringify("printf '\\033[?1000l\\033[?1002l\\033[?1003l\\033[?1006l'\r")})`);
+
   const selectionScreen = "printf '\\033[?1000l\\033[?1002l\\033[?1003l\\033[?1006l\\033[2J\\033[H\\033[38;2;240;240;240m\\033[48;2;127;127;127mAé中Z \\033[0m\\033[10;1H'\r";
   await evaluate(`window.bcwebmux.write(${JSON.stringify(selectionScreen)})`);
   await waitCellColor(0, 0, [127, 127, 127], "selection fixture did not render");
+  const txBeforeDomSelection = await evaluate("window.bcwebmux.state.txBytes");
+  await evaluate(`(() => {
+    const first = document.querySelector('#text-view .text-row[data-row="0"] [data-start="1"]');
+    const second = document.querySelector('#text-view .text-row[data-row="0"] [data-start="2"]');
+    const range = document.createRange();
+    range.setStart(first.firstChild, 0);
+    range.setEnd(second.firstChild, second.firstChild.length);
+    const selection = window.getSelection();
+    selection.removeAllRanges();
+    selection.addRange(range);
+  })()`);
+  await waitFor(async () => evaluate("window.bcwebmux.selectionText() === 'é中'"), 1500, () => "DOM selection text mismatch");
+  assert.equal(await evaluate("window.bcwebmux.state.txBytes"), txBeforeDomSelection, "DOM selection emitted PTY bytes");
+  await evaluate("window.getSelection().removeAllRanges()");
+  await waitFor(async () => evaluate("window.bcwebmux.selectionText() === null"), 1500, () => "DOM selection was not cleared");
   const txBeforeSelection = await evaluate("window.bcwebmux.state.txBytes");
   await dispatchPress(1, 0, 0, 0.3);
   await dispatchMove(2, 0, 1, 0, 0.8);
@@ -423,6 +480,16 @@ try {
   assert.equal(await evaluate("window.bcwebmux.state.txBytes"), txBeforeThumbDrag, "scrollbar thumb drag emitted mouse reports");
   assert.equal(await evaluate("window.bcwebmux.selectionText()"), selectionBeforeThumbDrag, "scrollbar thumb drag changed local selection");
   await evaluate(`window.bcwebmux.write(${JSON.stringify("printf '\\033[?1003l'\r")})`);
+  await pageCdp.call("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 1 });
+  await evaluate("new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))");
+  const coarseHitTarget = await evaluate(`(() => {
+    const element = document.elementFromPoint(${point(1, 1).x}, ${point(1, 1).y});
+    const textView = document.querySelector("#text-view");
+    return element === textView || textView.contains(element);
+  })()`);
+  assert.ok(coarseHitTarget, "coarse pointer hit target was not #text-view");
+  assert.notEqual(await evaluate("getComputedStyle(document.querySelector('#text-view')).pointerEvents"), "none");
+  assert.equal(await evaluate("getComputedStyle(document.querySelector('#input')).pointerEvents"), "none");
 
   const exceptions = pageCdp.events.filter(event => event.method === "Runtime.exceptionThrown");
   assert.deepEqual(exceptions, [], JSON.stringify(exceptions));

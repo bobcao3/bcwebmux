@@ -327,6 +327,53 @@ export fn term_selection(action_raw: u8, x: f32, y: f32) i32 {
     return 1;
 }
 
+export fn term_selection_clear() i32 {
+    if (busy) return 0;
+    const value = if (terminal) |*t| t else return 0;
+    busy = true;
+    defer busy = false;
+    selection_gesture.reset(value);
+    value.screens.active.clearSelection();
+    return 1;
+}
+
+export fn term_selection_set_range(start_row: u32, start_col: u32, end_row: u32, end_col: u32) i32 {
+    if (busy) return 0;
+    const value = if (terminal) |*t| t else return 0;
+    if (start_row >= @as(u32, value.rows) or end_row >= @as(u32, value.rows) or
+        start_col > @as(u32, value.cols) or end_col > @as(u32, value.cols))
+        return 0;
+
+    const columns: u64 = value.cols;
+    const total_cells: u64 = @as(u64, value.rows) * columns;
+    const start_boundary: u64 = @as(u64, start_row) * columns + start_col;
+    const end_boundary: u64 = @as(u64, end_row) * columns + end_col;
+    if (start_boundary >= end_boundary) {
+        busy = true;
+        defer busy = false;
+        selection_gesture.reset(value);
+        value.screens.active.clearSelection();
+        return 1;
+    }
+    if (start_boundary >= total_cells) return 0;
+
+    const end_cell = end_boundary - 1;
+    const screen = value.screens.active;
+    const start_pin = screen.pages.pin(.{ .viewport = .{
+        .x = @intCast(start_boundary % columns),
+        .y = @intCast(start_boundary / columns),
+    } }) orelse return 0;
+    const end_pin = screen.pages.pin(.{ .viewport = .{
+        .x = @intCast(end_cell % columns),
+        .y = @intCast(end_cell / columns),
+    } }) orelse return 0;
+    busy = true;
+    defer busy = false;
+    selection_gesture.reset(value);
+    screen.select(ghostty.Selection.init(start_pin, end_pin, false)) catch return 0;
+    return 1;
+}
+
 export fn term_selection_snapshot() i32 {
     if (busy) return -1;
     freeSelectionSnapshot();

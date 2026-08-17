@@ -2,6 +2,7 @@
 // Copyright (c) 2026 Cheng Cao
 
 import { GpuTerminal } from "./gpu.js";
+import { TerminalTextView } from "./text-view.js";
 import { Decompress } from "/fzstd.js";
 import { initializeSettings } from "./settings.js";
 
@@ -10,6 +11,7 @@ const terminalViewport = document.querySelector("#terminal-viewport");
 const perf = document.querySelector("#perf");
 const scroll = document.querySelector("#scroll");
 const spacer = document.querySelector("#spacer");
+const textView = document.querySelector("#text-view");
 const screen = document.querySelector("#screen");
 const input = document.querySelector("#input");
 const compositionView = document.querySelector("#composition");
@@ -59,8 +61,13 @@ let reconnectDelay = 250;
 let openedOnce = false;
 let softModifiers = 0;
 let suppressScroll = false;
+let latestScrollTotal = 0;
+let latestScrollLength = 0;
 let encodedRightClick = false;
 let activeMouseGesture = null;
+let touchCandidate = null;
+const touchMoveThreshold = 8;
+const touchLongPressThreshold = 400;
 const suppressedMousePointerUps = new Set();
 const suppressedShortcutKeyUps = new Set();
 let pendingRxAt = 0;
@@ -68,6 +75,22 @@ let pendingInputAt = 0;
 let rttProbeSequence = 0;
 const outstandingRttProbes = new Map();
 const rttSamples = [];
+const terminalTextView = new TerminalTextView(textView, {
+  setSelection(start, end) {
+    const handled = wasm.term_selection_set_range(start.row, start.col, end.row, end.col) === 1;
+    if (handled) scheduleFrame(true);
+    return handled;
+  },
+  clearSelection() {
+    if (!wasm) return false;
+    const handled = wasm.term_selection_clear() === 1;
+    if (handled) scheduleFrame(true);
+    return handled;
+  },
+  selectionText() {
+    return getSelectedText();
+  },
+});
 await Promise.all([
   document.fonts.load(`normal 400 ${settings.font.size}px "${settings.font.cssFamily}"`),
   document.fonts.load(`normal 700 ${settings.font.size}px "${settings.font.cssFamily}"`),
@@ -269,9 +292,18 @@ const imports = {
         return 0;
       }
     },
-    gpu_submit(framePtr, cellsPtr) {
+    gpu_submit(framePtr, cellsPtr, textRowsPtr, textCellsPtr, textBytesPtr, textBytesLen, textChanged) {
       try {
-        submitGpuFrame(framePtr, cellsPtr);
+        const metadata = submitGpuFrame(framePtr, cellsPtr);
+        terminalTextView.update(
+          wasm.memory.buffer,
+          metadata,
+          textRowsPtr,
+          textCellsPtr,
+          textBytesPtr,
+          textBytesLen,
+          textChanged !== 0,
+        );
         return 1;
       } catch (error) {
         console.error(error);
@@ -397,8 +429,13 @@ function submitGpuFrame(framePtr, cellsPtr) {
   }
   state.cols = metadata.cols;
   state.rows = metadata.rows;
+  latestScrollTotal = metadata.scrollTotal;
+  latestScrollLength = metadata.scrollLength;
   spacer.style.height = `${Math.max(metadata.scrollTotal, metadata.scrollLength) * cssCellMetrics.height}px`;
-  const targetScroll = metadata.scrollOffset * cssCellMetrics.height;
+  const logicalBottom = Math.max(0, metadata.scrollTotal - metadata.scrollLength);
+  const targetScroll = metadata.scrollOffset >= logicalBottom
+    ? Math.max(0, scroll.scrollHeight - scroll.clientHeight)
+    : metadata.scrollOffset * cssCellMetrics.height;
   if (Math.abs(scroll.scrollTop - targetScroll) > 0.5) {
     suppressScroll = true;
     scroll.scrollTop = targetScroll;
@@ -408,6 +445,7 @@ function submitGpuFrame(framePtr, cellsPtr) {
   }
   terminalInput.sync();
   state.frames += 1;
+  return metadata;
 }
 
 function renderFrame() {
@@ -787,6 +825,7 @@ class TerminalInput {
   pendingComposition = "";
   commitTimer = 0;
   manualCommit = false;
+  heldHardwareModifiers = 0;
 
   constructor() {
     this.clear();
@@ -827,6 +866,34 @@ class TerminalInput {
     this.resetGeometry();
   }
 
+  discardBufferedComposition() {
+    clearTimeout(this.commitTimer);
+    this.commitTimer = 0;
+    this.isComposing = false;
+    this.isSendingComposition = false;
+    this.manualCommit = false;
+    this.pendingComposition = "";
+    input.value = "";
+    compositionView.textContent = "";
+    compositionView.classList.remove("active");
+    this.resetGeometry();
+  }
+
+  updateHardwareModifiers(event) {
+    // Keep Android's virtual-keyboard Shift under IME control; changing inputMode retracts it.
+    const modifiers = modifierBits(event) & 0x0e;
+    const wasHeld = this.heldHardwareModifiers !== 0;
+    const isHeld = modifiers !== 0;
+    if (isHeld && !wasHeld) this.discardBufferedComposition();
+    if (isHeld !== wasHeld) input.inputMode = isHeld ? "none" : "text";
+    this.heldHardwareModifiers = modifiers;
+  }
+
+  releaseModifiers() {
+    this.heldHardwareModifiers = 0;
+    input.inputMode = "text";
+  }
+
   sync() {
     if (!this.isComposing) return;
     const x = Math.max(0, renderer.cursorX === 0xffff ? 0 : renderer.cursorX) * cssCellMetrics.width;
@@ -851,6 +918,10 @@ class TerminalInput {
   }
 
   compositionStart() {
+    if (this.heldHardwareModifiers) {
+      this.discardBufferedComposition();
+      return;
+    }
     this.clear();
     this.isComposing = true;
     this.isSendingComposition = false;
@@ -860,6 +931,10 @@ class TerminalInput {
   }
 
   compositionUpdate(event) {
+    if (this.heldHardwareModifiers || !this.isComposing) {
+      this.discardBufferedComposition();
+      return;
+    }
     if (inputDiagnostics.enabled) {
       inputDiagnostics.log("ime_composition_update", {
         data: event.data || "",
@@ -874,6 +949,10 @@ class TerminalInput {
   }
 
   compositionEnd(event) {
+    if (this.heldHardwareModifiers) {
+      this.discardBufferedComposition();
+      return;
+    }
     if (inputDiagnostics.enabled) {
       inputDiagnostics.log("ime_composition_end", {
         isComposing: this.isComposing,
@@ -885,6 +964,10 @@ class TerminalInput {
       this.manualCommit = false;
       return;
     }
+    if (!this.isComposing) {
+      this.discardBufferedComposition();
+      return;
+    }
     this.isComposing = false;
     this.isSendingComposition = true;
     this.pendingComposition = event.data || this.pendingComposition;
@@ -893,6 +976,7 @@ class TerminalInput {
   }
 
   keyDown(event) {
+    this.updateHardwareModifiers(event);
     const code = eventCode(event);
     if (inputDiagnostics.enabled) {
       inputDiagnostics.log("ime_keydown", {
@@ -902,6 +986,10 @@ class TerminalInput {
         composing: this.isComposing,
         sending: this.isSendingComposition,
       });
+    }
+    if (this.heldHardwareModifiers) {
+      this.discardBufferedComposition();
+      return true;
     }
     if (this.commitTimer) this.finishComposition();
     if (this.isComposing) {
@@ -915,10 +1003,24 @@ class TerminalInput {
     return true;
   }
 
-  keyUp() {
+  keyUp(event) {
+    this.updateHardwareModifiers(event);
+  }
+
+  beforeInput(event) {
+    const compositionEvent = event.isComposing || event.inputType?.includes("Composition");
+    if (this.heldHardwareModifiers || (compositionEvent && !this.isComposing && !this.isSendingComposition)) {
+      if (event.cancelable) event.preventDefault();
+      this.discardBufferedComposition();
+    }
   }
 
   inputEvent(event) {
+    const compositionEvent = event.isComposing || event.inputType?.includes("Composition");
+    if (this.heldHardwareModifiers || (compositionEvent && !this.isComposing && !this.isSendingComposition)) {
+      this.discardBufferedComposition();
+      return;
+    }
     if (inputDiagnostics.enabled) {
       inputDiagnostics.log("ime_input", {
         inputType: event.inputType,
@@ -965,13 +1067,14 @@ class TerminalFocusController {
   suspended = false;
 
   focus() {
-    if (this.suspended || document.hidden) return;
+    if (this.suspended || document.hidden || terminalTextView.hasSelection()) return;
     input.focus({ preventScroll: true });
     terminalInput.sync();
     if (wasm && document.hasFocus()) wasm.term_focus(1);
   }
 
   restore() {
+    if (terminalTextView.hasSelection()) return;
     requestAnimationFrame(() => {
       const active = document.activeElement;
       if (active !== input && active !== document.body && active !== document.documentElement) return;
@@ -996,6 +1099,7 @@ class TerminalFocusController {
   }
 
   windowBlur() {
+    terminalInput.releaseModifiers();
     if (wasm) wasm.term_focus(0);
   }
 }
@@ -1070,11 +1174,11 @@ function isTerminalPointer(event) {
     event.clientY >= rect.top && event.clientY < rect.bottom;
 }
 
-function sendMouse(event, action, button) {
+function sendMouse(event, action, button, anyButtonPressed = event.buttons !== 0) {
   const rect = scroll.getBoundingClientRect();
   const x = Math.max(0, event.clientX - rect.left) * renderer.pixelScaleX;
   const y = Math.max(0, event.clientY - rect.top) * renderer.pixelScaleY;
-  return wasm.term_mouse(action, button, modifierBits(event), x, y, event.buttons !== 0 ? 1 : 0) === 1;
+  return wasm.term_mouse(action, button, modifierBits(event), x, y, anyButtonPressed ? 1 : 0) === 1;
 }
 
 function sendSelection(event, action) {
@@ -1167,15 +1271,36 @@ try {
 
 scroll.addEventListener("scroll", () => {
   if (suppressScroll) return;
-  const row = Math.max(0, Math.round(scroll.scrollTop / cssCellMetrics.height));
+  const atBottom = scroll.scrollTop + scroll.clientHeight >= scroll.scrollHeight - 1;
+  const row = atBottom
+    ? Math.max(0, latestScrollTotal - latestScrollLength)
+    : Math.max(0, Math.round(scroll.scrollTop / cssCellMetrics.height));
   if (wasm.term_scroll_row(row) === 1) scheduleFrame(true);
 }, { passive: true });
 
 scroll.addEventListener("pointerdown", (event) => {
   if (event.pointerType !== "touch") suppressedMousePointerUps.delete(event.pointerId);
+  if (event.pointerType === "touch") {
+    if (isTerminalPointer(event)) {
+      touchCandidate = {
+        pointerId: event.pointerId,
+        startX: event.clientX,
+        startY: event.clientY,
+        startedAt: Date.now(),
+        moved: false,
+        ended: false,
+        duration: 0,
+        suppress: false,
+      };
+    }
+    return;
+  }
   if (event.pointerType !== "touch" && !isTerminalPointer(event)) {
     encodedRightClick = false;
     return;
+  }
+  if (event.pointerType !== "touch" && terminalTextView.hasSelection()) {
+    terminalTextView.clearBrowserSelection(true);
   }
   if (event.pointerType !== "touch") terminalFocus.focus();
   if (event.pointerType !== "touch" && activeMouseGesture) {
@@ -1205,6 +1330,15 @@ scroll.addEventListener("pointerdown", (event) => {
   }
 }, { passive: false });
 scroll.addEventListener("pointerup", (event) => {
+  if (event.pointerType === "touch") {
+    const candidate = touchCandidate;
+    if (candidate?.pointerId === event.pointerId) {
+      candidate.ended = true;
+      candidate.duration = Date.now() - candidate.startedAt;
+      candidate.suppress = candidate.moved || candidate.duration >= touchLongPressThreshold;
+    }
+    return;
+  }
   if (suppressedMousePointerUps.has(event.pointerId)) {
     suppressedMousePointerUps.delete(event.pointerId);
     if (event.pointerType !== "touch") event.preventDefault();
@@ -1219,6 +1353,14 @@ scroll.addEventListener("pointerup", (event) => {
   if (encoded && event.pointerType !== "touch") event.preventDefault();
 }, { passive: false });
 scroll.addEventListener("pointermove", (event) => {
+  if (event.pointerType === "touch") {
+    if (touchCandidate?.pointerId === event.pointerId) {
+      const dx = event.clientX - touchCandidate.startX;
+      const dy = event.clientY - touchCandidate.startY;
+      if (Math.hypot(dx, dy) > touchMoveThreshold) touchCandidate.moved = true;
+    }
+    return;
+  }
   if (activeMouseGesture &&
       activeMouseGesture.pointerId === event.pointerId &&
       event.pointerType !== "touch") {
@@ -1235,6 +1377,10 @@ scroll.addEventListener("pointermove", (event) => {
   if (encoded && event.pointerType !== "touch") event.preventDefault();
 }, { passive: false });
 scroll.addEventListener("pointercancel", (event) => {
+  if (event.pointerType === "touch") {
+    if (touchCandidate?.pointerId === event.pointerId) touchCandidate = null;
+    return;
+  }
   if (finishMouseGesture(event, true)) event.preventDefault();
 }, { passive: false });
 scroll.addEventListener("lostpointercapture", (event) => {
@@ -1251,7 +1397,18 @@ scroll.addEventListener("contextmenu", (event) => {
   event.preventDefault();
 });
 scroll.addEventListener("click", (event) => {
+  if (terminalTextView.hasSelection()) {
+    touchCandidate = null;
+    return;
+  }
   if (!isTerminalPointer(event)) return;
+  if (touchCandidate?.ended) {
+    const suppress = touchCandidate.suppress;
+    touchCandidate = null;
+    if (suppress) return;
+    sendMouse(event, 0, 1, true);
+    sendMouse(event, 1, 1, false);
+  }
   event.preventDefault();
   terminalFocus.focus();
 });
@@ -1284,12 +1441,13 @@ input.addEventListener("keydown", async (event) => {
   }
 });
 input.addEventListener("keyup", (event) => {
-  terminalInput.keyUp();
+  terminalInput.keyUp(event);
   const code = eventCode(event);
   if (suppressedShortcutKeyUps.delete(code)) return;
   if (event.isComposing || isImeKeyEvent(event)) return;
   sendKey(event, 0);
 });
+input.addEventListener("beforeinput", (event) => terminalInput.beforeInput(event));
 input.addEventListener("compositionstart", () => terminalInput.compositionStart());
 input.addEventListener("compositionupdate", (event) => terminalInput.compositionUpdate(event));
 input.addEventListener("compositionend", (event) => terminalInput.compositionEnd(event));
@@ -1308,6 +1466,7 @@ input.addEventListener("copy", (event) => {
 input.addEventListener("focus", () => {
   terminalInput.sync();
 });
+input.addEventListener("blur", () => terminalInput.releaseModifiers());
 softkeys.addEventListener("pointerdown", (event) => {
   const button = event.target.closest?.("button");
   if (button) event.preventDefault();

@@ -71,7 +71,7 @@ const imePattern = "test \"$c\" = OK && printf '\\033[2J\\033[H\\033[48;2;255;25
 const softCommand = "stty -icanon -echo -isig min 2 time 0; printf '\\033[2J\\033[H\\033[48;2;64;64;64m \\033[0m'; dd of=/dev/null bs=2 count=1 2>/dev/null; stty sane; printf '\\033[2J\\033[H\\033[48;2;255;0;255m \\033[0mS\\n'\r";
 const mouseCommand = "stty -icanon -echo min 6 time 0; printf '\\033[?1000h\\033[2J\\033[H\\033[48;2;255;128;0m \\033[0m'; dd of=/dev/null bs=6 count=1 2>/dev/null; stty sane; printf '\\033[?1000l\\033[2J\\033[H\\033[48;2;0;255;255m \\033[0mM\\n'\r";
 const specialKeysCommand = "stty raw -echo; printf '\\033[2J\\033[H\\033[48;2;64;64;64m \\033[0m'; keys=$(dd bs=1 count=26 2>/dev/null); stty sane; test \"$keys\" = \"$(printf '\\033[A\\033[B\\033[D\\033[C\\033[H\\033[F\\033[5~\\033[6~')\" && printf '\\033[2J\\033[H\\033[48;2;0;255;0m \\033[0m'\r";
-const cursorMoveCommand = "stty raw -echo; printf '\\033[2J\\033[H\\033[2 q\\033[48;2;255;0;0m \\033[0m\\033[4G'; dd bs=1 count=3 2>/dev/null; printf '\\033[D'; sleep 1.5; stty sane\r";
+const cursorMoveCommand = "stty raw -echo; printf '\\033[2J\\033[H\\033[2 q\\033[48;2;255;0;0m \\033[0m\\033[4G'; dd of=/dev/null bs=1 count=3 2>/dev/null; printf '\\033[D'; sleep 1; stty sane\r";
 const historyCommand = "stty -ixon; printf '\\033[3J\\033[2J\\033[H\\033[48;2;255;0;255m \\033[0mHISTORY\\n'; seq 1 40\r";
 
 try {
@@ -193,14 +193,39 @@ try {
     const settingsClose = document.querySelector("#settings-close");
     const scroll = document.querySelector("#scroll");
     const softkeys = document.querySelector("#softkeys");
+    const controls = document.querySelector("#terminal-controls");
+    const status = document.querySelector("#status");
     if (!viewport.contains(scroll)) throw new Error("viewport does not contain scroll");
     if (!viewport.contains(canvas)) throw new Error("viewport does not contain canvas");
     if (!viewport.contains(input)) throw new Error("viewport does not contain input");
     if (!chrome.contains(softkeys)) throw new Error("chrome does not contain softkeys");
+    if (!chrome.contains(controls)) throw new Error("chrome does not contain terminal controls");
+    if (!chrome.contains(status)) throw new Error("chrome does not contain status");
     if (!chrome.contains(settingsButton)) throw new Error("chrome does not contain settings button");
     if (viewport.contains(chrome)) throw new Error("viewport contains chrome");
     if (viewport.contains(softkeys)) throw new Error("viewport contains softkeys");
     if (terminal.contains(settingsDialog)) throw new Error("terminal contains settings dialog");
+    const tolerance = 1;
+    const chromeRect = chrome.getBoundingClientRect();
+    const softkeysRect = softkeys.getBoundingClientRect();
+    const controlsRect = controls.getBoundingClientRect();
+    if (Math.abs(softkeysRect.top - chromeRect.top) > tolerance) throw new Error("softkeys do not start at chrome top");
+    if (Math.abs(controlsRect.top - softkeysRect.bottom) > tolerance) throw new Error("terminal controls do not start at softkeys bottom");
+    if (Math.abs(controlsRect.bottom - chromeRect.bottom) > tolerance) throw new Error("terminal controls do not end at chrome bottom");
+    for (const [name, element] of [["status", status], ["settings button", settingsButton]]) {
+      const rect = element.getBoundingClientRect();
+      const centerX = (rect.left + rect.right) / 2;
+      const centerY = (rect.top + rect.bottom) / 2;
+      if (
+        centerX < controlsRect.left - tolerance ||
+        centerX > controlsRect.right + tolerance ||
+        centerY < controlsRect.top - tolerance ||
+        centerY > controlsRect.bottom + tolerance ||
+        centerY < softkeysRect.bottom - tolerance
+      ) {
+        throw new Error(name + " center is not within the controls row");
+      }
+    }
     const capture = async () => {
       await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
       const image = await window.bcwebmux.readPixels();
@@ -398,6 +423,35 @@ try {
     scroll.dispatchEvent(new Event("scroll"));
     const historyPixels = await waitPixels(probe => near(probe.first[0], 255) && near(probe.first[1], 0) && near(probe.first[2], 255), "scrollback GPU pattern did not render");
     await sleep(260);
+    input.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true }));
+    input.value = "prediction";
+    input.dispatchEvent(new CompositionEvent("compositionupdate", { data: "prediction", bubbles: true }));
+    const modifierKeyStartBytes = window.bcwebmux.state.txBytes;
+    input.dispatchEvent(new KeyboardEvent("keydown", { key: "Control", code: "ControlLeft", ctrlKey: true, bubbles: true }));
+    if (input.value !== "") throw new Error("Control keydown did not clear predictive composition");
+    if (input.inputMode !== "none") throw new Error("Control keydown did not disable input mode");
+    input.dispatchEvent(new KeyboardEvent("keydown", { key: "b", code: "KeyB", keyCode: 229, ctrlKey: true, isComposing: true, bubbles: true }));
+    const beforeinputAccepted = input.dispatchEvent(new InputEvent("beforeinput", {
+      data: "b",
+      inputType: "insertCompositionText",
+      isComposing: true,
+      bubbles: true,
+      cancelable: true,
+    }));
+    if (beforeinputAccepted) throw new Error("Ctrl+B composition beforeinput was not prevented");
+    input.value = "b";
+    input.dispatchEvent(new InputEvent("input", { data: "b", inputType: "insertCompositionText", isComposing: true, bubbles: true }));
+    input.dispatchEvent(new KeyboardEvent("keyup", { key: "b", code: "KeyB", ctrlKey: true, bubbles: true }));
+    input.dispatchEvent(new KeyboardEvent("keyup", { key: "Control", code: "ControlLeft", bubbles: true }));
+    input.dispatchEvent(new CompositionEvent("compositionend", { data: "prediction", bubbles: true }));
+    await sleep(5);
+    if (input.inputMode !== "text") throw new Error("stale compositionend did not restore text input mode");
+    if (input.value !== "") throw new Error("stale compositionend did not clear input");
+    const modifierKeyBytes = window.bcwebmux.state.txBytes - modifierKeyStartBytes;
+    if (modifierKeyBytes !== 1) throw new Error("Ctrl+B sent an unexpected number of bytes: " + modifierKeyBytes);
+    input.dispatchEvent(new KeyboardEvent("keydown", { key: "Shift", code: "ShiftLeft", shiftKey: true, bubbles: true }));
+    if (input.inputMode !== "text") throw new Error("Shift keydown changed input mode");
+    input.dispatchEvent(new KeyboardEvent("keyup", { key: "Shift", code: "ShiftLeft", bubbles: true }));
 
     const state = window.bcwebmux.state;
     return {
@@ -408,6 +462,7 @@ try {
       specialKeysPixels,
       cursorMovePixels,
       historyPixels,
+      modifierKeyBytes,
       readbacks,
       elapsed: performance.now() - started,
       nativeViewport: {
@@ -450,9 +505,9 @@ try {
     },
     bottomBar: {
       x: 0,
-      y: Math.max(0, viewportHeight - 60),
+      y: Math.max(0, viewportHeight - 104),
       width: viewportWidth,
-      height: Math.min(60, viewportHeight),
+      height: Math.min(104, viewportHeight),
       scale: 1,
     },
   };
@@ -580,14 +635,18 @@ try {
       const screen = document.querySelector("#screen");
       const viewport = document.querySelector("#terminal-viewport");
       const chrome = document.querySelector("#terminal-chrome");
+      const textView = document.querySelector("#text-view");
+      const spacer = document.querySelector("#spacer");
       const inputRect = input.getBoundingClientRect();
       const screenRect = screen.getBoundingClientRect();
       const viewportRect = viewport.getBoundingClientRect();
+      const textViewRect = textView.getBoundingClientRect();
       const center = document.elementFromPoint(
         screenRect.left + screenRect.width / 2,
         screenRect.top + screenRect.height / 2,
       );
       const inputStyle = getComputedStyle(input);
+      const textViewStyle = getComputedStyle(textView);
       const rect = element => ({
         left: element.left,
         top: element.top,
@@ -601,12 +660,17 @@ try {
         inputParentId: input.parentElement?.id || null,
         viewportParentId: viewport.parentElement?.id || null,
         chromeParentId: chrome.parentElement?.id || null,
+        textViewParentId: textView.parentElement?.id || null,
+        spacerParentId: spacer.parentElement?.id || null,
         position: inputStyle.position,
         pointerEvents: inputStyle.pointerEvents,
+        textViewPointerEvents: textViewStyle.pointerEvents,
         inputRect: rect(inputRect),
         screenRect: rect(screenRect),
         viewportRect: rect(viewportRect),
-        centerElementId: center?.id || null,
+        textViewRect: rect(textViewRect),
+        centerTextViewId: center?.closest("#text-view")?.id || null,
+        centerElementClass: center?.className || null,
       };
     })()`,
     returnByValue: true,
@@ -620,14 +684,17 @@ try {
   assert.equal(mobileInput.viewportParentId, "terminal");
   assert.equal(mobileInput.chromeParentId, "terminal");
   assert.equal(mobileInput.position, "absolute");
-  assert.notEqual(mobileInput.pointerEvents, "none");
+  assert.equal(mobileInput.pointerEvents, "none");
+  assert.notEqual(mobileInput.textViewPointerEvents, "none");
+  assert.equal(mobileInput.textViewParentId, "spacer");
+  assert.equal(mobileInput.spacerParentId, "scroll");
   for (const edge of ["left", "top", "right", "bottom", "width", "height"]) {
     assert.ok(Math.abs(mobileInput.inputRect[edge] - mobileInput.screenRect[edge]) <= 1, `${edge} does not match screen ${JSON.stringify(mobileInput)}`);
   }
   for (const edge of ["left", "top", "bottom"]) {
     assert.ok(Math.abs(mobileInput.inputRect[edge] - mobileInput.viewportRect[edge]) <= 1, `${edge} does not match viewport ${JSON.stringify(mobileInput)}`);
   }
-  assert.equal(mobileInput.centerElementId, "input");
+  assert.equal(mobileInput.centerTextViewId, "text-view");
   const exceptions = pageCdp.events.filter(event => event.method === "Runtime.exceptionThrown");
   assert.deepEqual(exceptions, [], JSON.stringify(exceptions));
   console.log(JSON.stringify({ ...value, presentedPixel, visualPsnr, gpuDevice: gpuDeviceText, mobileInput }));

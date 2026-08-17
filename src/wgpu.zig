@@ -4,8 +4,9 @@
 const std = @import("std");
 const ghostty = @import("ghostty-vt");
 const font_engine = @import("font_engine.zig");
+const text_view = @import("text_view.zig");
 
-pub const max_cells = 32 * 1024;
+pub const max_cells = text_view.max_cells;
 pub const max_glyphs = max_cells * 5 / 4;
 
 const cell_shader = @embedFile("shaders/cell.wgsl");
@@ -142,7 +143,15 @@ var canvas_text: [max_cells * max_cached_codepoints * 4]u8 = undefined;
 var canvas_request_count: usize = 0;
 var canvas_text_len: usize = 0;
 
-extern "host" fn gpu_submit(frame_ptr: *const Frame, cells_ptr: [*]Cell) i32;
+extern "host" fn gpu_submit(
+    frame_ptr: *const Frame,
+    cells_ptr: [*]Cell,
+    text_rows_ptr: [*]const text_view.Row,
+    text_cells_ptr: [*]const text_view.Cell,
+    text_bytes_ptr: [*]const u8,
+    text_bytes_len: usize,
+    text_changed: u32,
+) i32;
 extern "host" fn gpu_glyph_canvas_batch(
     requests_ptr: [*]const CanvasRequest,
     request_count: usize,
@@ -193,6 +202,7 @@ pub fn init(cols: usize, rows: usize) bool {
     if (backend_value > 1) return false;
     text_backend = @enumFromInt(backend_value);
     font_engine.init() catch return false;
+    text_view.reset();
     // Reserve beyond the visible grid so an adversarial screen with a unique shape in every cell cannot exhaust the atlas.
     const atlas_slots = (cols * rows * 5 + 3) / 4;
     return gpu_init(
@@ -413,7 +423,17 @@ fn submitCached(state: *ghostty.RenderState, terminal: *ghostty.Terminal) !void 
         bitmap_cache_reset = true;
         return error.GlyphFailed;
     }
-    if (gpu_submit(&frame, cells[0..].ptr) != 1) return error.SubmitFailed;
+    const snapshot = try text_view.build(state);
+    if (gpu_submit(
+        &frame,
+        cells[0..].ptr,
+        snapshot.rows,
+        snapshot.cells,
+        snapshot.text,
+        snapshot.text_len,
+        @intFromBool(snapshot.changed),
+    ) != 1) return error.SubmitFailed;
+    text_view.commit(snapshot.hash);
 }
 
 fn cellStyle(state: *const ghostty.RenderState, raw: ghostty.page.Cell, stored: ghostty.Style, selection: ?[2]u16, x: usize) Style {

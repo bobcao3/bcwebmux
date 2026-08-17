@@ -83,9 +83,12 @@ body {
 #terminal {
   --cell-width: 8px;
   --cell-height: 16px;
-  --softkeys-height: calc(44px + env(safe-area-inset-bottom));
+  --softkeys-row-height: 44px;
+  --bottom-safe-inset: env(safe-area-inset-bottom);
+  --controls-row-height: calc(44px + var(--bottom-safe-inset));
+  --chrome-height: calc(var(--softkeys-row-height) + var(--controls-row-height));
   display: grid;
-  grid-template-rows: minmax(0, 1fr) var(--softkeys-height);
+  grid-template-rows: minmax(0, 1fr) var(--chrome-height);
   position: fixed;
   inset: 0;
   overflow: hidden;
@@ -110,9 +113,11 @@ body {
 
 #terminal-chrome {
   position: relative;
+  display: grid;
+  grid-template-rows: var(--softkeys-row-height) var(--controls-row-height);
   min-width: 0;
-  height: var(--softkeys-height);
-  background: var(--color-surface);
+  height: var(--chrome-height);
+  background: var(--color-background);
 }
 
 #scroll {
@@ -127,8 +132,50 @@ body {
 }
 
 #spacer {
-  width: 1px;
+  position: relative;
+  width: 100%;
   min-height: 100%;
+}
+
+#text-view {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  width: 100%;
+  height: 0;
+  overflow: visible;
+  background: transparent;
+  color: transparent;
+  pointer-events: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+#text-view .text-row {
+  display: flex;
+  height: var(--cell-height);
+}
+
+#text-view .text-cell {
+  flex: 0 0 var(--cell-width);
+  width: var(--cell-width);
+  height: var(--cell-height);
+  overflow: hidden;
+  font: inherit;
+  white-space: pre;
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+}
+
+#text-view .text-cell[data-width="2"] {
+  flex-basis: calc(2 * var(--cell-width));
+  width: calc(2 * var(--cell-width));
+}
+
+#text-view ::selection {
+  background: transparent;
+  color: transparent;
+  -webkit-text-fill-color: transparent;
 }
 
 #screen {
@@ -158,6 +205,14 @@ body {
 }
 
 @media (hover: none) and (pointer: coarse) {
+  #text-view {
+    pointer-events: auto;
+    user-select: text;
+    -webkit-user-select: text;
+    touch-action: pan-y;
+    -webkit-touch-callout: default;
+  }
+
   #input {
     position: absolute;
     left: 0;
@@ -168,7 +223,7 @@ body {
     height: auto;
     z-index: 3;
     opacity: 0;
-    pointer-events: auto;
+    pointer-events: none;
     touch-action: pan-y;
     caret-color: transparent;
     color: transparent;
@@ -196,14 +251,15 @@ body {
 }
 
 #terminal-controls {
-  position: absolute;
-  right: 4px;
-  bottom: calc(env(safe-area-inset-bottom) + 4px);
+  grid-row: 2;
   z-index: 8;
   display: flex;
   align-items: center;
+  justify-content: flex-end;
   gap: 10px;
-  height: 40px;
+  height: auto;
+  padding: 2px max(4px, env(safe-area-inset-left)) calc(2px + var(--bottom-safe-inset)) max(4px, env(safe-area-inset-right));
+  background: var(--color-surface);
 }
 
 #status {
@@ -224,19 +280,22 @@ body {
   width: 40px;
   height: 40px;
   padding: 9px;
+  border: 0;
   place-items: center;
-  border: 2px solid var(--color-border);
   border-radius: 0;
   background: var(--color-surface);
   color: var(--color-foreground);
   font: inherit;
 }
 
-#settings-button:hover,
-#settings-button:focus-visible {
-  border-color: var(--color-accent);
+#settings-button:hover {
   color: var(--color-accent);
-  outline: 0;
+}
+
+#settings-button:focus-visible {
+  color: var(--color-accent);
+  outline: 2px solid var(--color-accent);
+  outline-offset: -2px;
 }
 
 #settings-button svg { fill: currentColor; }
@@ -269,19 +328,17 @@ body {
 }
 
 #softkeys {
-  position: absolute;
-  inset: 0;
+  grid-row: 1;
   z-index: 5;
   display: flex;
   flex-wrap: nowrap;
   gap: 2px;
   min-height: 44px;
-  padding: 2px 72px calc(2px + env(safe-area-inset-bottom)) 4px;
+  padding: 2px max(4px, env(safe-area-inset-left)) 2px max(4px, env(safe-area-inset-right));
   overflow-x: auto;
   overflow-y: hidden;
   scrollbar-width: none;
-  border-top: 2px solid var(--color-border);
-  background: var(--color-surface);
+  background: var(--color-background);
   touch-action: pan-x;
   overscroll-behavior-x: contain;
   user-select: none;
@@ -494,4 +551,8 @@ body {
   #custom-profile-form { grid-template-columns: 1fr; }
   #font-settings-form { grid-template-columns: 1fr; }
   #custom-profile-form button { grid-column: auto; }
+}
+
+@media (display-mode: fullscreen), (display-mode: standalone) {
+  #terminal { --bottom-safe-inset: 0px; }
 }

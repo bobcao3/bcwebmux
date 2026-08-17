@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="bcwebmux terminal">
+  <rect width="512" height="512" fill="#0a0c10"/>
+  <rect x="76" y="92" width="360" height="328" fill="#161b22" stroke="#58a6ff" stroke-width="20"/>
+  <path d="M76 156h360" stroke="#58a6ff" stroke-width="20"/>
+  <circle cx="116" cy="124" r="10" fill="#3fb950"/>
+  <path d="m126 230 62 50-62 50" fill="none" stroke="#f0f3f6" stroke-width="22" stroke-linecap="square" stroke-linejoin="miter"/>
+  <path d="M224 330h116" stroke="#f0f3f6" stroke-width="22"/>
+</svg>
