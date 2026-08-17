@@ -251,76 +251,30 @@ const imports = {
     gpu_text_backend() {
       return textRenderer === "kb-canvas" ? 1 : 0;
     },
-    gpu_init(cellPtr, cellLen, grainPtr, grainLen, grainSize, maxCells, maxGlyphs, atlasSlots, cellSize) {
+    gpu_init(cellPtr, cellLen, grainPtr, grainLen, grainSize, maxCells, maxGlyphs, maxStyles, styleSize, atlasSlots, cellSize) {
       try {
         const memory = wasm.memory.buffer;
         const cellSource = decoder.decode(new Uint8Array(memory, cellPtr, cellLen));
         const grain = new Int8Array(memory, grainPtr, grainLen);
-        return renderer.initialize(cellSource, grain, grainSize, maxCells, maxGlyphs, atlasSlots, cellSize);
+        return renderer.initialize(cellSource, grain, grainSize, maxCells, maxGlyphs, maxStyles, styleSize, atlasSlots, cellSize);
       } catch (error) {
         console.error(error);
         return 0;
       }
     },
-    gpu_glyph_canvas_batch(requestsPtr, requestCount, textPtr, textLen) {
+    gpu_submit(submissionPtr) {
       try {
         const memory = wasm.memory.buffer;
-        if (!Number.isSafeInteger(requestCount) || requestCount < 0 ||
-            !Number.isSafeInteger(requestsPtr) || requestsPtr < 0 ||
-            requestsPtr > memory.byteLength ||
-            requestCount > Math.floor((memory.byteLength - requestsPtr) / 24)) {
-          throw new Error("invalid glyph canvas batch request count");
-        }
-        if (!Number.isSafeInteger(textPtr) || textPtr < 0 ||
-            !Number.isSafeInteger(textLen) || textLen < 0 ||
-            textPtr > memory.byteLength ||
-            textLen > memory.byteLength - textPtr) {
-          throw new Error("invalid glyph canvas batch text block");
-        }
-        const requests = new DataView(memory, requestsPtr, requestCount * 24);
-        const textBlock = new Uint8Array(memory, textPtr, textLen);
-        for (let index = 0; index < requestCount; index += 1) {
-          const offset = requests.getUint32(index * 24 + 12, true);
-          const length = requests.getUint32(index * 24 + 16, true);
-          if (offset > textLen || length > textLen - offset) {
-            throw new Error("invalid glyph canvas batch text range");
-          }
-          if (renderer.glyphCanvasRun(
-            requests.getUint32(index * 24, true),
-            requests.getUint32(index * 24 + 4, true),
-            requests.getUint32(index * 24 + 8, true),
-            strictDecoder.decode(textBlock.subarray(offset, offset + length)),
-            requests.getUint32(index * 24 + 20, true),
-          ) !== 1) {
-            throw new Error("glyph canvas batch failed");
-          }
-        }
-        return 1;
-      } catch (error) {
-        console.error(error);
-        return 0;
-      }
-    },
-    gpu_glyph_bitmap(slot, pixelsPtr, width, height, stride) {
-      try {
-        const pixels = new Uint8Array(wasm.memory.buffer, pixelsPtr, stride * height);
-        return renderer.glyphBitmap(slot, pixels, width, height, stride);
-      } catch (error) {
-        console.error(error);
-        return 0;
-      }
-    },
-    gpu_submit(framePtr, cellsPtr, textRowsPtr, textCellsPtr, textBytesPtr, textBytesLen, textChanged) {
-      try {
-        const metadata = submitGpuFrame(framePtr, cellsPtr);
+        const metadata = renderer.submitWasm(memory, submissionPtr);
+        submitGpuFrame(metadata);
         terminalTextView.update(
-          wasm.memory.buffer,
+          memory,
           metadata,
-          textRowsPtr,
-          textCellsPtr,
-          textBytesPtr,
-          textBytesLen,
-          textChanged !== 0,
+          metadata.textRowsPtr,
+          metadata.textCellsPtr,
+          metadata.textBytesPtr,
+          metadata.textBytesLen,
+          metadata.textChanged,
         );
         return 1;
       } catch (error) {
@@ -362,6 +316,7 @@ settings.setOnChange(applyColorProfile);
 settings.setOnFontChange(applyFontSettings);
 settings.setOnPerfChange(applyPerfMode);
 settings.setOnRendererChange(applyTextRenderer);
+settings.setOnGrainChange(applyGrainStrength);
 try {
   renderer = await GpuTerminal.create(screen, initialPixelViewport, textRenderer);
   renderer.setPhysicalCellMetrics(
@@ -369,6 +324,7 @@ try {
     initialLayout.cellHeight,
     initialLayout.fontSize,
   );
+  applyGrainStrength(settings.grainStrength);
 } catch (error) {
   setConnectionStatus(false, error.message || "gpu error");
   throw error;
@@ -434,8 +390,7 @@ function nativePixelViewport(entry) {
   };
 }
 
-function submitGpuFrame(framePtr, cellsPtr) {
-  const metadata = renderer.update(wasm.memory.buffer, framePtr, cellsPtr);
+function submitGpuFrame(metadata) {
   const submittedAt = performance.now();
   if (pendingRxAt) {
     sampleMetric("rxLatencyMs", submittedAt - pendingRxAt);
@@ -529,6 +484,10 @@ function formatCompressionRatio(decoded, wire) {
 
 function packedColor(color) {
   return Number.parseInt(color.slice(1), 16) >>> 0;
+}
+
+function applyGrainStrength(strength) {
+  if (renderer) renderer.setGrainStrength(strength);
 }
 
 function applyColorProfile(profile) {
@@ -1345,6 +1304,7 @@ function resizeTerminal(pixelViewport = nativePixelViewport()) {
     layout.cellWidth,
     layout.cellHeight,
     layout.fontSize,
+    renderer.atlasColumns,
   );
   sendResize();
   scheduleFrame();

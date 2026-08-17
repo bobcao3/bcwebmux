@@ -53,6 +53,10 @@ pub fn commit(hash: u64) void {
     previous_hash = hash;
 }
 
+pub fn needsBuild() bool {
+    return previous_hash == null;
+}
+
 pub fn inactiveSnapshot() Snapshot {
     return .{
         .rows = rows[0..].ptr,
@@ -109,7 +113,6 @@ pub fn build(state: *const ghostty.RenderState) !Snapshot {
             }
             cells[y * cols + x] = record;
             row_hasher.update(std.mem.asBytes(&record));
-            hasher.update(std.mem.asBytes(&record));
         }
 
         const row_flags: u32 = if (row_raw[y].wrap) row_wrap else 0;
@@ -125,7 +128,6 @@ pub fn build(state: *const ghostty.RenderState) !Snapshot {
         };
         rows[y] = descriptor;
         hasher.update(std.mem.asBytes(&descriptor));
-        hasher.update(text[text_start..text_len]);
     }
 
     const hash = hasher.final();

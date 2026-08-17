@@ -82,6 +82,13 @@
         <legend>Available profiles</legend>
         <div id="profile-list"></div>
       </fieldset>
+      <fieldset id="color-effects">
+        <legend>Effects</legend>
+        <label class="grain-control">Grain strength
+          <input type="range" id="grain-strength" name="grain-strength" min="0" max="32" step="1">
+          <output id="grain-strength-value" for="grain-strength">4 / 255</output>
+        </label>
+      </fieldset>
       <div id="custom-color-editor" hidden>
         <p>Customize the colors used by the terminal.</p>
         <form id="custom-profile-form">

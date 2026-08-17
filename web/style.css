@@ -559,6 +559,20 @@ body {
 #custom-profile-form button:focus-visible { background: var(--color-foreground); border-color: var(--color-foreground); outline: 0; }
 
 #custom-color-editor { margin-top: 18px; }
+#color-effects { margin-top: 18px; }
+.grain-control {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(120px, 1fr) 52px;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 10px;
+  border: 2px solid var(--color-border);
+  color: var(--color-muted);
+  font-size: 11px;
+  text-transform: uppercase;
+}
+.grain-control input[type="range"] { width: 100%; accent-color: var(--color-accent); }
+.grain-control output { width: 52px; color: var(--color-foreground); text-align: right; }
 #font-settings-form { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 18px; }
 #font-settings-form label { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 12px; padding: 8px 10px; border: 2px solid var(--color-border); color: var(--color-muted); font-size: 11px; text-transform: uppercase; }
 #font-settings-form select,
@@ -582,6 +596,8 @@ body {
   #custom-profile-form { grid-template-columns: 1fr; }
   #font-settings-form { grid-template-columns: 1fr; }
   #custom-profile-form button { grid-column: auto; }
+  .grain-control { grid-template-columns: minmax(0, 1fr) 52px; }
+  .grain-control input[type="range"] { grid-column: 1 / -1; }
 }
 
 @media (display-mode: fullscreen), (display-mode: standalone) {

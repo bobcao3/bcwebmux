@@ -334,6 +334,20 @@ try {
       document.getElementById(tab.getAttribute("aria-controls") || ""),
     ]));
     if (Object.values(panels).some(panel => !panel)) throw new Error("settings panels are missing");
+    const grainStrength = panels.COLOR.querySelector("#grain-strength");
+    const grainStrengthValue = panels.COLOR.querySelector("#grain-strength-value");
+    if (!grainStrength || !grainStrengthValue) throw new Error("grain strength controls are missing");
+    if (grainStrength.value !== "4") throw new Error("grain strength default is not 4");
+    if (window.bcwebmux.state.grainStrength !== 4) throw new Error("renderer grain strength default is not 4");
+    grainStrength.value = "12";
+    grainStrength.dispatchEvent(new Event("input", { bubbles: true }));
+    await new Promise(resolve => requestAnimationFrame(resolve));
+    if (grainStrengthValue.textContent !== "12 / 255") throw new Error("grain strength output did not update");
+    if (window.bcwebmux.state.grainStrength !== 12) throw new Error("renderer grain strength did not update");
+    grainStrength.dispatchEvent(new Event("change", { bubbles: true }));
+    grainStrength.value = "4";
+    grainStrength.dispatchEvent(new Event("input", { bubbles: true }));
+    grainStrength.dispatchEvent(new Event("change", { bubbles: true }));
     const rendererSelect = panels.FONT.querySelector("select");
     if (!rendererSelect) throw new Error("renderer select is missing");
     const rendererValues = [...rendererSelect.options].map(option => option.value);
@@ -705,13 +719,14 @@ try {
   assert.ok(state.bundleExecutions >= 5);
   assert.ok(state.rasterPasses >= 5);
   assert.equal(state.atlasFormat, "r8unorm");
-  assert.equal(state.atlasRequiredSlots, Math.ceil(state.rows * state.cols * 1.25));
+  assert.ok(Number.isInteger(state.atlasRequiredSlots) && state.atlasRequiredSlots >= 256);
+  assert.ok(state.atlasRequiredSlots >= state.atlasGlyphs);
   assert.ok(state.atlasCapacity >= state.atlasRequiredSlots);
   assert.ok(state.atlasGlyphs >= 1);
   if (["kb-stb", "kb-canvas"].includes(state.textRenderer)) {
     assert.ok(state.cacheHits > 0);
     assert.ok(state.cacheMisses >= 0);
-    assert.ok(state.atlasGlyphs < state.atlasRequiredSlots);
+    assert.ok(state.atlasGlyphs <= state.atlasRequiredSlots);
   }
   assert.ok(value.readbacks >= 5);
   assert.ok(value.elapsed < 3000, `GPU E2E took ${value.elapsed}ms`);

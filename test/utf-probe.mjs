@@ -10,28 +10,50 @@ const { instance } = await WebAssembly.instantiate(wasmBytes, {
     ring_bell() {},
     gpu_text_backend() { return 0; }, // kb-stb
     gpu_init() { return 1; },
-    gpu_glyph_canvas_batch() { return 1; },
-    gpu_glyph_bitmap(slot, ptr, width, height, stride) {
-      const bytes = new Uint8Array(instance.exports.memory.buffer, ptr, stride * height);
-      const mask = new Uint8Array(width * height);
-      for (let y = 0; y < height; y++)
-        for (let x = 0; x < width; x++)
-          mask[y * width + x] = bytes[y * stride + x];
-      bitmaps.push({ slot, width, height, mask, nonZero: mask.reduce((a, b) => a + (b > 0 ? 1 : 0), 0) });
-      return 1;
-    },
-    gpu_submit(framePtr, cellsPtr) {
+    gpu_submit(submissionPtr) {
       const mem = instance.exports.memory.buffer;
-      const frame = new DataView(mem, framePtr, 64);
+      const submission = new DataView(mem, submissionPtr, 112);
+      if (submission.getUint32(0, true) !== 0x5355424d ||
+          submission.getUint32(4, true) !== 2 ||
+          submission.getUint32(8, true) !== 112) {
+        throw new Error("invalid GPU submission");
+      }
+      const framePtr = submission.getUint32(16, true);
+      const frameLen = submission.getUint32(20, true);
+      const cellsPtr = submission.getUint32(24, true);
+      const cellCount = submission.getUint32(28, true);
+      const bitmapRequestsPtr = submission.getUint32(60, true);
+      const bitmapRequestCount = submission.getUint32(64, true);
+      const bitmapPixelsPtr = submission.getUint32(68, true);
+      const bitmapPixelsCount = submission.getUint32(72, true);
+      const requests = new DataView(mem, bitmapRequestsPtr, bitmapRequestCount * 16);
+      const pixels = new Uint8Array(mem, bitmapPixelsPtr, bitmapPixelsCount);
+      for (let i = 0; i < bitmapRequestCount; i++) {
+        const off = i * 16;
+        const firstSlot = requests.getUint32(off, true);
+        const slotCount = requests.getUint32(off + 4, true);
+        const pixelOffset = requests.getUint32(off + 8, true);
+        const bytesPerRow = requests.getUint32(off + 12, true);
+        for (let slotIndex = 0; slotIndex < slotCount; slotIndex++) {
+          const mask = new Uint8Array(16 * 16);
+          for (let y = 0; y < 16; y++) {
+            const rowOffset = pixelOffset + y * bytesPerRow + slotIndex * 16;
+            mask.set(pixels.subarray(rowOffset, rowOffset + 16), y * 16);
+          }
+          const slot = firstSlot + slotIndex;
+          bitmaps.push({ slot, width: 16, height: 16, mask, nonZero: mask.reduce((a, b) => a + (b > 0 ? 1 : 0), 0) });
+        }
+      }
+      const frame = new DataView(mem, framePtr, frameLen);
       frames.push({ frame, cols: frame.getUint32(8, true), rows: frame.getUint32(12, true) });
       const cols = frame.getUint32(8, true);
-      const cellCount = frame.getUint32(16, true);
-      const cells = new DataView(mem, cellsPtr, cellCount * 32);
+      const cells = new DataView(mem, cellsPtr, cellCount * 8);
       for (let i = 0; i < cellCount; i++) {
-        const off = i * 32;
-        const glyph = cells.getUint32(off + 24, true);
-        const active = cells.getUint32(off + 28, true);
-        if (active) cellList.push({ x: cells.getUint32(off, true), y: cells.getUint32(off + 4, true), w: cells.getUint32(off + 8, true), glyph });
+        const glyph = cells.getUint32(i * 8, true);
+        const meta = cells.getUint32(i * 8 + 4, true);
+        const wide = (meta & (1 << 16)) !== 0;
+        const active = (meta & (1 << 17)) !== 0;
+        if (active) cellList.push({ x: i % cols, y: Math.floor(i / cols), w: wide ? 2 : 1, glyph });
       }
       return 1;
     },
@@ -94,7 +116,7 @@ function report(label, codepoints = []) {
 
 // ASCII
 e.term_init(40, 10);
-e.term_resize(40, 10, 8, 16, 8, 16, 15);
+e.term_resize(40, 10, 8, 16, 8, 16, 15, 256);
 cellList.length = 0; bitmaps.length = 0; frames.length = 0;
 feed("\x1b[2J\x1b[HABC");
 if (e.term_frame() !== 1) console.log("term_frame failed for ASCII");

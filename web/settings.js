@@ -70,6 +70,7 @@ const DEFAULT_SETTINGS = Object.freeze({
   fontFamily: "jetbrains-mono",
   fontSize: 15,
   ligatures: true,
+  grainStrength: 4,
   perfMode: "simple",
   renderer: "kb-stb",
 });
@@ -141,6 +142,10 @@ function loadSettings() {
       ? Math.min(32, Math.max(8, saved.fontSize))
       : DEFAULT_SETTINGS.fontSize;
     const ligatures = typeof saved.ligatures === "boolean" ? saved.ligatures : DEFAULT_SETTINGS.ligatures;
+    const grainStrengthValue = Number(saved.grainStrength);
+    const grainStrength = Number.isFinite(grainStrengthValue)
+      ? Math.min(32, Math.max(0, Math.round(grainStrengthValue)))
+      : DEFAULT_SETTINGS.grainStrength;
     const perfMode = ["off", "simple", "detailed"].includes(saved.perfMode) ? saved.perfMode : DEFAULT_SETTINGS.perfMode;
     let renderer = ["kb-stb", "kb-canvas"].includes(saved.renderer) ? saved.renderer : DEFAULT_SETTINGS.renderer;
     if (isCanvasOnlyFont(FONT_OPTIONS[fontFamily])) renderer = "kb-canvas";
@@ -150,7 +155,7 @@ function loadSettings() {
       return [id, migrateFontFallbacks ? migrateFontFamilies(fallbacks) : fallbacks];
     }));
     return {
-      fontFamily, fontSize, ligatures, perfMode, renderer, fontFallbackVersion: FONT_FALLBACK_VERSION,
+      fontFamily, fontSize, ligatures, grainStrength, perfMode, renderer, fontFallbackVersion: FONT_FALLBACK_VERSION,
       fontFallbacks, selected, custom,
     };
   } catch {
@@ -165,6 +170,7 @@ function saveSettings(settings) {
       fontFamily: settings.fontFamily,
       fontSize: settings.fontSize,
       ligatures: settings.ligatures,
+      grainStrength: settings.grainStrength,
       fontFallbackVersion: settings.fontFallbackVersion,
       fontFallbacks: Object.fromEntries(Object.entries(settings.fontFallbacks)
         .map(([id, fallbacks]) => [id, [...fallbacks]])),
@@ -213,18 +219,25 @@ export function initializeSettings() {
   const customForm = document.querySelector("#custom-profile-form");
   const customColorEditor = document.querySelector("#custom-color-editor");
   const fontSettingsForm = document.querySelector("#font-settings-form");
+  const grainStrength = document.querySelector("#grain-strength");
+  const grainStrengthValue = document.querySelector("#grain-strength-value");
   const rendererStbOption = fontSettingsForm.elements.renderer.querySelector('option[value="kb-stb"]');
   const perfModeInputs = document.querySelectorAll('input[name="perfMode"]');
   const tablist = dialog.querySelector('[role="tablist"]');
   const settings = loadSettings();
   let onChange = () => {};
   let onFontChange = () => {};
+  let onGrainChange = () => {};
   let onPerfChange = () => {};
   let onRendererChange = () => {};
   let onOpen = () => {};
   let onClose = () => {};
   const syncRendererControl = () => {
     rendererStbOption.disabled = isCanvasOnlyFont(FONT_OPTIONS[settings.fontFamily]);
+  };
+  const syncGrainStrength = () => {
+    grainStrength.value = settings.grainStrength;
+    grainStrengthValue.textContent = `${settings.grainStrength} / 255`;
   };
 
   const activate = (id, persist = true) => {
@@ -306,6 +319,7 @@ export function initializeSettings() {
 
   openButton.addEventListener("click", () => {
     for (const field of COLOR_FIELDS) customForm.elements[field].value = settings.custom[field];
+    syncGrainStrength();
     fontSettingsForm.elements.fontFamily.value = settings.fontFamily;
     fontSettingsForm.elements.fontFallbacks.value = settings.fontFallbacks[settings.fontFamily].join("\n");
     fontSettingsForm.elements.fontSize.value = settings.fontSize;
@@ -356,6 +370,7 @@ export function initializeSettings() {
   fontSettingsForm.elements.ligatures.checked = settings.ligatures;
   fontSettingsForm.elements.renderer.value = settings.renderer;
   syncRendererControl();
+  syncGrainStrength();
   fontSettingsForm.addEventListener("change", event => {
     const requestedRenderer = ["kb-stb", "kb-canvas"].includes(fontSettingsForm.elements.renderer.value)
       ? fontSettingsForm.elements.renderer.value
@@ -395,6 +410,15 @@ export function initializeSettings() {
     saveSettings(settings);
     onFontChange(font);
   });
+  grainStrength.addEventListener("input", () => {
+    const value = Number(grainStrength.value);
+    settings.grainStrength = Number.isFinite(value)
+      ? Math.min(32, Math.max(0, Math.round(value)))
+      : DEFAULT_SETTINGS.grainStrength;
+    syncGrainStrength();
+    onGrainChange(settings.grainStrength);
+  });
+  grainStrength.addEventListener("change", () => saveSettings(settings));
   for (const input of perfModeInputs) {
     input.checked = input.value === settings.perfMode;
     input.addEventListener("change", () => {
@@ -413,10 +437,12 @@ export function initializeSettings() {
   return {
     get profile() { return resolveProfile(settings); },
     get font() { return resolveFont(settings); },
+    get grainStrength() { return settings.grainStrength; },
     get perfMode() { return settings.perfMode; },
     get renderer() { return settings.renderer; },
     setOnChange(callback) { onChange = callback || (() => {}); },
     setOnFontChange(callback) { onFontChange = callback || (() => {}); },
+    setOnGrainChange(callback) { onGrainChange = callback || (() => {}); },
     setOnPerfChange(callback) { onPerfChange = callback || (() => {}); },
     setOnRendererChange(callback) { onRendererChange = callback || (() => {}); },
     setLifecycle(callbacks = {}) {

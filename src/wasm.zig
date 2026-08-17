@@ -20,8 +20,9 @@ var busy = false;
 var cell_width_px: u32 = 8;
 var cell_height_px: u32 = 16;
 var last_mouse_cell: ?ghostty.Coordinate = null;
-var theme_colors: [18]u32 = undefined;
-var theme_dirty = false;
+// ABI staging buffer only; not authoritative theme state.
+var theme_staging: [18]u32 = undefined;
+var render_requested = false;
 var selection_gesture: ghostty.SelectionGesture = .init;
 var selection_snapshot: ?[:0]const u8 = null;
 
@@ -52,23 +53,23 @@ export fn term_set_font(font_raw: u32, ligatures_raw: u32) i32 {
 
 export fn term_set_renderer(renderer_raw: u32) i32 {
     if (!wgpu.setTextBackend(renderer_raw)) return 0;
-    theme_dirty = true;
+    render_requested = true;
     return 1;
 }
 
 export fn term_invalidate_glyph_cache() void {
     wgpu.invalidateGlyphCache();
-    theme_dirty = true;
+    render_requested = true;
 }
 
 export fn term_invalidate_text_view() void {
     wgpu.invalidateTextView();
-    theme_dirty = true;
+    render_requested = true;
 }
 
 export fn term_set_text_view_enabled(enabled_raw: u32) i32 {
     if (enabled_raw > 1) return 0;
-    if (wgpu.setTextViewEnabled(enabled_raw != 0)) theme_dirty = true;
+    if (wgpu.setTextViewEnabled(enabled_raw != 0)) render_requested = true;
     return 1;
 }
 
@@ -105,17 +106,20 @@ export fn term_init(cols: u16, rows: u16) i32 {
 }
 
 export fn term_theme_ptr() u32 {
-    return @intCast(@intFromPtr(&theme_colors));
+    return @intCast(@intFromPtr(&theme_staging));
 }
 
 export fn term_apply_theme() i32 {
     if (busy or terminal == null) return 0;
-    wgpu.setTheme(
-        theme_colors[0],
-        theme_colors[1],
-        @ptrCast(&theme_colors[2]),
-    );
-    theme_dirty = true;
+    const value = if (terminal) |*t| t else return 0;
+    var palette = ghostty.color.default;
+    for (0..16) |i| {
+        palette[i] = packedRgb(theme_staging[i + 2]);
+    }
+    value.colors.palette.changeDefault(palette);
+    value.colors.background.default = packedRgb(theme_staging[0]);
+    value.colors.foreground.default = packedRgb(theme_staging[1]);
+    value.flags.dirty.palette = true;
     return 1;
 }
 
@@ -153,8 +157,8 @@ export fn term_feed(len: u32) i32 {
     return 1;
 }
 
-export fn term_resize(cols: u16, rows: u16, cell_width: u16, cell_height: u16, glyph_cell_width: u16, glyph_cell_height: u16, glyph_font_size_px: u16) i32 {
-    if (busy or cols == 0 or rows == 0) return 0;
+export fn term_resize(cols: u16, rows: u16, cell_width: u16, cell_height: u16, glyph_cell_width: u16, glyph_cell_height: u16, glyph_font_size_px: u16, atlas_columns: u16) i32 {
+    if (busy or cols == 0 or rows == 0 or atlas_columns == 0) return 0;
     const value = if (stream) |*s| s else return 0;
     busy = true;
     defer busy = false;
@@ -164,6 +168,7 @@ export fn term_resize(cols: u16, rows: u16, cell_width: u16, cell_height: u16, g
         @max(1, glyph_cell_width),
         @max(1, glyph_cell_height),
         @max(1, glyph_font_size_px),
+        atlas_columns,
     );
     value.handler.resize(.{
         .cols = cols,
@@ -261,6 +266,14 @@ export fn term_mouse(action_raw: u8, button_raw: u8, mods_raw: u16, x: f32, y: f
 fn freeSelectionSnapshot() void {
     if (selection_snapshot) |snapshot| alloc.free(snapshot);
     selection_snapshot = null;
+}
+
+fn packedRgb(value: u32) ghostty.color.RGB {
+    return .{
+        .r = @truncate(value >> 16),
+        .g = @truncate(value >> 8),
+        .b = @truncate(value),
+    };
 }
 
 fn selectionPin(value: *ghostty.Terminal, x: f32, y: f32) ?ghostty.Pin {
@@ -436,9 +449,9 @@ export fn term_frame() i32 {
         previous_cursor_visible != render_state.cursor.visible or
         previous_cursor_blinking != render_state.cursor.blinking or
         previous_cursor_style != render_state.cursor.visual_style;
-    if (render_state.dirty == .false and !cursor_changed and !theme_dirty) return 0;
+    if (render_state.dirty == .false and !cursor_changed and !render_requested) return 0;
     wgpu.submit(&render_state, value) catch return -1;
-    theme_dirty = false;
+    render_requested = false;
     render_state.clean();
     return 1;
 }
