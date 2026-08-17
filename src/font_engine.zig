@@ -17,6 +17,13 @@ pub const Metrics = struct {
     font_size_px: u16, // Integer physical-pixel CSS em size.
 };
 
+pub const FontStyle = enum(u2) {
+    regular,
+    bold,
+    italic,
+    bold_italic,
+};
+
 pub const Input = struct {
     codepoint: u21,
     cell: u16,
@@ -35,9 +42,6 @@ const Face = struct {
 var context: ?*c.kbts_shape_context = null;
 var faces: [4]Face = undefined;
 var face_ready = [_]bool{false} ** 4;
-var external_faces: [4]Face = undefined;
-var external_face_ready = [_]bool{false} ** 4;
-var external_face_data = [_]?[]u8{null} ** 4;
 
 pub fn cAlloc(len: usize) ?*anyopaque {
     const total = std.math.add(usize, len, 16) catch return null;
@@ -68,37 +72,18 @@ pub fn init() !void {
     context = c.kbts_CreateShapeContext(&kbAllocator, null) orelse return error.ShapeContextInitFailed;
 }
 
-fn ensureFace(font: u1, style: u2) !*Face {
-    if (font == 1) {
-        if (external_face_ready[style]) return &external_faces[style];
-        return error.ExternalFontMissing;
-    }
-    if (face_ready[style]) return &faces[style];
+fn ensureFace(style: FontStyle) !*Face {
+    const index = @intFromEnum(style);
+    if (face_ready[index]) return &faces[index];
     const data = switch (style) {
-        0 => fonts.regular,
-        1 => fonts.bold,
-        2 => fonts.italic,
-        3 => fonts.bold_italic,
+        .regular => fonts.regular,
+        .bold => fonts.bold,
+        .italic => fonts.italic,
+        .bold_italic => fonts.bold_italic,
     };
-    try initFace(&faces[style], data);
-    face_ready[style] = true;
-    return &faces[style];
-}
-
-pub fn installExternalFace(style: u2, data: []u8) !void {
-    if (data.len == 0) return error.EmptyFont;
-    if (external_face_ready[style]) {
-        c.kbts_FreeFont(&external_faces[style].shape);
-        if (external_face_data[style]) |old_data| cFree(@ptrCast(old_data.ptr));
-        external_face_ready[style] = false;
-        external_face_data[style] = null;
-    }
-    initFace(&external_faces[style], data) catch |err| {
-        cFree(@ptrCast(data.ptr));
-        return err;
-    };
-    external_face_data[style] = data;
-    external_face_ready[style] = true;
+    try initFace(&faces[index], data);
+    face_ready[index] = true;
+    return &faces[index];
 }
 
 fn initFace(face: *Face, data: []const u8) !void {
@@ -111,15 +96,14 @@ fn initFace(face: *Face, data: []const u8) !void {
 }
 
 pub fn shape(
-    font: u1,
-    style: u2,
+    style: FontStyle,
     ligatures: bool,
     input: []const Input,
 ) !RenderStats {
     const shape_context = context orelse return error.NotInitialized;
     if (input.len == 0) return error.EmptyRun;
 
-    const face = try ensureFace(font, style);
+    const face = try ensureFace(style);
     if (c.kbts_ShapePushFont(shape_context, &face.shape) == null)
         return error.ShapeFontPushFailed;
     defer _ = c.kbts_ShapePopFont(shape_context);
@@ -159,8 +143,7 @@ pub fn shape(
 }
 
 pub fn render(
-    font: u1,
-    style: u2,
+    style: FontStyle,
     ligatures: bool,
     input: []const Input,
     span_cells: u16,
@@ -174,7 +157,7 @@ pub fn render(
     if (mask.len < required) return error.MaskTooSmall;
     @memset(mask[0..required], 0);
 
-    const face = try ensureFace(font, style);
+    const face = try ensureFace(style);
     if (c.kbts_ShapePushFont(shape_context, &face.shape) == null)
         return error.ShapeFontPushFailed;
     defer _ = c.kbts_ShapePopFont(shape_context);

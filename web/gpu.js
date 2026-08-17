@@ -1,6 +1,13 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Cheng Cao
 
+function createRasterCanvas() {
+  const canvas = document.createElement("canvas");
+  canvas.width = 1;
+  canvas.height = 1;
+  return canvas;
+}
+
 class GlyphAtlas {
   constructor(device, font, requiredSlots, cellWidth, cellHeight, fontSize) {
     this.device = device;
@@ -11,11 +18,14 @@ class GlyphAtlas {
     this.fontFamily = font.fontFamily;
     this.fontSize = Math.max(1, Math.round(fontSize));
     this.baseline = Math.min(this.tileHeight - 1, Math.round((this.tileHeight - this.fontSize) * 0.5 + this.fontSize * 0.82));
-    this.runCanvas = new OffscreenCanvas(1, 1);
+    this.runCanvas = createRasterCanvas();
     this.runContext = this.runCanvas.getContext("2d", { alpha: true, willReadFrequently: true });
+    this.runContext.textBaseline = "alphabetic";
+    this.runContext.fillStyle = "white";
+    this.runContext.textRendering = "geometricPrecision";
     this.nextSlot = 0;
     this.dirtyStart = null;
-    this.staging = new Uint8Array(0);
+    this.alpha = new Uint8Array(0);
     this.rows = 0;
     this.ensureCapacity(requiredSlots);
   }
@@ -30,21 +40,50 @@ class GlyphAtlas {
     const rows = Math.ceil(Math.max(requiredSlots, Math.ceil(this.capacity * 1.5)) / this.columns);
     if (rows > maxRows) throw new Error("glyph atlas capacity exceeded");
     const oldTexture = this.texture;
-    const oldCanvas = this.canvas;
+    const oldAlpha = this.alpha;
+    const oldRowStride = this.columns * this.tileWidth;
     this.rows = Math.max(1, rows);
-    this.canvas = new OffscreenCanvas(this.columns * this.tileWidth, this.rows * this.tileHeight);
-    this.context = this.canvas.getContext("2d", { alpha: true, willReadFrequently: true });
-    if (oldCanvas) this.context.drawImage(oldCanvas, 0, 0);
-    this.context.textBaseline = "alphabetic";
-    this.context.fillStyle = "white";
+    const rowStride = this.columns * this.tileWidth;
+    this.alpha = new Uint8Array(rowStride * this.rows * this.tileHeight);
+    if (oldAlpha?.length) {
+      const oldRows = oldAlpha.length / oldRowStride;
+      for (let row = 0; row < oldRows; row += 1) {
+        this.alpha.set(
+          oldAlpha.subarray(row * oldRowStride, (row + 1) * oldRowStride),
+          row * rowStride,
+        );
+      }
+    }
     this.texture = this.device.createTexture({
-      size: [this.canvas.width, this.canvas.height],
+      size: [rowStride, this.rows * this.tileHeight],
       format: "r8unorm",
       usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
     });
     if (this.nextSlot > 0) this.dirtyStart = 0;
     oldTexture?.destroy();
     return true;
+  }
+
+  clearSlot(slot) {
+    const rowStride = this.columns * this.tileWidth;
+    const x = (slot % this.columns) * this.tileWidth;
+    const y = Math.floor(slot / this.columns) * this.tileHeight;
+    for (let row = 0; row < this.tileHeight; row += 1) {
+      this.alpha.fill(0, (y + row) * rowStride + x, (y + row) * rowStride + x + this.tileWidth);
+    }
+  }
+
+  copyImageAlpha(slot, image, sourceX, sourceY, width, height) {
+    const rowStride = this.columns * this.tileWidth;
+    const x = (slot % this.columns) * this.tileWidth;
+    const y = Math.floor(slot / this.columns) * this.tileHeight;
+    for (let row = 0; row < height; row += 1) {
+      const source = (sourceY + row) * image.width + sourceX;
+      const destination = (y + row) * rowStride + x;
+      for (let column = 0; column < width; column += 1) {
+        this.alpha[destination + column] = image.data[(source + column) * 4 + 3];
+      }
+    }
   }
 
   setBitmap(slot, pixels, width, height, stride) {
@@ -55,21 +94,13 @@ class GlyphAtlas {
       throw new Error("invalid glyph bitmap dimensions");
     }
     this.nextSlot = Math.max(this.nextSlot, slot + 1);
+    this.clearSlot(slot);
+    const rowStride = this.columns * this.tileWidth;
     const x = (slot % this.columns) * this.tileWidth;
     const y = Math.floor(slot / this.columns) * this.tileHeight;
-    this.context.clearRect(x, y, this.tileWidth, this.tileHeight);
-    const image = new ImageData(this.tileWidth, this.tileHeight);
-    for (let i = 0; i < image.data.length; i += 4) {
-      image.data[i] = 255;
-      image.data[i + 1] = 255;
-      image.data[i + 2] = 255;
-    }
     for (let row = 0; row < height; row += 1) {
-      for (let column = 0; column < width; column += 1) {
-        image.data[(row * this.tileWidth + column) * 4 + 3] = pixels[row * stride + column];
-      }
+      this.alpha.set(pixels.subarray(row * stride, row * stride + width), (y + row) * rowStride + x);
     }
-    this.context.putImageData(image, x, y);
     this.dirtyStart = this.dirtyStart === null ? slot : Math.min(this.dirtyStart, slot);
     return slot + 1;
   }
@@ -82,40 +113,48 @@ class GlyphAtlas {
     }
     if (slotCount === 1 && spanCells > 2) throw new Error("invalid glyph atlas run");
     const cellWidth = this.tileWidth / 2;
-    this.runCanvas.width = spanCells * cellWidth;
-    this.runCanvas.height = this.tileHeight;
-    this.runContext = this.runCanvas.getContext("2d", { alpha: true, willReadFrequently: true });
+    const runWidth = spanCells * cellWidth;
+    if (runWidth > this.runCanvas.width || this.tileHeight > this.runCanvas.height) {
+      this.runCanvas.width = Math.max(this.runCanvas.width, runWidth);
+      this.runCanvas.height = Math.max(this.runCanvas.height, this.tileHeight);
+      this.runContext = this.runCanvas.getContext("2d", { alpha: true, willReadFrequently: true });
+      this.runContext.textBaseline = "alphabetic";
+      this.runContext.fillStyle = "white";
+      this.runContext.textRendering = "geometricPrecision";
+    }
     this.runContext.textBaseline = "alphabetic";
     this.runContext.fillStyle = "white";
-    this.runContext.clearRect(0, 0, this.runCanvas.width, this.runCanvas.height);
+    this.runContext.clearRect(0, 0, runWidth, this.tileHeight);
     const weight = (flags & 1) !== 0 ? "700" : "400";
     const italic = (flags & 2) !== 0 ? "italic" : "normal";
-    this.runContext.font = `${italic} ${weight} ${this.fontSize}px ${this.fontFamily}`;
+    // Half-pixel em adjustment accounts for Canvas2D's pixel-edge convention versus stb.
+    this.runContext.font = `${italic} ${weight} ${Math.max(1, this.fontSize - 0.5)}px ${this.fontFamily}`;
     this.runContext.fillText(text, 0, this.baseline);
+    const image = this.runContext.getImageData(0, 0, runWidth, this.tileHeight);
     for (let index = 0; index < slotCount; index += 1) {
       const slot = firstSlot + index;
-      const x = (slot % this.columns) * this.tileWidth;
-      const y = Math.floor(slot / this.columns) * this.tileHeight;
       const width = slotCount === 1 ? spanCells * cellWidth : cellWidth;
-      const image = this.runContext.getImageData(index * cellWidth, 0, width, this.tileHeight);
-      this.context.clearRect(x, y, this.tileWidth, this.tileHeight);
-      this.context.putImageData(image, x, y);
+      this.clearSlot(slot);
+      this.copyImageAlpha(slot, image, index * cellWidth, 0, width, this.tileHeight);
     }
     this.nextSlot = Math.max(this.nextSlot, firstSlot + slotCount);
     this.dirtyStart = this.dirtyStart === null ? firstSlot : Math.min(this.dirtyStart, firstSlot);
     return firstSlot + slotCount;
   }
 
-  setFontFamily(fontFamily) {
+  reloadFont(fontFamily) {
     if (typeof fontFamily !== "string" || fontFamily.trim() === "") {
       throw new Error("invalid glyph font family");
     }
-    if (fontFamily === this.fontFamily) return false;
     this.fontFamily = fontFamily;
-    this.context.clearRect(0, 0, this.canvas.width, this.canvas.height);
+    this.alpha.fill(0);
     this.nextSlot = 0;
     this.dirtyStart = null;
-    return true;
+    this.runCanvas = new OffscreenCanvas(1, 1);
+    this.runContext = this.runCanvas.getContext("2d", { alpha: true, willReadFrequently: true });
+    this.runContext.textBaseline = "alphabetic";
+    this.runContext.fillStyle = "white";
+    this.runContext.textRendering = "geometricPrecision";
   }
 
   setPhysicalMetrics(cellWidth, cellHeight, fontSize) {
@@ -140,15 +179,17 @@ class GlyphAtlas {
     this.fontSize = fontSize;
     this.baseline = Math.min(this.tileHeight - 1, Math.round((this.tileHeight - this.fontSize) * 0.5 + this.fontSize * 0.82));
     this.rows = rows;
-    this.canvas = new OffscreenCanvas(this.columns * this.tileWidth, this.rows * this.tileHeight);
-    this.context = this.canvas.getContext("2d", { alpha: true, willReadFrequently: true });
-    this.context.textBaseline = "alphabetic";
-    this.context.fillStyle = "white";
+    this.alpha = new Uint8Array(this.columns * this.tileWidth * this.rows * this.tileHeight);
     this.texture = this.device.createTexture({
-      size: [this.canvas.width, this.canvas.height],
+      size: [this.columns * this.tileWidth, this.rows * this.tileHeight],
       format: "r8unorm",
       usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
     });
+    this.runCanvas = new OffscreenCanvas(1, 1);
+    this.runContext = this.runCanvas.getContext("2d", { alpha: true, willReadFrequently: true });
+    this.runContext.textBaseline = "alphabetic";
+    this.runContext.fillStyle = "white";
+    this.runContext.textRendering = "geometricPrecision";
     this.nextSlot = 0;
     this.dirtyStart = null;
     oldTexture?.destroy();
@@ -162,17 +203,14 @@ class GlyphAtlas {
       const end = Math.min(this.nextSlot, (row + 1) * this.columns);
       const firstColumn = start % this.columns;
       const width = (end - start) * this.tileWidth;
-      const bytesPerRow = Math.ceil(width / 256) * 256;
-      if (this.staging.length < bytesPerRow * this.tileHeight) this.staging = new Uint8Array(bytesPerRow * this.tileHeight);
-      const image = this.context.getImageData(firstColumn * this.tileWidth, row * this.tileHeight, width, this.tileHeight);
-      this.staging.fill(0, 0, bytesPerRow * this.tileHeight);
-      for (let y = 0; y < this.tileHeight; y += 1) {
-        for (let x = 0; x < width; x += 1) this.staging[y * bytesPerRow + x] = image.data[(y * width + x) * 4 + 3];
-      }
+      const bytesPerRow = this.columns * this.tileWidth;
+      const sourceOffset = row * this.tileHeight * bytesPerRow + firstColumn * this.tileWidth;
+      const sourceLength = (this.tileHeight - 1) * bytesPerRow + width;
+      const source = this.alpha.subarray(sourceOffset, sourceOffset + sourceLength);
       this.device.queue.writeTexture(
         { texture: this.texture, origin: [firstColumn * this.tileWidth, row * this.tileHeight] },
-        this.staging,
-        { bytesPerRow, rowsPerImage: this.tileHeight },
+        source,
+        { offset: 0, bytesPerRow, rowsPerImage: this.tileHeight },
         [width, this.tileHeight, 1],
       );
       start = end;
@@ -228,6 +266,7 @@ export class GpuTerminal {
     this.cursorY = 0xffff;
     this.cursorFlags = 0;
     this.cursorStyle = 1;
+    this.fontReloads = 0;
     this.frames = 0;
     this.frameMs = null;
     this.gpuFrameMs = null;
@@ -356,9 +395,11 @@ export class GpuTerminal {
     return 1;
   }
 
-  setFontFamily(fontFamily) {
-    if (!this.initialized) return false;
-    return this.atlas.setFontFamily(fontFamily);
+  reloadFont(fontFamily) {
+    if (!this.initialized) throw new Error("GPU terminal is not initialized");
+    this.atlas.reloadFont(fontFamily);
+    this.rebuildCellBundle();
+    this.fontReloads += 1;
   }
 
   setTextRenderer(textRenderer) {
@@ -515,6 +556,8 @@ export class GpuTerminal {
     return {
       backend: "webgpu",
       textRenderer: this.textRenderer,
+      fontFamily: this.atlas.fontFamily,
+      fontReloads: this.fontReloads,
       gpuFrames: this.frames,
       frameMs: this.frameMs,
       queueDrainMs: this.gpuFrameMs,

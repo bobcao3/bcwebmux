@@ -20,8 +20,8 @@ var text_backend: TextBackend = .kb_stb;
 var font_cell_width: u16 = 0;
 var font_cell_height: u16 = 0;
 var font_size_px: u16 = 0;
-var selected_font: u1 = 0;
 var ligatures_enabled = true;
+var text_view_enabled = false;
 var run_mask: [4 * 1024 * 1024]u8 align(64) = undefined;
 var run_text: [max_cached_codepoints * 4]u8 = undefined;
 var font_inputs: [max_cells]font_engine.Input = undefined;
@@ -128,6 +128,78 @@ const Style = struct {
     flags: u32,
 };
 
+const PreparedRun = struct {
+    end: usize,
+    input_count: usize,
+    text_len: usize,
+    style_index: font_engine.FontStyle,
+    key: CacheKey,
+};
+
+fn prepareRun(raws: anytype, graphemes: anytype, y: usize, start: usize, cols: usize, cursor: anytype) !PreparedRun {
+    const raw = raws[start];
+    var end = @min(cols, start + @as(usize, raw.gridWidth()));
+    if (ligatures_enabled and raw.wide == .narrow and !raw.hasGrapheme() and isLigatureCandidate(raw.codepoint())) {
+        const first = cells[y * cols + start];
+        const cursor_x: ?usize = if (cursor != null and cursor.?.y == y) cursor.?.x else null;
+        if (cursor_x != start) {
+            while (end < cols and end - start < max_cached_span) : (end += 1) {
+                const next_raw = raws[end];
+                if (next_raw.wide != .narrow or next_raw.hasGrapheme() or !next_raw.hasText() or
+                    !isLigatureCandidate(next_raw.codepoint())) break;
+                if (next_raw.codepoint() == raw.codepoint()) break;
+                const next = cells[y * cols + end];
+                if (next.fg != first.fg or next.bg != first.bg or (next.flags & 67) != (first.flags & 67)) break;
+                if (cursor_x != null and end == cursor_x.?) break;
+            }
+        }
+    }
+
+    const span: u16 = @intCast(end - start);
+    const first = cells[y * cols + start];
+    const style_index: font_engine.FontStyle = @enumFromInt(@as(u2, @intCast((first.flags & 1) | ((first.flags & 2)))));
+    var cache_key: CacheKey = .{ .style = @intFromEnum(style_index), .span = span, .codepoint_count = 0 };
+    var input_count: usize = 0;
+    var text_len: usize = 0;
+    for (start..end) |cell_x| {
+        const run_raw = raws[cell_x];
+        if (run_raw.wide == .spacer_tail) continue;
+        if (input_count >= max_cached_codepoints) return error.RunTooLarge;
+        font_inputs[input_count] = .{ .codepoint = run_raw.codepoint(), .cell = @intCast(cell_x - start) };
+        cache_key.codepoints[input_count] = run_raw.codepoint();
+        input_count += 1;
+        var encoded: [4]u8 = undefined;
+        const len = std.unicode.utf8Encode(run_raw.codepoint(), &encoded) catch 0;
+        @memcpy(run_text[text_len..][0..len], encoded[0..len]);
+        text_len += len;
+        if (run_raw.hasGrapheme()) for (graphemes[cell_x]) |cp| {
+            if (input_count >= max_cached_codepoints) return error.RunTooLarge;
+            font_inputs[input_count] = .{ .codepoint = cp, .cell = @intCast(cell_x - start) };
+            cache_key.codepoints[input_count] = cp;
+            input_count += 1;
+            const grapheme_len = std.unicode.utf8Encode(cp, &encoded) catch 0;
+            @memcpy(run_text[text_len..][0..grapheme_len], encoded[0..grapheme_len]);
+            text_len += grapheme_len;
+        };
+    }
+    cache_key.codepoint_count = @intCast(input_count);
+    return .{
+        .end = end,
+        .input_count = input_count,
+        .text_len = text_len,
+        .style_index = style_index,
+        .key = cache_key,
+    };
+}
+
+fn countBitmapSlots(raws: anytype, start: usize, end: usize) u32 {
+    var count: u32 = 0;
+    for (start..end) |cell_x| {
+        if (raws[cell_x].wide != .spacer_tail) count += 1;
+    }
+    return count;
+}
+
 comptime {
     std.debug.assert(@sizeOf(Frame) == 64);
     std.debug.assert(@sizeOf(Cell) == 32);
@@ -187,9 +259,8 @@ pub fn setTextBackend(value: u32) bool {
     return true;
 }
 
-pub fn setFont(font: u1, ligatures: bool) void {
-    if (selected_font != font or ligatures_enabled != ligatures) bitmap_cache_reset = true;
-    selected_font = font;
+pub fn setFont(ligatures: bool) void {
+    if (ligatures_enabled != ligatures) bitmap_cache_reset = true;
     ligatures_enabled = ligatures;
 }
 
@@ -197,10 +268,22 @@ pub fn invalidateGlyphCache() void {
     bitmap_cache_reset = true;
 }
 
+pub fn invalidateTextView() void {
+    text_view.reset();
+}
+
+pub fn setTextViewEnabled(enabled: bool) bool {
+    if (text_view_enabled == enabled) return false;
+    text_view_enabled = enabled;
+    text_view.reset();
+    return true;
+}
+
 pub fn init(cols: usize, rows: usize) bool {
     const backend_value = gpu_text_backend();
     if (backend_value > 1) return false;
     text_backend = @enumFromInt(backend_value);
+    text_view_enabled = false;
     font_engine.init() catch return false;
     text_view.reset();
     // Reserve beyond the visible grid so an adversarial screen with a unique shape in every cell cannot exhaust the atlas.
@@ -231,12 +314,6 @@ fn submitCached(state: *ghostty.RenderState, terminal: *ghostty.Terminal) !void 
     const rows_count: usize = @intCast(state.rows);
     const cell_count = cols * rows_count;
     if (cell_count > cells.len) return error.GridTooLarge;
-    // Bulk reset is bounded eviction performed before constructing a frame, so no referenced slot is reused.
-    if (bitmap_cache_reset or glyph_cache.count() + cell_count > max_cells or bitmap_slot_count + cell_count > max_glyphs) {
-        glyph_cache.clearRetainingCapacity();
-        bitmap_slot_count = 0;
-        bitmap_cache_reset = false;
-    }
     const rows = state.row_data.slice();
     const row_cells = rows.items(.cells);
     const selections = rows.items(.selection);
@@ -266,6 +343,51 @@ fn submitCached(state: *ghostty.RenderState, terminal: *ghostty.Terminal) !void 
     }
 
     const cursor = state.cursor.viewport;
+    // Bulk reset is bounded eviction performed before constructing a frame, so no referenced slot is reused.
+    if (bitmap_cache_reset) {
+        glyph_cache.clearRetainingCapacity();
+        bitmap_slot_count = 0;
+        bitmap_cache_reset = false;
+    } else {
+        var prospective_entries: usize = 0;
+        var prospective_slots: u32 = 0;
+        var preflight_overflow = false;
+        var scratch_allocator = std.heap.FixedBufferAllocator.init(run_mask[0..]);
+        var pending_keys: std.AutoHashMapUnmanaged(CacheKey, void) = .empty;
+        preflight: for (row_cells, 0..) |*render_cells, y| {
+            const slice = render_cells.slice();
+            const raws = slice.items(.raw);
+            const graphemes = slice.items(.grapheme);
+            var x: usize = 0;
+            while (x < cols) {
+                const raw = raws[x];
+                if (raw.wide == .spacer_tail or !raw.hasText()) {
+                    x += 1;
+                    continue;
+                }
+                const prepared = try prepareRun(raws, graphemes, y, x, cols, cursor);
+                if (!glyph_cache.contains(prepared.key)) {
+                    const pending = pending_keys.getOrPut(scratch_allocator.allocator(), prepared.key) catch {
+                        preflight_overflow = true;
+                        break :preflight;
+                    };
+                    if (!pending.found_existing) {
+                        prospective_entries += 1;
+                        prospective_slots += countBitmapSlots(raws, x, prepared.end);
+                    }
+                }
+                x = prepared.end;
+            }
+        }
+        pending_keys.deinit(scratch_allocator.allocator());
+        if (preflight_overflow or glyph_cache.count() + prospective_entries > max_cells or
+            bitmap_slot_count + prospective_slots > max_glyphs)
+        {
+            glyph_cache.clearRetainingCapacity();
+            bitmap_slot_count = 0;
+        }
+    }
+
     var cache_hits: u32 = 0;
     var cache_misses: u32 = 0;
     for (row_cells, 0..) |*render_cells, y| {
@@ -280,51 +402,13 @@ fn submitCached(state: *ghostty.RenderState, terminal: *ghostty.Terminal) !void 
                 continue;
             }
             const start = x;
-            var end = @min(cols, x + @as(usize, raw.gridWidth()));
-            if (ligatures_enabled and raw.wide == .narrow and !raw.hasGrapheme() and isLigatureCandidate(raw.codepoint())) {
-                const first = cells[y * cols + start];
-                const cursor_x: ?usize = if (cursor != null and cursor.?.y == y) cursor.?.x else null;
-                if (cursor_x != start) {
-                    while (end < cols and end - start < max_cached_span) : (end += 1) {
-                        const next_raw = raws[end];
-                        if (next_raw.wide != .narrow or next_raw.hasGrapheme() or !next_raw.hasText() or
-                            !isLigatureCandidate(next_raw.codepoint())) break;
-                        if (next_raw.codepoint() == raw.codepoint()) break;
-                        const next = cells[y * cols + end];
-                        if (next.fg != first.fg or next.bg != first.bg or (next.flags & 67) != (first.flags & 67)) break;
-                        if (cursor_x != null and end == cursor_x.?) break;
-                    }
-                }
-            }
-
+            const prepared = try prepareRun(raws, graphemes, y, start, cols, cursor);
+            const end = prepared.end;
             const span: u16 = @intCast(end - start);
-            const first = cells[y * cols + start];
-            const style_index: u2 = @intCast((first.flags & 1) | ((first.flags & 2)));
-            var cache_key: CacheKey = .{ .style = style_index, .span = span, .codepoint_count = 0 };
-            var input_count: usize = 0;
-            var run_text_len: usize = 0;
-            for (start..end) |cell_x| {
-                const run_raw = raws[cell_x];
-                if (run_raw.wide == .spacer_tail) continue;
-                if (input_count >= max_cached_codepoints) return error.RunTooLarge;
-                font_inputs[input_count] = .{ .codepoint = run_raw.codepoint(), .cell = @intCast(cell_x - start) };
-                cache_key.codepoints[input_count] = run_raw.codepoint();
-                input_count += 1;
-                var encoded: [4]u8 = undefined;
-                const len = std.unicode.utf8Encode(run_raw.codepoint(), &encoded) catch 0;
-                @memcpy(run_text[run_text_len..][0..len], encoded[0..len]);
-                run_text_len += len;
-                if (run_raw.hasGrapheme()) for (graphemes[cell_x]) |cp| {
-                    if (input_count >= max_cached_codepoints) return error.RunTooLarge;
-                    font_inputs[input_count] = .{ .codepoint = cp, .cell = @intCast(cell_x - start) };
-                    cache_key.codepoints[input_count] = cp;
-                    input_count += 1;
-                    const grapheme_len = std.unicode.utf8Encode(cp, &encoded) catch 0;
-                    @memcpy(run_text[run_text_len..][0..grapheme_len], encoded[0..grapheme_len]);
-                    run_text_len += grapheme_len;
-                };
-            }
-            cache_key.codepoint_count = @intCast(input_count);
+            const input_count = prepared.input_count;
+            const run_text_len = prepared.text_len;
+            const style_index = prepared.style_index;
+            const cache_key = prepared.key;
             const run_width: usize = @as(usize, font_cell_width) * span;
             const mask_len = run_width * font_cell_height;
             if (mask_len > run_mask.len) return error.RunMaskTooSmall;
@@ -339,7 +423,7 @@ fn submitCached(state: *ghostty.RenderState, terminal: *ghostty.Terminal) !void 
             } else {
                 cache_misses += 1;
                 if (text_backend == .kb_stb) {
-                    _ = try font_engine.render(selected_font, style_index, ligatures_enabled, font_inputs[0..input_count], span, .{
+                    _ = try font_engine.render(style_index, ligatures_enabled, font_inputs[0..input_count], span, .{
                         .cell_width = font_cell_width,
                         .cell_height = font_cell_height,
                         .font_size_px = font_size_px,
@@ -347,12 +431,9 @@ fn submitCached(state: *ghostty.RenderState, terminal: *ghostty.Terminal) !void 
                 }
                 var cached: CacheValue = .{};
                 const first_slot = bitmap_slot_count;
-                var slot_count: u32 = 0;
-                for (start..end) |cell_x| {
-                    if (raws[cell_x].wide != .spacer_tail) slot_count += 1;
-                }
+                const slot_count = countBitmapSlots(raws, start, end);
                 if (text_backend == .kb_canvas) {
-                    _ = try font_engine.shape(selected_font, style_index, ligatures_enabled, font_inputs[0..input_count]);
+                    _ = try font_engine.shape(style_index, ligatures_enabled, font_inputs[0..input_count]);
                 }
                 if (bitmap_slot_count + slot_count > max_glyphs) return error.GlyphCacheFull;
                 if (text_backend == .kb_canvas) {
@@ -365,7 +446,7 @@ fn submitCached(state: *ghostty.RenderState, terminal: *ghostty.Terminal) !void 
                         .span_cells = span,
                         .text_offset = @intCast(canvas_text_len),
                         .text_len = @intCast(run_text_len),
-                        .flags = style_index,
+                        .flags = @intFromEnum(style_index),
                     };
                     canvas_request_count += 1;
                     canvas_text_len += run_text_len;
@@ -423,7 +504,10 @@ fn submitCached(state: *ghostty.RenderState, terminal: *ghostty.Terminal) !void 
         bitmap_cache_reset = true;
         return error.GlyphFailed;
     }
-    const snapshot = try text_view.build(state);
+    const snapshot = if (text_view_enabled)
+        try text_view.build(state)
+    else
+        text_view.inactiveSnapshot();
     if (gpu_submit(
         &frame,
         cells[0..].ptr,
@@ -433,7 +517,7 @@ fn submitCached(state: *ghostty.RenderState, terminal: *ghostty.Terminal) !void 
         snapshot.text_len,
         @intFromBool(snapshot.changed),
     ) != 1) return error.SubmitFailed;
-    text_view.commit(snapshot.hash);
+    if (text_view_enabled) text_view.commit(snapshot.hash);
 }
 
 fn cellStyle(state: *const ghostty.RenderState, raw: ghostty.page.Cell, stored: ghostty.Style, selection: ?[2]u16, x: usize) Style {

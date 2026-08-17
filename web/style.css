@@ -34,18 +34,10 @@
 }
 
 @font-face {
-  font-family: "Fira Code";
-  src: url("https://cdn.jsdelivr.net/npm/firacode@6.2.0/distr/ttf/FiraCode-Regular.ttf") format("truetype");
+  font-family: "Noto Emoji";
+  src: url("/fonts/NotoEmoji-Regular.woff2") format("woff2");
   font-style: normal;
   font-weight: 400;
-  font-display: block;
-}
-
-@font-face {
-  font-family: "Fira Code";
-  src: url("https://cdn.jsdelivr.net/npm/firacode@6.2.0/distr/ttf/FiraCode-Bold.ttf") format("truetype");
-  font-style: normal;
-  font-weight: 700;
   font-display: block;
 }
 
@@ -205,7 +197,11 @@ body {
 }
 
 @media (hover: none) and (pointer: coarse) {
-  #text-view {
+  #terminal #selection-button {
+    display: grid;
+  }
+
+  #terminal.selection-mode #text-view {
     pointer-events: auto;
     user-select: text;
     -webkit-user-select: text;
@@ -299,6 +295,41 @@ body {
 }
 
 #settings-button svg { fill: currentColor; }
+
+#selection-button {
+  display: none;
+  width: 40px;
+  height: 40px;
+  margin-right: auto;
+  padding: 9px;
+  border: 0;
+  place-items: center;
+  border-radius: 0;
+  background: var(--color-surface);
+  color: var(--color-foreground);
+  font: inherit;
+}
+
+#selection-button:hover {
+  color: var(--color-accent);
+}
+
+#selection-button:active,
+#selection-button[aria-pressed="true"] {
+  background: var(--color-accent);
+  color: var(--color-background);
+}
+
+#selection-button:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: -2px;
+}
+
+#selection-button:focus-visible:not([aria-pressed="true"]) {
+  color: var(--color-accent);
+}
+
+#selection-button svg { fill: currentColor; }
 
 
 #perf {

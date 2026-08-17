@@ -223,7 +223,7 @@ fn assetHeaders(content_type: []const u8) [4]std.http.Header {
     return .{
         .{ .name = "Content-Type", .value = content_type },
         .{ .name = "Cache-Control", .value = "no-store" },
-        .{ .name = "Content-Security-Policy", .value = "default-src 'self'; connect-src 'self' ws: wss:; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'" },
+        .{ .name = "Content-Security-Policy", .value = "default-src 'self'; connect-src 'self' ws: wss:; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com" },
         .{ .name = "X-Content-Type-Options", .value = "nosniff" },
     };
 }

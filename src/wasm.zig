@@ -4,7 +4,6 @@
 const std = @import("std");
 const ghostty = @import("ghostty-vt");
 const wgpu = @import("wgpu.zig");
-const font_engine = @import("font_engine.zig");
 
 pub const std_options_debug_io: std.Io = std.Io.failing;
 
@@ -45,16 +44,9 @@ export fn bc_font_free(ptr: u32) void {
     alloc.free(base[0..header.*]);
 }
 
-export fn term_font_install(style_raw: u32, ptr: u32, len: u32) i32 {
-    if (style_raw >= 4 or ptr == 0 or len == 0) return 0;
-    const data: []u8 = @as([*]u8, @ptrFromInt(@as(usize, ptr)))[0..len];
-    font_engine.installExternalFace(@intCast(style_raw), data) catch return 0;
-    return 1;
-}
-
 export fn term_set_font(font_raw: u32, ligatures_raw: u32) i32 {
-    if (font_raw > 1) return 0;
-    wgpu.setFont(@intCast(font_raw), ligatures_raw != 0);
+    if (font_raw != 0) return 0;
+    wgpu.setFont(ligatures_raw != 0);
     return 1;
 }
 
@@ -67,6 +59,17 @@ export fn term_set_renderer(renderer_raw: u32) i32 {
 export fn term_invalidate_glyph_cache() void {
     wgpu.invalidateGlyphCache();
     theme_dirty = true;
+}
+
+export fn term_invalidate_text_view() void {
+    wgpu.invalidateTextView();
+    theme_dirty = true;
+}
+
+export fn term_set_text_view_enabled(enabled_raw: u32) i32 {
+    if (enabled_raw > 1) return 0;
+    if (wgpu.setTextViewEnabled(enabled_raw != 0)) theme_dirty = true;
+    return 1;
 }
 
 export fn term_init(cols: u16, rows: u16) i32 {

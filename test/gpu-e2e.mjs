@@ -109,15 +109,31 @@ try {
     fetch(`http://127.0.0.1:${bundledPort}/fzstd.js`),
     fetch(`http://127.0.0.1:${bundledPort}/terminal.wasm`),
     fetch(`http://127.0.0.1:${bundledPort}/fonts/OFL.txt`),
+    fetch(`http://127.0.0.1:${bundledPort}/fonts/NotoEmoji-Regular.woff2`),
   ]);
-  const [bundledIndex, bundledClient, bundledFzstd, bundledWasm, bundledLicense] = bundledResponses;
+  const [
+    bundledIndex,
+    bundledClient,
+    bundledFzstd,
+    bundledWasm,
+    bundledLicense,
+    bundledEmojiFont,
+  ] = bundledResponses;
   for (const response of bundledResponses) assert.ok(response.ok, `bundled request failed: ${response.status}`);
   assert.match(bundledIndex.headers.get("content-type") || "", /^text\/html(?:;|$)/);
   assert.match(bundledClient.headers.get("content-type") || "", /^(?:text\/javascript|application\/javascript)(?:;|$)/);
   assert.match(bundledFzstd.headers.get("content-type") || "", /^(?:text\/javascript|application\/javascript)(?:;|$)/);
   assert.match(bundledWasm.headers.get("content-type") || "", /^application\/wasm(?:;|$)/);
   assert.match(bundledLicense.headers.get("content-type") || "", /^text\/plain(?:;|$)/);
-  assert.match(await bundledIndex.text(), /bcwebmux/);
+  assert.match(bundledEmojiFont.headers.get("content-type") || "", /^font\/woff2(?:;|$)/);
+  const bundledCsp = bundledIndex.headers.get("content-security-policy") || "";
+  const cspDirective = name => bundledCsp.match(new RegExp(`(?:^|;)\\s*${name}\\s+([^;]+)`))?.[1].trim();
+  assert.equal(cspDirective("style-src"), "'self' https://fonts.googleapis.com");
+  assert.equal(cspDirective("font-src"), "'self' https://fonts.gstatic.com");
+  assert.doesNotMatch(bundledCsp, /(?:^|;)\s*(?:style-src|font-src)\s+[^;]*https:(?:\s|;|$)/);
+  const bundledIndexText = await bundledIndex.text();
+  assert.match(bundledIndexText, /bcwebmux/);
+  assert.match(bundledIndexText, /https:\/\/fonts\.googleapis\.com\/css2\?family=Fira\+Code:wght@400;700/);
   assert.equal(await bundledClient.text(), await readFile(path.join(webRoot, "client.js"), "utf8"));
   assert.equal(await bundledFzstd.text(), await readFile(path.join("node_modules", "fzstd", "esm", "index.mjs"), "utf8"));
   assert.deepEqual(
@@ -190,6 +206,7 @@ try {
     const chrome = document.querySelector("#terminal-chrome");
     const settingsDialog = document.querySelector("#settings-dialog");
     const settingsButton = document.querySelector("#settings-button");
+    const selectionButton = document.querySelector("#selection-button");
     const settingsClose = document.querySelector("#settings-close");
     const scroll = document.querySelector("#scroll");
     const softkeys = document.querySelector("#softkeys");
@@ -202,6 +219,11 @@ try {
     if (!chrome.contains(controls)) throw new Error("chrome does not contain terminal controls");
     if (!chrome.contains(status)) throw new Error("chrome does not contain status");
     if (!chrome.contains(settingsButton)) throw new Error("chrome does not contain settings button");
+    if (!controls.contains(selectionButton)) throw new Error("terminal controls do not contain selection button");
+    if (getComputedStyle(selectionButton).display !== "none") throw new Error("selection button is visible on desktop");
+    if (window.bcwebmux.enterSelectionMode() !== false) throw new Error("desktop enterSelectionMode did not return false");
+    if (window.bcwebmux.selectionMode !== false) throw new Error("desktop selection mode was enabled");
+    if (document.querySelector("#text-view").childElementCount !== 0) throw new Error("desktop text view has children");
     if (viewport.contains(chrome)) throw new Error("viewport contains chrome");
     if (viewport.contains(softkeys)) throw new Error("viewport contains softkeys");
     if (terminal.contains(settingsDialog)) throw new Error("terminal contains settings dialog");
@@ -318,6 +340,57 @@ try {
     if (JSON.stringify(rendererValues) !== JSON.stringify(["kb-stb", "kb-canvas"])) {
       throw new Error("renderer select options are invalid: " + JSON.stringify(rendererValues));
     }
+    const fontFamilySelect = panels.FONT.querySelector('select[name="fontFamily"]');
+    if (!fontFamilySelect) throw new Error("font family select is missing");
+    const firaOption = [...fontFamilySelect.options].find(option => option.value === "fira-code");
+    const stbOption = [...rendererSelect.options].find(option => option.value === "kb-stb");
+    if (!firaOption || !stbOption) throw new Error("font family or kb-stb option is missing");
+    if (!/Canvas only/i.test(firaOption.textContent)) throw new Error("Fira Code option is not marked Canvas only");
+    const firaFacesLoaded = () => [400, 700].every(weight =>
+      [...document.fonts].some(face =>
+        face.family === "Fira Code" &&
+        face.style === "normal" &&
+        face.weight === String(weight) &&
+        face.status === "loaded",
+      ),
+    );
+    const firaReloads = window.bcwebmux.state.fontReloads;
+    fontFamilySelect.value = "fira-code";
+    fontFamilySelect.dispatchEvent(new Event("change", { bubbles: true }));
+    until = deadline(5000);
+    while (
+      Date.now() < until &&
+      (
+        window.bcwebmux.state.textRenderer !== "kb-canvas" ||
+        !firaFacesLoaded() ||
+        window.bcwebmux.state.fontReloads <= firaReloads
+      )
+    ) await sleep(20);
+    if (window.bcwebmux.state.textRenderer !== "kb-canvas") throw new Error("Fira Code did not select canvas renderer");
+    if (!firaFacesLoaded()) throw new Error("Fira Code normal 400 and 700 faces did not load");
+    if (rendererSelect.value !== "kb-canvas") throw new Error("Fira Code did not select kb-canvas");
+    if (!stbOption.disabled) throw new Error("kb-stb was not disabled for Fira Code");
+    if (window.bcwebmux.state.fontReloads <= firaReloads) throw new Error("Fira Code font reload was not observed");
+    if (!window.bcwebmux.state.fontFamily.includes("Fira Code")) throw new Error("Fira Code font family was not applied");
+    const jetbrainsReloads = window.bcwebmux.state.fontReloads;
+    fontFamilySelect.value = "jetbrains-mono";
+    fontFamilySelect.dispatchEvent(new Event("change", { bubbles: true }));
+    if (stbOption.disabled) throw new Error("kb-stb did not re-enable for JetBrains Mono");
+    rendererSelect.value = "kb-stb";
+    rendererSelect.dispatchEvent(new Event("change", { bubbles: true }));
+    until = deadline(2500);
+    while (
+      (
+        window.bcwebmux.state.textRenderer !== "kb-stb" ||
+        window.bcwebmux.state.fontReloads <= jetbrainsReloads
+      ) &&
+      Date.now() < until
+    ) await sleep(20);
+    if (window.bcwebmux.state.textRenderer !== "kb-stb") throw new Error("kb-stb renderer was not restored");
+    if (window.bcwebmux.state.fontReloads <= jetbrainsReloads) throw new Error("JetBrains Mono font reload was not observed");
+    if (!window.bcwebmux.state.fontFamily.includes("JetBrains Mono Nerd Font")) {
+      throw new Error("JetBrains Mono Nerd Font was not applied");
+    }
     const fontFallbacks = panels.FONT.querySelector('textarea[name="fontFallbacks"]');
     if (!fontFallbacks) throw new Error("font fallbacks textarea is missing");
     const fallbackFamilies = fontFallbacks.value.split(/\\r?\\n/).map(family => family.trim());
@@ -327,6 +400,24 @@ try {
     if (new Set(fallbackFamilies.map(family => family.toLowerCase())).size !== fallbackFamilies.length) {
       throw new Error("font fallbacks contain duplicate family names");
     }
+    const notoEmojiIndex = fallbackFamilies.indexOf("Noto Emoji");
+    const notoSymbolsIndex = fallbackFamilies.indexOf("Noto Sans Symbols 2");
+    if (notoEmojiIndex !== 1 || notoSymbolsIndex < 0 || notoEmojiIndex >= notoSymbolsIndex) {
+      throw new Error("font fallbacks must place Noto Emoji immediately after ui-monospace and before Noto Sans Symbols 2");
+    }
+    if (!document.fonts.check('15px "Noto Emoji"', "😀")) {
+      throw new Error("Noto Emoji font was not loaded");
+    }
+    const emojiCanvas = document.createElement("canvas");
+    emojiCanvas.width = 64;
+    emojiCanvas.height = 64;
+    const emojiContext = emojiCanvas.getContext("2d");
+    if (!emojiContext) throw new Error("emoji rasterization context is unavailable");
+    emojiContext.font = 'normal 400 32px "Noto Emoji"';
+    emojiContext.fillStyle = "#fff";
+    emojiContext.fillText("\u{1FAE0}", 0, 32);
+    const emojiPixels = emojiContext.getImageData(0, 0, emojiCanvas.width, emojiCanvas.height).data;
+    if (!emojiPixels.some((value, index) => index % 4 === 3 && value !== 0)) throw new Error("Noto Emoji did not rasterize");
     const perfOutput = document.querySelector("#perf");
     if (!perfOutput) throw new Error("performance output is missing");
     const simple = settingsDialog.querySelector('input[type="radio"][value="simple"]');
@@ -636,6 +727,7 @@ try {
       const viewport = document.querySelector("#terminal-viewport");
       const chrome = document.querySelector("#terminal-chrome");
       const textView = document.querySelector("#text-view");
+      const selectionButton = document.querySelector("#selection-button");
       const spacer = document.querySelector("#spacer");
       const inputRect = input.getBoundingClientRect();
       const screenRect = screen.getBoundingClientRect();
@@ -664,7 +756,9 @@ try {
         spacerParentId: spacer.parentElement?.id || null,
         position: inputStyle.position,
         pointerEvents: inputStyle.pointerEvents,
+        selectionButtonDisplay: getComputedStyle(selectionButton).display,
         textViewPointerEvents: textViewStyle.pointerEvents,
+        textViewChildCount: textView.childElementCount,
         inputRect: rect(inputRect),
         screenRect: rect(screenRect),
         viewportRect: rect(viewportRect),
@@ -685,7 +779,9 @@ try {
   assert.equal(mobileInput.chromeParentId, "terminal");
   assert.equal(mobileInput.position, "absolute");
   assert.equal(mobileInput.pointerEvents, "none");
-  assert.notEqual(mobileInput.textViewPointerEvents, "none");
+  assert.notEqual(mobileInput.selectionButtonDisplay, "none");
+  assert.equal(mobileInput.textViewPointerEvents, "none");
+  assert.equal(mobileInput.textViewChildCount, 0);
   assert.equal(mobileInput.textViewParentId, "spacer");
   assert.equal(mobileInput.spacerParentId, "scroll");
   for (const edge of ["left", "top", "right", "bottom", "width", "height"]) {
@@ -694,7 +790,7 @@ try {
   for (const edge of ["left", "top", "bottom"]) {
     assert.ok(Math.abs(mobileInput.inputRect[edge] - mobileInput.viewportRect[edge]) <= 1, `${edge} does not match viewport ${JSON.stringify(mobileInput)}`);
   }
-  assert.equal(mobileInput.centerTextViewId, "text-view");
+  assert.equal(mobileInput.centerTextViewId, null);
   const exceptions = pageCdp.events.filter(event => event.method === "Runtime.exceptionThrown");
   assert.deepEqual(exceptions, [], JSON.stringify(exceptions));
   console.log(JSON.stringify({ ...value, presentedPixel, visualPsnr, gpuDevice: gpuDeviceText, mobileInput }));

@@ -9,18 +9,18 @@ export const FONT_OPTIONS = Object.freeze({
   "fira-code": {
     name: "Fira Code",
     cssFamily: "Fira Code",
-    wasmId: 1,
-    regularUrl: "https://cdn.jsdelivr.net/npm/firacode@6.2.0/distr/ttf/FiraCode-Regular.ttf",
-    boldUrl: "https://cdn.jsdelivr.net/npm/firacode@6.2.0/distr/ttf/FiraCode-Bold.ttf",
+    wasmId: 0,
+    canvasOnly: true,
   },
 });
+export const FONT_FALLBACK_VERSION = 1;
 export const DEFAULT_FONT_FALLBACKS = Object.freeze({
   "jetbrains-mono": Object.freeze([
-    "ui-monospace", "SFMono-Regular", "Cascadia Mono", "Noto Sans Mono CJK SC", "Noto Sans CJK SC",
+    "ui-monospace", "Noto Emoji", "SFMono-Regular", "Cascadia Mono", "Noto Sans Mono CJK SC", "Noto Sans CJK SC",
     "Microsoft YaHei UI", "PingFang SC", "Noto Sans Symbols 2", "monospace",
   ]),
   "fira-code": Object.freeze([
-    "ui-monospace", "SFMono-Regular", "Cascadia Mono", "Noto Sans Mono CJK SC", "Noto Sans CJK SC",
+    "ui-monospace", "Noto Emoji", "SFMono-Regular", "Cascadia Mono", "Noto Sans Mono CJK SC", "Noto Sans CJK SC",
     "Microsoft YaHei UI", "PingFang SC", "JetBrains Mono Nerd Font", "Noto Sans Symbols 2", "monospace",
   ]),
 });
@@ -48,6 +48,16 @@ export function normalizeFontFamilies(value, fallback = DEFAULT_FONT_FALLBACKS["
   return families;
 }
 
+function migrateFontFamilies(families) {
+  if (families.some(family => family.toLowerCase() === "noto emoji")) return families;
+  const uiMonospaceIndex = families.findIndex(family => family.toLowerCase() === "ui-monospace");
+  const symbolsIndex = families.findIndex(family => family.toLowerCase() === "noto sans symbols 2");
+  const insertionIndex = uiMonospaceIndex >= 0
+    ? uiMonospaceIndex + 1
+    : symbolsIndex >= 0 ? symbolsIndex : families.length - 1;
+  return [...families.slice(0, insertionIndex), "Noto Emoji", ...families.slice(insertionIndex)];
+}
+
 export function renderFontFamily(families) {
   return families.map(family => {
     const generic = family.toLowerCase();
@@ -63,6 +73,10 @@ const DEFAULT_SETTINGS = Object.freeze({
   perfMode: "simple",
   renderer: "kb-stb",
 });
+
+export function isCanvasOnlyFont(fontOption) {
+  return Boolean(fontOption?.canvasOnly);
+}
 
 export const BUILTIN_PROFILES = Object.freeze({
   "github-dark-high-contrast": {
@@ -108,6 +122,7 @@ function customAnsi(custom) {
 function loadSettings() {
   const fallback = {
     ...DEFAULT_SETTINGS,
+    fontFallbackVersion: FONT_FALLBACK_VERSION,
     fontFallbacks: Object.fromEntries(Object.keys(FONT_OPTIONS).map(id => [
       id, normalizeFontFamilies(undefined, DEFAULT_FONT_FALLBACKS[id]),
     ])),
@@ -127,11 +142,17 @@ function loadSettings() {
       : DEFAULT_SETTINGS.fontSize;
     const ligatures = typeof saved.ligatures === "boolean" ? saved.ligatures : DEFAULT_SETTINGS.ligatures;
     const perfMode = ["off", "simple", "detailed"].includes(saved.perfMode) ? saved.perfMode : DEFAULT_SETTINGS.perfMode;
-    const renderer = ["kb-stb", "kb-canvas"].includes(saved.renderer) ? saved.renderer : DEFAULT_SETTINGS.renderer;
-    const fontFallbacks = Object.fromEntries(Object.keys(FONT_OPTIONS).map(id => [
-      id, normalizeFontFamilies(saved.fontFallbacks?.[id], DEFAULT_FONT_FALLBACKS[id]),
-    ]));
-    return { fontFamily, fontSize, ligatures, perfMode, renderer, fontFallbacks, selected, custom };
+    let renderer = ["kb-stb", "kb-canvas"].includes(saved.renderer) ? saved.renderer : DEFAULT_SETTINGS.renderer;
+    if (isCanvasOnlyFont(FONT_OPTIONS[fontFamily])) renderer = "kb-canvas";
+    const migrateFontFallbacks = !Object.hasOwn(saved, "fontFallbackVersion");
+    const fontFallbacks = Object.fromEntries(Object.keys(FONT_OPTIONS).map(id => {
+      const fallbacks = normalizeFontFamilies(saved.fontFallbacks?.[id], DEFAULT_FONT_FALLBACKS[id]);
+      return [id, migrateFontFallbacks ? migrateFontFamilies(fallbacks) : fallbacks];
+    }));
+    return {
+      fontFamily, fontSize, ligatures, perfMode, renderer, fontFallbackVersion: FONT_FALLBACK_VERSION,
+      fontFallbacks, selected, custom,
+    };
   } catch {
     return fallback;
   }
@@ -144,6 +165,7 @@ function saveSettings(settings) {
       fontFamily: settings.fontFamily,
       fontSize: settings.fontSize,
       ligatures: settings.ligatures,
+      fontFallbackVersion: settings.fontFallbackVersion,
       fontFallbacks: Object.fromEntries(Object.entries(settings.fontFallbacks)
         .map(([id, fallbacks]) => [id, [...fallbacks]])),
       perfMode: settings.perfMode,
@@ -191,6 +213,7 @@ export function initializeSettings() {
   const customForm = document.querySelector("#custom-profile-form");
   const customColorEditor = document.querySelector("#custom-color-editor");
   const fontSettingsForm = document.querySelector("#font-settings-form");
+  const rendererStbOption = fontSettingsForm.elements.renderer.querySelector('option[value="kb-stb"]');
   const perfModeInputs = document.querySelectorAll('input[name="perfMode"]');
   const tablist = dialog.querySelector('[role="tablist"]');
   const settings = loadSettings();
@@ -200,6 +223,9 @@ export function initializeSettings() {
   let onRendererChange = () => {};
   let onOpen = () => {};
   let onClose = () => {};
+  const syncRendererControl = () => {
+    rendererStbOption.disabled = isCanvasOnlyFont(FONT_OPTIONS[settings.fontFamily]);
+  };
 
   const activate = (id, persist = true) => {
     settings.selected = id;
@@ -284,6 +310,7 @@ export function initializeSettings() {
     fontSettingsForm.elements.fontFallbacks.value = settings.fontFallbacks[settings.fontFamily].join("\n");
     fontSettingsForm.elements.fontSize.value = settings.fontSize;
     fontSettingsForm.elements.ligatures.checked = settings.ligatures;
+    syncRendererControl();
     fontSettingsForm.elements.renderer.value = settings.renderer;
     for (const input of perfModeInputs) input.checked = input.value === settings.perfMode;
     onOpen();
@@ -328,23 +355,31 @@ export function initializeSettings() {
   fontSettingsForm.elements.fontSize.value = settings.fontSize;
   fontSettingsForm.elements.ligatures.checked = settings.ligatures;
   fontSettingsForm.elements.renderer.value = settings.renderer;
+  syncRendererControl();
   fontSettingsForm.addEventListener("change", event => {
-    const renderer = ["kb-stb", "kb-canvas"].includes(fontSettingsForm.elements.renderer.value)
+    const requestedRenderer = ["kb-stb", "kb-canvas"].includes(fontSettingsForm.elements.renderer.value)
       ? fontSettingsForm.elements.renderer.value
       : DEFAULT_SETTINGS.renderer;
+    const fontFamilyChanged = event.target === fontSettingsForm.elements.fontFamily;
+    if (fontFamilyChanged) {
+      settings.fontFamily = Object.hasOwn(FONT_OPTIONS, fontSettingsForm.elements.fontFamily.value)
+        ? fontSettingsForm.elements.fontFamily.value
+        : DEFAULT_SETTINGS.fontFamily;
+      fontSettingsForm.elements.fontFallbacks.value = settings.fontFallbacks[settings.fontFamily].join("\n");
+    }
+    const renderer = isCanvasOnlyFont(FONT_OPTIONS[settings.fontFamily]) && requestedRenderer === "kb-stb"
+      ? "kb-canvas"
+      : requestedRenderer;
+    syncRendererControl();
+    fontSettingsForm.elements.renderer.value = renderer;
     if (renderer !== settings.renderer) {
       settings.renderer = renderer;
       saveSettings(settings);
       onRendererChange(renderer);
-      return;
     }
+    if (!fontFamilyChanged && event.target === fontSettingsForm.elements.renderer) return;
     settings.ligatures = fontSettingsForm.elements.ligatures.checked;
-    settings.fontFamily = Object.hasOwn(FONT_OPTIONS, fontSettingsForm.elements.fontFamily.value)
-      ? fontSettingsForm.elements.fontFamily.value
-      : DEFAULT_SETTINGS.fontFamily;
-    if (event.target === fontSettingsForm.elements.fontFamily) {
-      fontSettingsForm.elements.fontFallbacks.value = settings.fontFallbacks[settings.fontFamily].join("\n");
-    } else if (event.target === fontSettingsForm.elements.fontFallbacks) {
+    if (event.target === fontSettingsForm.elements.fontFallbacks) {
       const activeId = settings.fontFamily;
       settings.fontFallbacks[activeId] = normalizeFontFamilies(
         fontSettingsForm.elements.fontFallbacks.value.split(/\r?\n/),

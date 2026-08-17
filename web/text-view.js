@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Cheng Cao
 
-const ROW_SIZE = 24;
+const ROW_SIZE = 32;
 const CELL_SIZE = 4;
 const ROW_WRAP = 1;
 const decoder = new TextDecoder("utf-8", { fatal: true });
@@ -11,15 +11,41 @@ export class TerminalTextView {
     this.element = element;
     this.callbacks = callbacks;
     this.rowsByKey = new Map();
+    this.rowPool = [];
+    this.cellPool = [];
+    this.desired = [];
+    this.generation = 0;
+    this.enabled = false;
     this.owned = false;
     this.selectionQueued = false;
+    this.handleSelectionChange = this.queueSelectionSync.bind(this);
+    this.handleCopy = this.copy.bind(this);
 
-    document.addEventListener("selectionchange", () => this.queueSelectionSync());
-    document.addEventListener("copy", event => this.copy(event));
+  }
+
+  setEnabled(enabled) {
+    if (this.enabled === enabled) return false;
+    this.enabled = enabled;
+    if (enabled) {
+      document.addEventListener("selectionchange", this.handleSelectionChange);
+      document.addEventListener("copy", this.handleCopy);
+    } else {
+      document.removeEventListener("selectionchange", this.handleSelectionChange);
+      document.removeEventListener("copy", this.handleCopy);
+      while (this.element.firstChild) this.element.firstChild.remove();
+      this.rowsByKey.clear();
+      this.rowPool.length = 0;
+      this.cellPool.length = 0;
+      this.desired.length = 0;
+      this.generation += 1;
+    }
+    return true;
   }
 
   update(memory, metadata, rowsPtr, cellsPtr, textPtr, textLen, changed) {
-    if (!changed) return;
+    if (!this.enabled || !changed) return;
+    this.generation += 1;
+    this.desired.length = 0;
     const { cols, rows } = metadata;
     const cellCount = cols * rows;
     this.validateRange(memory, rowsPtr, rows * ROW_SIZE, "text rows");
@@ -29,9 +55,6 @@ export class TerminalTextView {
     const rowData = new DataView(memory, rowsPtr, rows * ROW_SIZE);
     const cellData = new DataView(memory, cellsPtr, cellCount * CELL_SIZE);
     const textData = new Uint8Array(memory, textPtr, textLen);
-    const desired = [];
-    const desiredKeys = new Set();
-
     for (let y = 0; y < rows; y += 1) {
       const rowOffset = y * ROW_SIZE;
       const byteOffset = rowData.getUint32(rowOffset, true);
@@ -39,63 +62,74 @@ export class TerminalTextView {
       if (byteOffset > textLen || byteLength > textLen - byteOffset) {
         throw new Error("invalid terminal text row range");
       }
-      const serial = rowData.getBigUint64(rowOffset + 8, true);
+      const serialLow = rowData.getUint32(rowOffset + 8, true);
+      const serialHigh = rowData.getUint32(rowOffset + 12, true);
       const pageY = rowData.getUint32(rowOffset + 16, true);
       const flags = rowData.getUint32(rowOffset + 20, true);
-      const key = `${serial.toString(16)}:${pageY}`;
-      const rowText = decoder.decode(textData.subarray(byteOffset, byteOffset + byteLength));
-      const layout = this.cellLayout(cellData, y, cols);
-
-      let row = this.rowsByKey.get(key);
-      if (!row) {
-        row = document.createElement("div");
-        row.className = "text-row";
-        this.rowsByKey.set(key, row);
+      const hashLow = rowData.getUint32(rowOffset + 24, true);
+      const hashHigh = rowData.getUint32(rowOffset + 28, true);
+      let row = this.element.children[y];
+      if (!row ||
+          row._terminalSerialLow !== serialLow ||
+          row._terminalSerialHigh !== serialHigh ||
+          row._terminalPageY !== pageY) {
+        const key = `${serialHigh}:${serialLow}:${pageY}`;
+        row = this.rowsByKey.get(key);
+        if (!row) {
+          row = this.rowPool.pop();
+          if (!row) row = document.createElement("div");
+          row.className = "text-row";
+          row._terminalHashLow = undefined;
+          row._terminalHashHigh = undefined;
+          row._terminalViewportRow = undefined;
+          row._terminalWrap = undefined;
+          this.rowsByKey.set(key, row);
+        }
       }
-      row.dataset.row = String(y);
-      row.dataset.wrap = flags & ROW_WRAP ? "true" : "false";
-      if (row._terminalText !== rowText || row._terminalLayout !== layout) {
+      const wrap = Boolean(flags & ROW_WRAP);
+      if (row._terminalViewportRow !== y) {
+        row.dataset.row = String(y);
+        row._terminalViewportRow = y;
+      }
+      if (row._terminalWrap !== wrap) {
+        row.dataset.wrap = wrap ? "true" : "false";
+        row._terminalWrap = wrap;
+      }
+      if (row._terminalHashLow !== hashLow || row._terminalHashHigh !== hashHigh) {
+        const rowText = decoder.decode(textData.subarray(byteOffset, byteOffset + byteLength));
         this.renderRow(row, rowText, cellData, y, cols);
-        row._terminalText = rowText;
-        row._terminalLayout = layout;
+        row._terminalHashLow = hashLow;
+        row._terminalHashHigh = hashHigh;
       }
-      desired.push(row);
-      desiredKeys.add(key);
+      row._terminalSerialLow = serialLow;
+      row._terminalSerialHigh = serialHigh;
+      row._terminalPageY = pageY;
+      row._terminalGeneration = this.generation;
+      this.desired.push(row);
     }
 
-    for (let index = 0; index < desired.length; index += 1) {
-      const row = desired[index];
+    for (let index = 0; index < this.desired.length; index += 1) {
+      const row = this.desired[index];
       const current = this.element.children[index];
       if (current !== row) this.element.insertBefore(row, current || null);
     }
-    for (const child of [...this.element.children]) {
-      if (!desired.includes(child)) child.remove();
+    for (let index = this.element.children.length - 1; index >= 0; index -= 1) {
+      const child = this.element.children[index];
+      if (child._terminalGeneration !== this.generation) child.remove();
     }
     for (const [key, row] of this.rowsByKey) {
-      if (!desiredKeys.has(key)) {
+      if (row._terminalGeneration !== this.generation) {
         this.rowsByKey.delete(key);
         if (row.isConnected) row.remove();
+        this.rowPool.push(row);
       }
     }
     this.element.style.height = `calc(${rows} * var(--cell-height))`;
   }
 
-  cellLayout(cellData, y, cols) {
-    let result = "";
-    for (let x = 0; x < cols; x += 1) {
-      const offset = (y * cols + x) * CELL_SIZE;
-      result += String.fromCharCode(
-        cellData.getUint16(offset, true),
-        cellData.getUint8(offset + 2),
-        cellData.getUint8(offset + 3),
-      );
-    }
-    return result;
-  }
-
   renderRow(row, rowText, cellData, y, cols) {
-    const fragment = document.createDocumentFragment();
     let textOffset = 0;
+    let spanIndex = 0;
     for (let x = 0; x < cols; x += 1) {
       const offset = (y * cols + x) * CELL_SIZE;
       const utf16Length = cellData.getUint16(offset, true);
@@ -107,17 +141,34 @@ export class TerminalTextView {
       if (width > 2 || utf16Length === 0 || textOffset + utf16Length > rowText.length) {
         throw new Error("invalid terminal text cell");
       }
-      const cell = document.createElement("span");
-      cell.className = "text-cell";
-      cell.dataset.start = String(x);
-      cell.dataset.end = String(Math.min(cols, x + width));
-      cell.dataset.width = String(width);
-      cell.textContent = rowText.slice(textOffset, textOffset + utf16Length);
+      let cell = row.children[spanIndex];
+      if (!cell) {
+        cell = this.cellPool.pop() || document.createElement("span");
+        cell.className = "text-cell";
+        row.append(cell);
+      }
+      const start = String(x);
+      const end = String(Math.min(cols, x + width));
+      const cellWidth = String(width);
+      if (cell.dataset.start !== start) cell.dataset.start = start;
+      if (cell.dataset.end !== end) cell.dataset.end = end;
+      if (cell.dataset.width !== cellWidth) cell.dataset.width = cellWidth;
+      const text = rowText.slice(textOffset, textOffset + utf16Length);
+      const textNode = cell.firstChild;
+      if (textNode?.nodeType === Node.TEXT_NODE && cell.childNodes.length === 1) {
+        if (textNode.data !== text) textNode.data = text;
+      } else {
+        cell.replaceChildren(document.createTextNode(text));
+      }
       textOffset += utf16Length;
-      fragment.append(cell);
+      spanIndex += 1;
     }
     if (textOffset !== rowText.length) throw new Error("terminal text row length mismatch");
-    row.replaceChildren(fragment);
+    while (row.children.length > spanIndex) {
+      const cell = row.lastElementChild;
+      cell.remove();
+      this.cellPool.push(cell);
+    }
   }
 
   validateRange(memory, pointer, length, label) {
@@ -138,6 +189,7 @@ export class TerminalTextView {
   }
 
   syncSelection() {
+    if (!this.enabled) return;
     const selection = document.getSelection();
     const range = selection?.rangeCount === 1 ? selection.getRangeAt(0) : null;
     if (!range || selection.isCollapsed || !this.contains(range.startContainer) || !this.contains(range.endContainer)) {

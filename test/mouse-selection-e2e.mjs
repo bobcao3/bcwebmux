@@ -271,9 +271,24 @@ try {
   assert.notEqual(await evaluate("document.activeElement === document.querySelector('#input')"), true, "long touch refocused keyboard input");
   await evaluate(`window.bcwebmux.write(${JSON.stringify("printf '\\033[?1000l\\033[?1002l\\033[?1003l\\033[?1006l'\r")})`);
 
+  assert.equal(await evaluate("document.querySelector('#text-view').children.length"), 0, "desktop text mirror was activated");
+  assert.equal(await evaluate("window.bcwebmux.enterSelectionMode()"), false, "desktop pointer did not remain outside selection mode");
+  assert.equal(await evaluate("window.bcwebmux.selectionMode"), false, "selection mode was entered by desktop pointer");
+  await pageCdp.call("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 1 });
+  await waitFor(async () => evaluate("matchMedia('(pointer: coarse)').matches"), 1500, () => "coarse media query did not match");
+  assert.equal(await evaluate("document.querySelector('#text-view').children.length"), 0, "text mirror was activated before selection mode");
+  assert.equal(await evaluate("window.bcwebmux.selectionMode"), false, "selection mode was active before entering");
+
   const selectionScreen = "printf '\\033[?1000l\\033[?1002l\\033[?1003l\\033[?1006l\\033[2J\\033[H\\033[38;2;240;240;240m\\033[48;2;127;127;127mAé中Z \\033[0m\\033[10;1H'\r";
   await evaluate(`window.bcwebmux.write(${JSON.stringify(selectionScreen)})`);
   await waitCellColor(0, 0, [127, 127, 127], "selection fixture did not render");
+  assert.equal(await evaluate("window.bcwebmux.enterSelectionMode()"), true, "failed to enter selection mode");
+  await waitFor(async () => evaluate("document.querySelector('#text-view').children.length > 0"), 1500, () => "text mirror rows were not populated");
+  const rxBytesBeforeSelection = await evaluate("window.bcwebmux.state.rxBytes");
+  const rxWireBytesBeforeSelection = await evaluate("window.bcwebmux.state.rxWireBytes");
+  await evaluate(`window.bcwebmux.write(${JSON.stringify("printf 'FROZEN_OUTPUT'\r")})`);
+  await waitFor(async () => evaluate(`window.bcwebmux.state.rxWireBytes > ${rxWireBytesBeforeSelection}`), 1500, () => "selection output was not received");
+  assert.equal(await evaluate("window.bcwebmux.state.rxBytes"), rxBytesBeforeSelection, "selection mode parsed output while frozen");
   const txBeforeDomSelection = await evaluate("window.bcwebmux.state.txBytes");
   await evaluate(`(() => {
     const first = document.querySelector('#text-view .text-row[data-row="0"] [data-start="1"]');
@@ -289,6 +304,12 @@ try {
   assert.equal(await evaluate("window.bcwebmux.state.txBytes"), txBeforeDomSelection, "DOM selection emitted PTY bytes");
   await evaluate("window.getSelection().removeAllRanges()");
   await waitFor(async () => evaluate("window.bcwebmux.selectionText() === null"), 1500, () => "DOM selection was not cleared");
+  assert.equal(await evaluate("window.bcwebmux.exitSelectionMode()"), true, "failed to exit selection mode");
+  await waitFor(async () => evaluate("document.querySelector('#text-view').children.length === 0"), 1500, () => "text mirror rows were not released");
+  await waitFor(async () => evaluate("window.bcwebmux.selectionMode === false"), 1500, () => "selection mode was not exited");
+  await waitFor(async () => evaluate(`window.bcwebmux.state.rxBytes > ${rxBytesBeforeSelection}`), 1500, () => "queued selection output was not parsed after exit");
+  await pageCdp.call("Emulation.setTouchEmulationEnabled", { enabled: false });
+  await waitFor(async () => evaluate("!matchMedia('(pointer: coarse)').matches"), 1500, () => "coarse media query did not stop matching");
   const txBeforeSelection = await evaluate("window.bcwebmux.state.txBytes");
   await dispatchPress(1, 0, 0, 0.3);
   await dispatchMove(2, 0, 1, 0, 0.8);
@@ -482,6 +503,20 @@ try {
   await evaluate(`window.bcwebmux.write(${JSON.stringify("printf '\\033[?1003l'\r")})`);
   await pageCdp.call("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 1 });
   await evaluate("new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))");
+  assert.notEqual(await evaluate("getComputedStyle(document.querySelector('#selection-button')).display"), "none", "selection button was not displayed");
+  assert.equal(await evaluate(`(() => {
+    const button = document.querySelector("#selection-button");
+    const controls = document.querySelector("#terminal-controls");
+    return Boolean(button.querySelector("svg")) &&
+      button.textContent.trim() === "" &&
+      Math.abs(button.getBoundingClientRect().left - controls.getBoundingClientRect().left) <= 8;
+  })()`), true, "selection button was not a left-aligned icon-only control");
+  assert.equal(await evaluate("getComputedStyle(document.querySelector('#text-view')).pointerEvents"), "none");
+  assert.equal(await evaluate("document.querySelector('#text-view').children.length"), 0, "text mirror was active before selection mode");
+  assert.equal(await evaluate("window.bcwebmux.selectionMode"), false, "selection mode was active before button toggle");
+  await evaluate("document.querySelector('#selection-button').click()");
+  await waitFor(async () => evaluate("window.bcwebmux.selectionMode === true"), 1500, () => "selection mode was not entered by button");
+  await waitFor(async () => evaluate("document.querySelector('#text-view').children.length > 0"), 1500, () => "text mirror rows were not populated by button");
   const coarseHitTarget = await evaluate(`(() => {
     const element = document.elementFromPoint(${point(1, 1).x}, ${point(1, 1).y});
     const textView = document.querySelector("#text-view");
@@ -490,6 +525,8 @@ try {
   assert.ok(coarseHitTarget, "coarse pointer hit target was not #text-view");
   assert.notEqual(await evaluate("getComputedStyle(document.querySelector('#text-view')).pointerEvents"), "none");
   assert.equal(await evaluate("getComputedStyle(document.querySelector('#input')).pointerEvents"), "none");
+  await evaluate("document.querySelector('#selection-button').click()");
+  await waitFor(async () => evaluate("window.bcwebmux.selectionMode === false"), 1500, () => "selection mode was not exited by button");
 
   const exceptions = pageCdp.events.filter(event => event.method === "Runtime.exceptionThrown");
   assert.deepEqual(exceptions, [], JSON.stringify(exceptions));

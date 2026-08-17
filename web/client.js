@@ -8,6 +8,7 @@ import { initializeSettings } from "./settings.js";
 
 const terminal = document.querySelector("#terminal");
 const terminalViewport = document.querySelector("#terminal-viewport");
+const selectionButton = document.querySelector("#selection-button");
 const perf = document.querySelector("#perf");
 const scroll = document.querySelector("#scroll");
 const spacer = document.querySelector("#spacer");
@@ -27,11 +28,13 @@ const strictDecoder = new TextDecoder("utf-8", { fatal: true });
 const settings = initializeSettings();
 const requestedRenderer = new URLSearchParams(location.search).get("renderer");
 const textRenderer = requestedRenderer === "kb-canvas" ? "kb-canvas" : settings.renderer;
+let activeTextRenderer = textRenderer;
 const resizeMessage = new Uint8Array(12);
 const resizeView = new DataView(resizeMessage.buffer);
 resizeView.setUint32(0, 0x52574342, true);
 const state = {
   connected: false,
+  selectionMode: false,
   frames: 0,
   rxBytes: 0,
   rxWireBytes: 0,
@@ -51,7 +54,6 @@ let wasm;
 let socket;
 let renderer;
 let outputDecoder;
-let externalFontInstalled = false;
 let fontChangeGeneration = 0;
 let framePending = false;
 let frameDirty = false;
@@ -75,6 +77,12 @@ let pendingInputAt = 0;
 let rttProbeSequence = 0;
 const outstandingRttProbes = new Map();
 const rttSamples = [];
+let selectionMode = false;
+let restoreInputFocus = false;
+const frozenMessages = [];
+let frozenBytes = 0;
+let flushingFrozenMessages = false;
+const frozenOutputLimit = 4 * 1024 * 1024;
 const terminalTextView = new TerminalTextView(textView, {
   setSelection(start, end) {
     const handled = wasm.term_selection_set_range(start.row, start.col, end.row, end.col) === 1;
@@ -91,12 +99,21 @@ const terminalTextView = new TerminalTextView(textView, {
     return getSelectedText();
   },
 });
-await Promise.all([
-  document.fonts.load(`normal 400 ${settings.font.size}px "${settings.font.cssFamily}"`),
-  document.fonts.load(`normal 700 ${settings.font.size}px "${settings.font.cssFamily}"`),
-  document.fonts.load(`italic 400 ${settings.font.size}px "${settings.font.cssFamily}"`),
-  document.fonts.load(`italic 700 ${settings.font.size}px "${settings.font.cssFamily}"`),
-]);
+
+function loadTerminalFonts(font) {
+  const loads = [
+    document.fonts.load(`normal 400 ${font.size}px "${font.cssFamily}"`),
+    document.fonts.load(`normal 700 ${font.size}px "${font.cssFamily}"`),
+    document.fonts.load(`italic 400 ${font.size}px "${font.cssFamily}"`),
+    document.fonts.load(`italic 700 ${font.size}px "${font.cssFamily}"`),
+  ];
+  if (font.fallbacks?.some((fallback) => /noto emoji/i.test(fallback))) {
+    loads.push(document.fonts.load(`normal 400 ${font.size}px "Noto Emoji"`, "😀"));
+  }
+  return loads;
+}
+
+await Promise.all(loadTerminalFonts(settings.font));
 await document.fonts.ready;
 const measuredMetrics = measureCells();
 const cssCellMetrics = { ...measuredMetrics };
@@ -538,34 +555,19 @@ function applyTextRenderer(rendererName) {
     throw new Error(`WASM renderer configuration failed: ${result}`);
   }
   renderer.setTextRenderer(rendererName);
+  activeTextRenderer = rendererName;
+  reloadRendererFont();
   scheduleFrame(true);
 }
 
+function reloadRendererFont() {
+  renderer.reloadFont(getComputedStyle(terminal).fontFamily);
+  wasm.term_invalidate_glyph_cache();
+}
+
 async function configureWasmFont(font) {
-  if (font.wasmId === 1 && !externalFontInstalled) {
-    const responses = await Promise.all([
-      fetch(font.regularUrl),
-      fetch(font.boldUrl),
-    ]);
-    for (const response of responses) {
-      if (!response.ok) throw new Error(`font fetch failed: ${response.status}`);
-    }
-    const [regular, bold] = await Promise.all(responses.map((response) => response.arrayBuffer()));
-    for (const [style, bytes] of [
-      [0, regular],
-      [2, regular],
-      [1, bold],
-      [3, bold],
-    ]) {
-      const data = new Uint8Array(bytes);
-      const ptr = wasm.bc_font_alloc(data.length);
-      if (!ptr) throw new Error("WASM font allocation failed");
-      new Uint8Array(wasm.memory.buffer, ptr, data.length).set(data);
-      if (wasm.term_font_install(style, ptr, data.length) !== 1) {
-        throw new Error("WASM font installation failed");
-      }
-    }
-    externalFontInstalled = true;
+  if (font.canvasOnly && activeTextRenderer !== "kb-canvas") {
+    throw new Error("Canvas-only font requires the kb-canvas renderer");
   }
   if (wasm.term_set_font(font.wasmId, font.ligatures ? 1 : 0) !== 1) {
     throw new Error("WASM font configuration failed");
@@ -575,23 +577,21 @@ async function configureWasmFont(font) {
 async function applyFontSettings(font) {
   const generation = ++fontChangeGeneration;
   try {
-    await Promise.all([
-      document.fonts.load(`normal 400 ${font.size}px "${font.cssFamily}"`),
-      document.fonts.load(`normal 700 ${font.size}px "${font.cssFamily}"`),
-      document.fonts.load(`italic 400 ${font.size}px "${font.cssFamily}"`),
-      document.fonts.load(`italic 700 ${font.size}px "${font.cssFamily}"`),
-    ]);
+    await Promise.all(loadTerminalFonts(font));
     await document.fonts.ready;
     if (generation !== fontChangeGeneration) return;
     await configureWasmFont(font);
     if (generation !== fontChangeGeneration) return;
-    const fontFamilyChanged = renderer.setFontFamily(getComputedStyle(terminal).fontFamily);
-    if (fontFamilyChanged) wasm.term_invalidate_glyph_cache();
     Object.assign(measuredMetrics, measureCells());
     resizeTerminal(latestPixelViewport);
+    reloadRendererFont();
     scheduleFrame(true);
   } catch (error) {
     if (generation === fontChangeGeneration) {
+      try {
+        reloadRendererFont();
+      } catch {}
+      scheduleFrame(true);
       setConnectionStatus(false, error.message || "font error");
     }
   }
@@ -630,6 +630,28 @@ function updateTelemetry() {
   perf.setAttribute("aria-label", description);
 }
 
+function feedOutputChunk(chunk) {
+  const ptr = wasm.term_reserve(chunk.length);
+  if (!ptr) throw new Error("WASM receive buffer exhausted");
+  new Uint8Array(wasm.memory.buffer, ptr, chunk.length).set(chunk);
+  const parseStartedAt = performance.now();
+  wasm.term_feed(chunk.length);
+  sampleMetric("wasmParseMs", performance.now() - parseStartedAt);
+  state.rxBytes += chunk.length;
+  if (!flushingFrozenMessages) scheduleFrame(true);
+}
+
+function processBinaryOutput(message) {
+  if (!outputDecoder) return;
+  if (!pendingRxAt) pendingRxAt = performance.now();
+  try {
+    outputDecoder.push(new Uint8Array(message), false);
+  } catch {
+    setConnectionStatus(false, "compression error");
+    socket.close();
+  }
+}
+
 function connect() {
   setConnectionStatus(false, "connecting");
   const scheme = location.protocol === "https:" ? "wss" : "ws";
@@ -642,16 +664,7 @@ function connect() {
       return;
     }
     const decoder = new Decompress();
-    decoder.ondata = (chunk) => {
-      const ptr = wasm.term_reserve(chunk.length);
-      if (!ptr) throw new Error("WASM receive buffer exhausted");
-      new Uint8Array(wasm.memory.buffer, ptr, chunk.length).set(chunk);
-      const parseStartedAt = performance.now();
-      wasm.term_feed(chunk.length);
-      sampleMetric("wasmParseMs", performance.now() - parseStartedAt);
-      state.rxBytes += chunk.length;
-      scheduleFrame(true);
-    };
+    decoder.ondata = feedOutputChunk;
     decoder.onerror = () => {
       setConnectionStatus(false, "compression error");
       socket.close();
@@ -691,17 +704,24 @@ function connect() {
       state.wsRttP95Ms = sorted[Math.min(sorted.length - 1, Math.ceil(sorted.length * 0.95) - 1)];
       return;
     }
-    if (!pendingRxAt) pendingRxAt = performance.now();
     state.rxWireBytes += event.data.byteLength;
-    try {
-      outputDecoder.push(new Uint8Array(event.data), false);
-    } catch {
-      setConnectionStatus(false, "compression error");
-      socket.close();
+    if (selectionMode) {
+      frozenMessages.push(event.data);
+      frozenBytes += event.data.byteLength;
+      if (frozenBytes > frozenOutputLimit) {
+        exitSelectionMode({ restoreFocus: false });
+      }
+      return;
     }
+    processBinaryOutput(event.data);
   });
   socket.addEventListener("close", () => {
     state.connected = false;
+    if (selectionMode) {
+      exitSelectionMode({ flush: false, restoreFocus: false });
+    } else {
+      discardFrozenMessages();
+    }
     outputDecoder = undefined;
     pendingRxAt = 0;
     pendingInputAt = 0;
@@ -1110,8 +1130,82 @@ settings.setLifecycle({
   onClose: () => terminalFocus.resume(),
 });
 coarsePointer.addEventListener("change", () => {
+  if (!coarsePointer.matches && selectionMode) {
+    exitSelectionMode({ restoreFocus: false });
+  }
   terminalInput.resetGeometry();
   if (terminalInput.isComposing) terminalInput.sync();
+});
+
+function updateSelectionModeUi() {
+  terminal.classList.toggle("selection-mode", selectionMode);
+  state.selectionMode = selectionMode;
+  selectionButton?.setAttribute("aria-pressed", String(selectionMode));
+  selectionButton?.setAttribute("aria-label", selectionMode
+    ? "Exit selection mode"
+    : "Enter selection mode");
+  selectionButton?.setAttribute("title", selectionMode
+    ? "Resume live terminal"
+    : "Select frozen terminal text");
+}
+
+function enterSelectionMode() {
+  if (selectionMode || !wasm || !coarsePointer.matches) return false;
+  restoreInputFocus = document.activeElement === input;
+  touchCandidate = null;
+  activeMouseGesture = null;
+  clearSoftModifiers();
+  selectionMode = true;
+  updateSelectionModeUi();
+  terminalFocus.suspend();
+  terminalTextView.setEnabled(true);
+  wasm.term_set_text_view_enabled(1);
+  wasm.term_invalidate_text_view();
+  scheduleFrame(true);
+  return true;
+}
+
+function discardFrozenMessages() {
+  frozenMessages.splice(0);
+  frozenBytes = 0;
+}
+
+function flushFrozenMessages() {
+  const messages = frozenMessages.splice(0);
+  frozenBytes = 0;
+  if (!messages.length) return;
+  flushingFrozenMessages = true;
+  try {
+    for (const message of messages) processBinaryOutput(message);
+  } finally {
+    flushingFrozenMessages = false;
+  }
+}
+
+function exitSelectionMode({ flush = true, restoreFocus = true } = {}) {
+  if (!selectionMode) return false;
+  const shouldRestoreFocus = restoreFocus && restoreInputFocus;
+  restoreInputFocus = false;
+  terminalTextView.clearBrowserSelection(true);
+  terminalTextView.setEnabled(false);
+  wasm.term_set_text_view_enabled(0);
+  selectionMode = false;
+  updateSelectionModeUi();
+  if (flush) flushFrozenMessages();
+  else discardFrozenMessages();
+  terminalFocus.resume();
+  if (shouldRestoreFocus) terminalFocus.restore();
+  scheduleFrame(true);
+  return true;
+}
+
+updateSelectionModeUi();
+selectionButton?.addEventListener("pointerdown", (event) => {
+  event.preventDefault();
+});
+selectionButton?.addEventListener("click", () => {
+  if (selectionMode) exitSelectionMode();
+  else enterSelectionMode();
 });
 
 function setSoftModifiers(value) {
@@ -1232,6 +1326,7 @@ function sendResize() {
 }
 
 function resizeTerminal(pixelViewport = nativePixelViewport()) {
+  if (selectionMode) exitSelectionMode({ restoreFocus: false });
   const layout = physicalLayout(pixelViewport);
   cssCellMetrics.width = layout.cellWidth / layout.scaleX;
   cssCellMetrics.height = layout.cellHeight / layout.scaleY;
@@ -1279,6 +1374,7 @@ scroll.addEventListener("scroll", () => {
 }, { passive: true });
 
 scroll.addEventListener("pointerdown", (event) => {
+  if (selectionMode) return;
   if (event.pointerType !== "touch") suppressedMousePointerUps.delete(event.pointerId);
   if (event.pointerType === "touch") {
     if (isTerminalPointer(event)) {
@@ -1330,6 +1426,7 @@ scroll.addEventListener("pointerdown", (event) => {
   }
 }, { passive: false });
 scroll.addEventListener("pointerup", (event) => {
+  if (selectionMode) return;
   if (event.pointerType === "touch") {
     const candidate = touchCandidate;
     if (candidate?.pointerId === event.pointerId) {
@@ -1353,6 +1450,7 @@ scroll.addEventListener("pointerup", (event) => {
   if (encoded && event.pointerType !== "touch") event.preventDefault();
 }, { passive: false });
 scroll.addEventListener("pointermove", (event) => {
+  if (selectionMode) return;
   if (event.pointerType === "touch") {
     if (touchCandidate?.pointerId === event.pointerId) {
       const dx = event.clientX - touchCandidate.startX;
@@ -1377,6 +1475,7 @@ scroll.addEventListener("pointermove", (event) => {
   if (encoded && event.pointerType !== "touch") event.preventDefault();
 }, { passive: false });
 scroll.addEventListener("pointercancel", (event) => {
+  if (selectionMode) return;
   if (event.pointerType === "touch") {
     if (touchCandidate?.pointerId === event.pointerId) touchCandidate = null;
     return;
@@ -1387,16 +1486,19 @@ scroll.addEventListener("lostpointercapture", (event) => {
   finishMouseGesture(event, true);
 });
 scroll.addEventListener("wheel", (event) => {
+  if (selectionMode) return;
   if (!isTerminalPointer(event)) return;
   if (event.deltaY === 0) return;
   if (sendMouse(event, 0, event.deltaY < 0 ? 4 : 5)) event.preventDefault();
 }, { passive: false });
 scroll.addEventListener("contextmenu", (event) => {
+  if (selectionMode) return;
   if (!encodedRightClick) return;
   encodedRightClick = false;
   event.preventDefault();
 });
 scroll.addEventListener("click", (event) => {
+  if (selectionMode) return;
   if (terminalTextView.hasSelection()) {
     touchCandidate = null;
     return;
@@ -1472,6 +1574,7 @@ softkeys.addEventListener("pointerdown", (event) => {
   if (button) event.preventDefault();
 });
 softkeys.addEventListener("click", (event) => {
+  if (selectionMode) return;
   const button = event.target.closest("button");
   if (!button) return;
   if (button.dataset.mod) {
@@ -1499,6 +1602,9 @@ window.addEventListener("pagehide", () => socket?.close());
 
 window.bcwebmux = {
   get connected() { return state.connected; },
+  get selectionMode() { return selectionMode; },
+  enterSelectionMode() { return enterSelectionMode(); },
+  exitSelectionMode() { return exitSelectionMode(); },
   get state() { return { ...state, ...renderer.stats }; },
   get inputTrace() { return inputDiagnostics.text(); },
   selectionText() { return getSelectedText(); },

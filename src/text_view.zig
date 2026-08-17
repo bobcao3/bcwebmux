@@ -14,6 +14,7 @@ pub const Row = extern struct {
     serial: u64,
     page_y: u32,
     flags: u32,
+    hash: u64,
 };
 
 pub const Cell = extern struct {
@@ -40,7 +41,7 @@ var text: [max_text_bytes]u8 = undefined;
 var previous_hash: ?u64 = null;
 
 comptime {
-    std.debug.assert(@sizeOf(Row) == 24);
+    std.debug.assert(@sizeOf(Row) == 32);
     std.debug.assert(@sizeOf(Cell) == 4);
 }
 
@@ -50,6 +51,17 @@ pub fn reset() void {
 
 pub fn commit(hash: u64) void {
     previous_hash = hash;
+}
+
+pub fn inactiveSnapshot() Snapshot {
+    return .{
+        .rows = rows[0..].ptr,
+        .cells = cells[0..].ptr,
+        .text = text[0..].ptr,
+        .text_len = 0,
+        .changed = false,
+        .hash = 0,
+    };
 }
 
 pub fn build(state: *const ghostty.RenderState) !Snapshot {
@@ -71,6 +83,7 @@ pub fn build(state: *const ghostty.RenderState) !Snapshot {
 
     for (row_cells, 0..) |*render_cells, y| {
         const text_start = text_len;
+        var row_hasher = std.hash.Wyhash.init(0);
         const slice = render_cells.slice();
         const raw_cells = slice.items(.raw);
         const graphemes = slice.items(.grapheme);
@@ -95,15 +108,20 @@ pub fn build(state: *const ghostty.RenderState) !Snapshot {
                 }
             }
             cells[y * cols + x] = record;
+            row_hasher.update(std.mem.asBytes(&record));
             hasher.update(std.mem.asBytes(&record));
         }
 
+        const row_flags: u32 = if (row_raw[y].wrap) row_wrap else 0;
+        row_hasher.update(std.mem.asBytes(&row_flags));
+        row_hasher.update(text[text_start..text_len]);
         const descriptor: Row = .{
             .text_offset = @intCast(text_start),
             .text_len = @intCast(text_len - text_start),
             .serial = row_serials[y],
             .page_y = row_pins[y].y,
-            .flags = if (row_raw[y].wrap) row_wrap else 0,
+            .flags = row_flags,
+            .hash = row_hasher.final(),
         };
         rows[y] = descriptor;
         hasher.update(std.mem.asBytes(&descriptor));

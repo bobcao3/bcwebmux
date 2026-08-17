@@ -92,6 +92,10 @@ pub fn build(b: *std.Build) void {
             b.fmt("fonts/{s}.woff2", .{basename}),
         );
     }
+    _ = web_assets.addCopyFile(
+        b.path("node_modules/@fontsource/noto-emoji/files/noto-emoji-emoji-400-normal.woff2"),
+        "fonts/NotoEmoji-Regular.woff2",
+    );
     _ = web_assets.addCopyFile(wasm.getEmittedBin(), "terminal.wasm");
 
     const tar = b.addSystemCommand(&.{
