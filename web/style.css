@@ -75,7 +75,7 @@ body {
 #terminal {
   --cell-width: 8px;
   --cell-height: 16px;
-  --softkeys-row-height: 44px;
+  --softkeys-row-height: 0px;
   --bottom-safe-inset: env(safe-area-inset-bottom);
   --controls-row-height: calc(44px + var(--bottom-safe-inset));
   --chrome-height: calc(var(--softkeys-row-height) + var(--controls-row-height));
@@ -92,6 +92,10 @@ body {
   font-variant-ligatures: none;
   outline: none;
   touch-action: pan-y;
+}
+
+#terminal.softkeys-visible {
+  --softkeys-row-height: 44px;
 }
 
 #terminal-viewport {
@@ -120,7 +124,30 @@ body {
   overflow-y: auto;
   overflow-anchor: none;
   overscroll-behavior: contain;
-  scrollbar-gutter: stable;
+  touch-action: pan-y;
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+}
+
+#scroll.scrollbar-active {
+  scrollbar-color: var(--color-muted) transparent;
+}
+
+#scroll::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+#scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+#scroll::-webkit-scrollbar-thumb {
+  background: transparent;
+}
+
+#scroll.scrollbar-active::-webkit-scrollbar-thumb {
+  background: var(--color-muted);
 }
 
 #spacer {
@@ -172,9 +199,9 @@ body {
 
 #screen {
   position: absolute;
-  inset: 0 16px 0 0;
+  inset: 0;
   display: block;
-  width: calc(100% - 16px);
+  width: 100%;
   height: 100%;
   z-index: 1;
 }
@@ -213,7 +240,7 @@ body {
     position: absolute;
     left: 0;
     top: 0;
-    right: 16px;
+    right: 0;
     bottom: 0;
     width: auto;
     height: auto;
@@ -298,9 +325,12 @@ body {
 
 #selection-button {
   display: none;
+}
+
+#selection-button,
+#softkeys-toggle {
   width: 40px;
   height: 40px;
-  margin-right: auto;
   padding: 9px;
   border: 0;
   place-items: center;
@@ -310,26 +340,41 @@ body {
   font: inherit;
 }
 
-#selection-button:hover {
+#softkeys-toggle {
+  display: grid;
+  margin-right: auto;
+}
+
+#selection-button:hover,
+#softkeys-toggle:hover {
   color: var(--color-accent);
 }
 
 #selection-button:active,
-#selection-button[aria-pressed="true"] {
+#selection-button[aria-pressed="true"],
+#softkeys-toggle:active {
   background: var(--color-accent);
   color: var(--color-background);
 }
 
-#selection-button:focus-visible {
+#softkeys-toggle[aria-pressed="true"] {
+  background: var(--color-surface);
+  color: var(--color-accent);
+}
+
+#selection-button:focus-visible,
+#softkeys-toggle:focus-visible {
   outline: 2px solid var(--color-accent);
   outline-offset: -2px;
 }
 
-#selection-button:focus-visible:not([aria-pressed="true"]) {
+#selection-button:focus-visible:not([aria-pressed="true"]),
+#softkeys-toggle:focus-visible:not([aria-pressed="true"]) {
   color: var(--color-accent);
 }
 
-#selection-button svg { fill: currentColor; }
+#selection-button svg,
+#softkeys-toggle svg { fill: currentColor; }
 
 
 #perf {
@@ -361,7 +406,7 @@ body {
 #softkeys {
   grid-row: 1;
   z-index: 5;
-  display: flex;
+  display: none;
   flex-wrap: nowrap;
   gap: 2px;
   min-height: 44px;
@@ -369,10 +414,14 @@ body {
   overflow-x: auto;
   overflow-y: hidden;
   scrollbar-width: none;
-  background: var(--color-background);
+  background: var(--color-surface);
   touch-action: pan-x;
   overscroll-behavior-x: contain;
   user-select: none;
+}
+
+#terminal.softkeys-visible #softkeys {
+  display: flex;
 }
 
 #softkeys button {

@@ -124,6 +124,12 @@ try {
     const rect = scroll.getBoundingClientRect();
     const screenRect = screen.getBoundingClientRect();
     const style = getComputedStyle(terminal);
+    const scrollStyle = getComputedStyle(scroll);
+    const midpoint = rect.top + rect.height / 2;
+    const scrollSurfaceCovered = [rect.left + 1, rect.left + rect.width / 2, rect.right - 1].every(x => {
+      const element = document.elementFromPoint(x, midpoint);
+      return element === scroll || scroll.contains(element);
+    });
     return {
       left: rect.left,
       top: rect.top,
@@ -131,9 +137,14 @@ try {
       bottom: rect.bottom,
       width: rect.width,
       height: rect.height,
+      screenLeft: screenRect.left,
       screenRight: screenRect.right,
+      screenWidth: screenRect.width,
       cellWidth: parseFloat(style.getPropertyValue("--cell-width")),
       cellHeight: parseFloat(style.getPropertyValue("--cell-height")),
+      touchAction: scrollStyle.touchAction,
+      scrollbarGutter: scrollStyle.scrollbarGutter,
+      scrollSurfaceCovered,
     };
   })()`);
   const point = (column, row, xFraction = 0.5, yFraction = 0.5) => ({
@@ -274,8 +285,14 @@ try {
   assert.equal(await evaluate("document.querySelector('#text-view').children.length"), 0, "desktop text mirror was activated");
   assert.equal(await evaluate("window.bcwebmux.enterSelectionMode()"), false, "desktop pointer did not remain outside selection mode");
   assert.equal(await evaluate("window.bcwebmux.selectionMode"), false, "selection mode was entered by desktop pointer");
+  assert.equal(await evaluate("window.bcwebmux.state.softkeysVisible"), false, "softkeys were visible before coarse pointer mode");
+  assert.equal(await evaluate("getComputedStyle(document.querySelector('#softkeys')).display"), "none", "softkeys were displayed before coarse pointer mode");
+  assert.equal(await evaluate("document.querySelector('#softkeys-toggle').getAttribute('aria-pressed')"), "false", "softkeys toggle was pressed before coarse pointer mode");
   await pageCdp.call("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 1 });
   await waitFor(async () => evaluate("matchMedia('(pointer: coarse)').matches"), 1500, () => "coarse media query did not match");
+  await waitFor(async () => evaluate("window.bcwebmux.state.softkeysVisible"), 1500, () => "softkeys were not enabled for coarse pointer mode");
+  assert.notEqual(await evaluate("getComputedStyle(document.querySelector('#softkeys')).display"), "none", "softkeys were not displayed for coarse pointer mode");
+  assert.equal(await evaluate("document.querySelector('#softkeys-toggle').getAttribute('aria-pressed')"), "true", "softkeys toggle was not pressed for coarse pointer mode");
   assert.equal(await evaluate("document.querySelector('#text-view').children.length"), 0, "text mirror was activated before selection mode");
   assert.equal(await evaluate("window.bcwebmux.selectionMode"), false, "selection mode was active before entering");
 
@@ -310,6 +327,8 @@ try {
   await waitFor(async () => evaluate(`window.bcwebmux.state.rxBytes > ${rxBytesBeforeSelection}`), 1500, () => "queued selection output was not parsed after exit");
   await pageCdp.call("Emulation.setTouchEmulationEnabled", { enabled: false });
   await waitFor(async () => evaluate("!matchMedia('(pointer: coarse)').matches"), 1500, () => "coarse media query did not stop matching");
+  await waitFor(async () => evaluate("window.bcwebmux.state.softkeysVisible === false"), 1500, () => "softkeys remained enabled after coarse pointer mode");
+  assert.equal(await evaluate("getComputedStyle(document.querySelector('#softkeys')).display"), "none", "softkeys remained displayed after coarse pointer mode");
   const txBeforeSelection = await evaluate("window.bcwebmux.state.txBytes");
   await dispatchPress(1, 0, 0, 0.3);
   await dispatchMove(2, 0, 1, 0, 0.8);
@@ -411,7 +430,12 @@ try {
     return scroll.scrollHeight > scroll.clientHeight &&
       scroll.scrollTop + scroll.clientHeight >= scroll.scrollHeight - 1;
   })()`), 3000, () => "scrollback did not reach the bottom");
-  assert.ok(geometry.right > geometry.screenRight, "native scrollbar gutter was not reserved");
+  assert.ok(Math.abs(geometry.screenLeft - geometry.left) <= 1, "screen left did not match scroll box");
+  assert.ok(Math.abs(geometry.screenRight - geometry.right) <= 1, "screen right did not match scroll box");
+  assert.ok(Math.abs(geometry.screenWidth - geometry.width) <= 1, "screen width did not match scroll box");
+  assert.equal(geometry.touchAction, "pan-y", "scroll touch-action was not pan-y");
+  assert.equal(geometry.scrollbarGutter, "auto", "scrollbar gutter was not auto");
+  assert.equal(geometry.scrollSurfaceCovered, true, "scroll surface does not cover the viewport");
   const txBeforeScrollbar = await evaluate("window.bcwebmux.state.txBytes");
   const selectionBeforeScrollbar = await evaluate("window.bcwebmux.selectionText()");
   const scrollbarX = geometry.right - 2;
@@ -511,6 +535,21 @@ try {
       button.textContent.trim() === "" &&
       Math.abs(button.getBoundingClientRect().left - controls.getBoundingClientRect().left) <= 8;
   })()`), true, "selection button was not a left-aligned icon-only control");
+  assert.equal(await evaluate(`(() => {
+    const selectionButton = document.querySelector("#selection-button");
+    const softkeysToggle = document.querySelector("#softkeys-toggle");
+    const controls = document.querySelector("#terminal-controls");
+    const gap = parseFloat(getComputedStyle(controls).columnGap || getComputedStyle(controls).gap) || 0;
+    const selectionRect = selectionButton.getBoundingClientRect();
+    const toggleRect = softkeysToggle.getBoundingClientRect();
+    return selectionButton.nextElementSibling === softkeysToggle &&
+      Boolean(softkeysToggle.querySelector("svg")) &&
+      softkeysToggle.textContent.trim() === "" &&
+      getComputedStyle(softkeysToggle).display !== "none" &&
+      softkeysToggle.getAttribute("aria-pressed") === "true" &&
+      toggleRect.left >= selectionRect.right &&
+      toggleRect.left - selectionRect.right <= gap + 1;
+  })()`), true, "softkeys toggle was not positioned after the selection button");
   assert.equal(await evaluate("getComputedStyle(document.querySelector('#text-view')).pointerEvents"), "none");
   assert.equal(await evaluate("document.querySelector('#text-view').children.length"), 0, "text mirror was active before selection mode");
   assert.equal(await evaluate("window.bcwebmux.selectionMode"), false, "selection mode was active before button toggle");

@@ -9,6 +9,7 @@ import { initializeSettings } from "./settings.js";
 const terminal = document.querySelector("#terminal");
 const terminalViewport = document.querySelector("#terminal-viewport");
 const selectionButton = document.querySelector("#selection-button");
+const softkeysToggle = document.querySelector("#softkeys-toggle");
 const perf = document.querySelector("#perf");
 const scroll = document.querySelector("#scroll");
 const spacer = document.querySelector("#spacer");
@@ -22,6 +23,7 @@ const inputDebugPanel = document.querySelector("#input-debug");
 const inputDebugLog = document.querySelector("#input-debug-log");
 const inputDebugClear = document.querySelector("#input-debug-clear");
 const inputDebugCopy = document.querySelector("#input-debug-copy");
+const coarsePointer = window.matchMedia("(hover: none) and (pointer: coarse)");
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 const strictDecoder = new TextDecoder("utf-8", { fatal: true });
@@ -35,6 +37,7 @@ resizeView.setUint32(0, 0x52574342, true);
 const state = {
   connected: false,
   selectionMode: false,
+  softkeysVisible: false,
   frames: 0,
   rxBytes: 0,
   rxWireBytes: 0,
@@ -67,6 +70,8 @@ let latestScrollTotal = 0;
 let latestScrollLength = 0;
 let encodedRightClick = false;
 let activeMouseGesture = null;
+let scrollbarHideTimer = 0;
+const scrollbarHideDelay = 900;
 let touchCandidate = null;
 const touchMoveThreshold = 8;
 const touchLongPressThreshold = 400;
@@ -78,11 +83,13 @@ let rttProbeSequence = 0;
 const outstandingRttProbes = new Map();
 const rttSamples = [];
 let selectionMode = false;
+let softkeysVisibilityOverride = null;
 let restoreInputFocus = false;
 const frozenMessages = [];
 let frozenBytes = 0;
 let flushingFrozenMessages = false;
 const frozenOutputLimit = 4 * 1024 * 1024;
+updateSoftkeysUi();
 const terminalTextView = new TerminalTextView(textView, {
   setSelection(start, end) {
     const handled = wasm.term_selection_set_range(start.row, start.col, end.row, end.col) === 1;
@@ -117,7 +124,6 @@ await Promise.all(loadTerminalFonts(settings.font));
 await document.fonts.ready;
 const measuredMetrics = measureCells();
 const cssCellMetrics = { ...measuredMetrics };
-const coarsePointer = window.matchMedia("(hover: none) and (pointer: coarse)");
 const namedEventCodes = {
   Enter: "Enter",
   Backspace: "Backspace",
@@ -1090,6 +1096,7 @@ settings.setLifecycle({
   onClose: () => terminalFocus.resume(),
 });
 coarsePointer.addEventListener("change", () => {
+  updateSoftkeysUi();
   if (!coarsePointer.matches && selectionMode) {
     exitSelectionMode({ restoreFocus: false });
   }
@@ -1107,6 +1114,23 @@ function updateSelectionModeUi() {
   selectionButton?.setAttribute("title", selectionMode
     ? "Resume live terminal"
     : "Select frozen terminal text");
+}
+
+function softkeysAreVisible() {
+  return softkeysVisibilityOverride ?? coarsePointer.matches;
+}
+
+function updateSoftkeysUi() {
+  const visible = softkeysAreVisible();
+  terminal.classList.toggle("softkeys-visible", visible);
+  state.softkeysVisible = visible;
+  softkeysToggle?.setAttribute("aria-pressed", String(visible));
+  softkeysToggle?.setAttribute("aria-label", visible
+    ? "Hide terminal soft keys"
+    : "Show terminal soft keys");
+  softkeysToggle?.setAttribute("title", visible
+    ? "Hide terminal soft keys"
+    : "Show terminal soft keys");
 }
 
 function enterSelectionMode() {
@@ -1160,6 +1184,15 @@ function exitSelectionMode({ flush = true, restoreFocus = true } = {}) {
 }
 
 updateSelectionModeUi();
+softkeysToggle?.addEventListener("pointerdown", (event) => {
+  event.preventDefault();
+});
+softkeysToggle?.addEventListener("click", () => {
+  softkeysVisibilityOverride = !softkeysAreVisible();
+  updateSoftkeysUi();
+  if (!softkeysAreVisible()) clearSoftModifiers();
+  terminalFocus.focus();
+});
 selectionButton?.addEventListener("pointerdown", (event) => {
   event.preventDefault();
 });
@@ -1222,10 +1255,31 @@ function mouseButton(button) {
   return 0xff;
 }
 
+function revealScrollbar() {
+  if (scroll.scrollHeight <= scroll.clientHeight) return;
+  scroll.classList.add("scrollbar-active");
+  clearTimeout(scrollbarHideTimer);
+  scrollbarHideTimer = setTimeout(() => {
+    scroll.classList.remove("scrollbar-active");
+  }, scrollbarHideDelay);
+}
+
+function isScrollbarPointer(event) {
+  if (event.pointerType === "touch") return false;
+  const scrollbarWidth = scroll.offsetWidth - scroll.clientWidth;
+  if (scrollbarWidth <= 0 || scroll.scrollHeight <= scroll.clientHeight) return false;
+  const rect = scroll.getBoundingClientRect();
+  return event.clientX >= rect.right - scrollbarWidth &&
+    event.clientX < rect.right &&
+    event.clientY >= rect.top &&
+    event.clientY < rect.bottom;
+}
+
 function isTerminalPointer(event) {
   const rect = screen.getBoundingClientRect();
   return event.clientX >= rect.left && event.clientX < rect.right &&
-    event.clientY >= rect.top && event.clientY < rect.bottom;
+    event.clientY >= rect.top && event.clientY < rect.bottom &&
+    !isScrollbarPointer(event);
 }
 
 function sendMouse(event, action, button, anyButtonPressed = event.buttons !== 0) {
@@ -1326,6 +1380,7 @@ try {
 }
 
 scroll.addEventListener("scroll", () => {
+  revealScrollbar();
   if (suppressScroll) return;
   const atBottom = scroll.scrollTop + scroll.clientHeight >= scroll.scrollHeight - 1;
   const row = atBottom
@@ -1411,6 +1466,11 @@ scroll.addEventListener("pointerup", (event) => {
   if (encoded && event.pointerType !== "touch") event.preventDefault();
 }, { passive: false });
 scroll.addEventListener("pointermove", (event) => {
+  if (event.pointerType !== "touch" &&
+      scroll.scrollHeight > scroll.clientHeight &&
+      event.clientX >= scroll.getBoundingClientRect().right - 12) {
+    revealScrollbar();
+  }
   if (selectionMode) return;
   if (event.pointerType === "touch") {
     if (touchCandidate?.pointerId === event.pointerId) {
