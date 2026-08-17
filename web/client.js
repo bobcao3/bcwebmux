@@ -251,11 +251,12 @@ const imports = {
     gpu_text_backend() {
       return textRenderer === "kb-canvas" ? 1 : 0;
     },
-    gpu_init(cellPtr, cellLen, maxCells, maxGlyphs, atlasSlots, cellSize) {
+    gpu_init(cellPtr, cellLen, grainPtr, grainLen, grainSize, maxCells, maxGlyphs, atlasSlots, cellSize) {
       try {
         const memory = wasm.memory.buffer;
         const cellSource = decoder.decode(new Uint8Array(memory, cellPtr, cellLen));
-        return renderer.initialize(cellSource, maxCells, maxGlyphs, atlasSlots, cellSize);
+        const grain = new Int8Array(memory, grainPtr, grainLen);
+        return renderer.initialize(cellSource, grain, grainSize, maxCells, maxGlyphs, atlasSlots, cellSize);
       } catch (error) {
         console.error(error);
         return 0;

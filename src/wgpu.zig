@@ -10,6 +10,19 @@ pub const max_cells = text_view.max_cells;
 pub const max_glyphs = max_cells * 5 / 4;
 
 const cell_shader = @embedFile("shaders/cell.wgsl");
+const grain_size = 64;
+var grain: [grain_size * grain_size]i8 = undefined;
+
+fn generateGrain() void {
+    var state: u32 = 0x6d2b79f5;
+    for (&grain) |*value| {
+        state ^= state << 13;
+        state ^= state >> 17;
+        state ^= state << 5;
+        const sample: i32 = @intCast(state % 9);
+        value.* = @intCast(sample - 4);
+    }
+}
 
 pub const TextBackend = enum(u32) {
     kb_stb = 0,
@@ -235,6 +248,9 @@ extern "host" fn gpu_glyph_bitmap(slot: u32, pixels_ptr: [*]const u8, width: u32
 extern "host" fn gpu_init(
     cell_ptr: [*]const u8,
     cell_len: usize,
+    grain_ptr: [*]const i8,
+    grain_len: usize,
+    grain_size_value: usize,
     max_cells_value: usize,
     max_glyphs_value: usize,
     atlas_slots_value: usize,
@@ -288,9 +304,13 @@ pub fn init(cols: usize, rows: usize) bool {
     text_view.reset();
     // Reserve beyond the visible grid so an adversarial screen with a unique shape in every cell cannot exhaust the atlas.
     const atlas_slots = (cols * rows * 5 + 3) / 4;
+    generateGrain();
     return gpu_init(
         cell_shader.ptr,
         cell_shader.len,
+        grain[0..].ptr,
+        grain.len,
+        grain_size,
         max_cells,
         max_glyphs,
         atlas_slots,
@@ -520,6 +540,21 @@ fn submitCached(state: *ghostty.RenderState, terminal: *ghostty.Terminal) !void 
     if (text_view_enabled) text_view.commit(snapshot.hash);
 }
 
+fn backgroundIsTrueColor(raw: ghostty.page.Cell, style: ghostty.Style) bool {
+    if (style.flags.inverse) return switch (style.fg_color) {
+        .rgb => true,
+        else => false,
+    };
+    return switch (raw.content_tag) {
+        .bg_color_rgb => true,
+        .bg_color_palette => false,
+        else => switch (style.bg_color) {
+            .rgb => true,
+            else => false,
+        },
+    };
+}
+
 fn cellStyle(state: *const ghostty.RenderState, raw: ghostty.page.Cell, stored: ghostty.Style, selection: ?[2]u16, x: usize) Style {
     const style: ghostty.Style = if (raw.hasStyling()) stored else .{};
     var fg = style.fg(.{
@@ -543,6 +578,7 @@ fn cellStyle(state: *const ghostty.RenderState, raw: ghostty.page.Cell, stored: 
     if (style.flags.strikethrough) flags |= 16;
     if (style.flags.overline) flags |= 32;
     if (selected) flags |= 64;
+    if (!selected and backgroundIsTrueColor(raw, style)) flags |= 256;
     if (style.flags.blink) flags |= 128;
     return .{ .fg = rgb(fg), .bg = rgb(bg), .flags = flags };
 }

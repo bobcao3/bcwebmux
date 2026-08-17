@@ -286,8 +286,12 @@ export class GpuTerminal {
     this.device.addEventListener("uncapturederror", event => { if (this.error === null) this.error = event.error.message; });
   }
 
-  initialize(cellSource, maxCellsValue, maxGlyphsValue, atlasSlots, cellSize) {
+  initialize(cellSource, grain, grainSize, maxCellsValue, maxGlyphsValue, atlasSlots, cellSize) {
     if (this.initialized) return 1;
+    if (!(grain instanceof Int8Array) || grainSize !== 64 || grain.length !== grainSize * grainSize ||
+        grain.some(sample => sample < -4 || sample > 4)) {
+      throw new Error("invalid grain texture");
+    }
     if (maxCellsValue <= 0 || maxGlyphsValue <= 0 || atlasSlots <= 0 || atlasSlots > maxGlyphsValue || cellSize <= 0 || cellSize % 4 !== 0) {
       throw new Error("invalid GPU initialization constants");
     }
@@ -314,6 +318,23 @@ export class GpuTerminal {
     this.uniformBuffer = device.createBuffer({ size: 64, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
     this.cellBuffer = device.createBuffer({ size: maxCellsValue * cellSize, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
     this.drawIndirectBuffer = device.createBuffer({ size: 16, usage: GPUBufferUsage.INDIRECT | GPUBufferUsage.COPY_DST });
+    this.grainTexture = device.createTexture({
+      size: [grainSize, grainSize],
+      format: "r8snorm",
+      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+    });
+    this.grainSampler = device.createSampler({
+      addressModeU: "repeat",
+      addressModeV: "repeat",
+      magFilter: "nearest",
+      minFilter: "nearest",
+    });
+    device.queue.writeTexture(
+      { texture: this.grainTexture },
+      grain,
+      { offset: 0, bytesPerRow: grainSize, rowsPerImage: grainSize },
+      [grainSize, grainSize, 1],
+    );
     const cellModule = device.createShaderModule({ code: cellSource });
     this.cellPipeline = device.createRenderPipeline({
       layout: "auto",
@@ -333,6 +354,8 @@ export class GpuTerminal {
         { binding: 0, resource: { buffer: this.uniformBuffer } },
         { binding: 1, resource: { buffer: this.cellBuffer } },
         { binding: 2, resource: this.atlas.texture.createView() },
+        { binding: 3, resource: this.grainTexture.createView() },
+        { binding: 4, resource: this.grainSampler },
       ],
     });
     const encoder = this.device.createRenderBundleEncoder({ colorFormats: [this.format] });

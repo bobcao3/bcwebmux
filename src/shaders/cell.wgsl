@@ -41,6 +41,8 @@ struct VertexOutput {
 @group(0) @binding(0) var<uniform> uniforms: Uniforms;
 @group(0) @binding(1) var<storage, read> cells: array<Cell>;
 @group(0) @binding(2) var atlas_texture: texture_2d<f32>;
+@group(0) @binding(3) var grain_texture: texture_2d<f32>;
+@group(0) @binding(4) var grain_sampler: sampler;
 
 fn rgb(value: u32) -> vec3<f32> {
   return vec3<f32>(f32((value >> 16u) & 255u), f32((value >> 8u) & 255u), f32(value & 255u)) / 255.0;
@@ -115,7 +117,23 @@ fn fragment(input: VertexOutput) -> @location(0) vec4<f32> {
     fg = (original_fg & 0xff000000u) | selected_fg_rgb;
     bg = (original_bg & 0xff000000u) | selected_bg_rgb;
   }
+  let global_pixel = vec2<u32>(
+    cell.x * uniforms.cell_width,
+    cell.y * uniforms.cell_height
+  ) + vec2<u32>(floor(input.local));
+  let grain = textureSample(
+    grain_texture,
+    grain_sampler,
+    (vec2<f32>(global_pixel) + vec2<f32>(0.5)) / 64.0
+  ).r;
   var result = rgb(bg);
+  if ((flags & 256u) == 0u) {
+    result = clamp(
+      result + vec3<f32>(grain * 127.0 / 255.0),
+      vec3<f32>(0.0),
+      vec3<f32>(1.0)
+    );
+  }
   let y = input.local.y;
   let decoration = ((flags & 8u) != 0u && y >= f32(input.cell_size.y) - 2.0 && y < f32(input.cell_size.y) - 1.0) ||
     ((flags & 16u) != 0u && y >= floor(f32(input.cell_size.y) * 0.52) && y < floor(f32(input.cell_size.y) * 0.52) + 1.0) ||
