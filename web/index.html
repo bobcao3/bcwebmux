@@ -71,6 +71,24 @@
     <button id="input-debug-copy" type="button">COPY</button>
     <pre id="input-debug-log"></pre>
   </aside>
+  <dialog id="notification-dialog" aria-labelledby="notification-dialog-title">
+    <header>
+      <h1 id="notification-dialog-title">[ DESKTOP NOTIFICATIONS ]</h1>
+    </header>
+    <p>Terminal applications may send OSC 9/777 system notifications while bcwebmux remains open. This is not background push messaging.</p>
+    <button id="notification-dialog-later" type="button">NOT NOW</button>
+    <button id="notification-dialog-enable" type="button">ENABLE</button>
+  </dialog>
+  <dialog id="link-dialog" aria-labelledby="link-dialog-title">
+    <header>
+      <h1 id="link-dialog-title">[ OPEN LINK ]</h1>
+    </header>
+    <p>Terminal text can disguise link destinations. Review the full destination before opening it. Only absolute HTTP and HTTPS destinations can be opened, so Open may be disabled for other links.</p>
+    <p class="link-dialog-label">Full destination</p>
+    <output id="link-dialog-uri"></output>
+    <button id="link-dialog-cancel" type="button">CANCEL</button>
+    <button id="link-dialog-open" type="button">OPEN LINK</button>
+  </dialog>
   <dialog id="settings-dialog" aria-labelledby="settings-title">
     <header>
       <h1 id="settings-title">[ SETTINGS ]</h1>
@@ -141,6 +159,12 @@
           <label><input type="radio" name="perfMode" value="simple"> SIMPLE</label>
           <label><input type="radio" name="perfMode" value="detailed"> DETAILED</label>
         </div>
+      </fieldset>
+      <fieldset id="notification-settings">
+        <legend>Desktop notifications</legend>
+        <p>OSC 9/777 notifications work while this page remains open and do not use push messaging.</p>
+        <button id="notifications-enable" type="button">ENABLE NOTIFICATIONS</button>
+        <output id="notifications-status" role="status"></output>
       </fieldset>
     </section>
   </dialog>

@@ -516,6 +516,131 @@ body {
 
 #settings-dialog::backdrop { background: rgb(0 0 0 / 78%); }
 
+#link-dialog,
+#notification-dialog {
+  width: min(560px, calc(100vw - 48px));
+  max-width: none;
+  max-height: min(80vh, 520px);
+  padding: 0;
+  overflow: hidden;
+  border: 2px solid var(--color-border);
+  border-radius: 0;
+  box-shadow: 4px 4px 0 var(--color-accent);
+  background: var(--color-background);
+  color: var(--color-foreground);
+  font-family: var(--terminal-font);
+}
+
+#link-dialog[open],
+#notification-dialog[open] {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+}
+
+#link-dialog::backdrop,
+#notification-dialog::backdrop { background: rgb(0 0 0 / 78%); }
+
+#link-dialog > header,
+#link-dialog > p,
+#notification-dialog > header,
+#notification-dialog > p,
+#link-dialog > output {
+  grid-column: 1 / -1;
+}
+
+#link-dialog > header,
+#notification-dialog > header {
+  display: flex;
+  align-items: center;
+  min-height: 48px;
+  padding: 0 14px;
+  border-bottom: 2px solid var(--color-border);
+  background: var(--color-surface);
+}
+
+#link-dialog h1,
+#notification-dialog h1 {
+  margin: 0;
+  font-size: 16px;
+  line-height: 1;
+  letter-spacing: .06em;
+}
+
+#link-dialog > p,
+#notification-dialog > p {
+  margin: 18px 20px 12px;
+  color: var(--color-muted);
+  font-size: 12px;
+}
+
+#link-dialog > .link-dialog-label {
+  margin: 0 20px 6px;
+  color: var(--color-muted);
+  font-size: 11px;
+  text-transform: uppercase;
+}
+
+#link-dialog > output {
+  display: block;
+  max-height: 180px;
+  margin: 0 20px 12px;
+  padding: 12px;
+  overflow: auto;
+  border: 2px solid var(--color-accent);
+  background: var(--color-surface);
+  color: var(--color-foreground);
+  direction: ltr;
+  font: inherit;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  text-align: left;
+  user-select: text;
+  unicode-bidi: plaintext;
+}
+
+#link-dialog button,
+#notification-dialog button {
+  min-height: 44px;
+  margin: 0 0 20px 20px;
+  border: 2px solid var(--color-border);
+  border-radius: 0;
+  background: var(--color-background);
+  color: var(--color-foreground);
+  font: 700 12px/1 var(--terminal-font);
+}
+
+#link-dialog button:last-child,
+#notification-dialog button:last-child {
+  margin-right: 20px;
+  border-color: var(--color-accent);
+  background: var(--color-accent);
+  color: var(--color-background);
+}
+
+#link-dialog button:hover,
+#link-dialog button:focus-visible,
+#notification-dialog button:hover,
+#notification-dialog button:focus-visible {
+  border-color: var(--color-foreground);
+  background: var(--color-foreground);
+  color: var(--color-background);
+  outline: 0;
+}
+
+#link-dialog button:focus-visible,
+#notification-dialog button:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+
+#link-dialog #link-dialog-open:disabled {
+  border-color: var(--color-muted);
+  background: var(--color-muted);
+  color: var(--color-background);
+  cursor: not-allowed;
+  opacity: .5;
+}
+
 #settings-dialog > header {
   display: flex;
   align-items: center;
@@ -609,6 +734,39 @@ body {
 
 #custom-color-editor { margin-top: 18px; }
 #color-effects { margin-top: 18px; }
+#notification-settings {
+  margin-top: 18px;
+}
+#notifications-enable {
+  min-height: 44px;
+  padding: 0 12px;
+  border: 2px solid var(--color-border);
+  border-radius: 0;
+  background: var(--color-background);
+  color: var(--color-foreground);
+  font: 700 12px/1 var(--terminal-font);
+}
+
+#notifications-enable:hover,
+#notifications-enable:focus-visible {
+  border-color: var(--color-foreground);
+  background: var(--color-foreground);
+  color: var(--color-background);
+  outline: 0;
+}
+
+#notifications-enable:disabled,
+#notifications-enable[aria-disabled="true"] {
+  opacity: .5;
+}
+
+#notifications-status {
+  display: block;
+  margin-top: 8px;
+  color: var(--color-muted);
+  font-size: 10px;
+  line-height: 1.3;
+}
 .grain-control {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(120px, 1fr) 52px;
@@ -636,7 +794,9 @@ body {
 .inline-toggle label:has(input:checked) { border-color: var(--color-accent); background: var(--color-accent); color: var(--color-background); }
 
 @media (max-width: 560px) {
-  #settings-dialog { width: calc(100vw - 24px); max-height: calc(100vh - 48px); }
+  #settings-dialog,
+  #link-dialog,
+  #notification-dialog { width: calc(100vw - 24px); max-height: calc(100vh - 48px); }
   #settings-dialog [role="tabpanel"] { max-height: calc(100vh - 142px); padding: 12px; }
   #settings-dialog [role="tab"] { flex: 1 1 0; min-width: 0; padding: 0 8px; }
   #settings-dialog fieldset { padding: 10px; }

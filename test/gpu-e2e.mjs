@@ -213,6 +213,14 @@ try {
     const softkeys = document.querySelector("#softkeys");
     const controls = document.querySelector("#terminal-controls");
     const status = document.querySelector("#status");
+    const notificationDialog = document.querySelector("#notification-dialog");
+    if (Notification.permission === "default") {
+      if (notificationDialog.open !== true) throw new Error("notification dialog did not open by default");
+      notificationDialog.querySelector("#notification-dialog-later").click();
+      await new Promise(resolve => requestAnimationFrame(resolve));
+      if (notificationDialog.open !== false) throw new Error("notification dialog did not close");
+      if (document.activeElement !== input) throw new Error("notification dialog close did not focus input");
+    }
     if (!viewport.contains(scroll)) throw new Error("viewport does not contain scroll");
     if (!viewport.contains(canvas)) throw new Error("viewport does not contain canvas");
     if (!viewport.contains(input)) throw new Error("viewport does not contain input");
@@ -474,7 +482,7 @@ try {
     settingsClose.click();
     await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
     if (settingsDialog.open !== false) throw new Error("settings dialog did not close");
-    if (document.activeElement !== settingsButton) throw new Error("settings close did not restore focus");
+    if (document.activeElement !== input) throw new Error("settings close did not restore focus");
     scroll.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
     if (document.activeElement !== input) throw new Error("completed tap did not focus input");
     for (const character of ${JSON.stringify(rgbCommand)}) {

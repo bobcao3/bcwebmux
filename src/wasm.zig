@@ -25,10 +25,13 @@ var theme_staging: [18]u32 = undefined;
 var render_requested = false;
 var selection_gesture: ghostty.SelectionGesture = .init;
 var selection_snapshot: ?[:0]const u8 = null;
+var hyperlink_snapshot: [4096]u8 = undefined;
+var hyperlink_snapshot_len: u32 = 0;
 
 extern "host" fn pty_write(ptr: [*]const u8, len: usize) i32;
 extern "host" fn set_title(ptr: [*]const u8, len: usize) void;
 extern "host" fn ring_bell() void;
+extern "host" fn desktop_notification(title_ptr: [*]const u8, title_len: usize, body_ptr: [*]const u8, body_len: usize) void;
 
 export fn bc_font_alloc(len: u32) u32 {
     const total = std.math.add(usize, @as(usize, len), 16) catch return 0;
@@ -90,6 +93,7 @@ export fn term_init(cols: u16, rows: u16) i32 {
     handler.effects.size = effectSize;
     handler.effects.enquiry = effectEnquiry;
     handler.effects.xtversion = effectVersion;
+    handler.effects.desktop_notification = effectDesktopNotification;
     stream = ghostty.TerminalStream.init(.{ .allocator = alloc, .handler = handler });
     render_state.update(alloc, value) catch {
         term_deinit();
@@ -135,6 +139,7 @@ export fn term_deinit() void {
     }
     selection_gesture = .init;
     freeSelectionSnapshot();
+    hyperlink_snapshot_len = 0;
     terminal = null;
     last_mouse_cell = null;
 }
@@ -419,6 +424,43 @@ export fn term_selection_snapshot_release() void {
     freeSelectionSnapshot();
 }
 
+export fn term_hyperlink_at(x: f32, y: f32) i32 {
+    if (busy) return 0;
+    const value = if (terminal) |*t| t else return 0;
+    if (!std.math.isFinite(x) or !std.math.isFinite(y) or x < 0 or y < 0) return 0;
+    if (x >= @as(f32, @floatFromInt(value.cols)) * @as(f32, @floatFromInt(cell_width_px)) or
+        y >= @as(f32, @floatFromInt(value.rows)) * @as(f32, @floatFromInt(cell_height_px)))
+        return 0;
+
+    busy = true;
+    defer busy = false;
+    hyperlink_snapshot_len = 0;
+    const pin = value.screens.active.pages.pin(.{
+        .viewport = .{
+            .x = @intFromFloat(@floor(x / @as(f32, @floatFromInt(cell_width_px)))),
+            .y = @intFromFloat(@floor(y / @as(f32, @floatFromInt(cell_height_px)))),
+        },
+    }) orelse return 0;
+    const rac = pin.rowAndCell();
+    if (!rac.cell.hyperlink) return 0;
+    const page = pin.node.page();
+    const id = page.lookupHyperlink(rac.cell) orelse return 0;
+    const entry = page.hyperlink_set.get(page.memory, id);
+    const uri = entry.uri.slice(page.memory);
+    if (uri.len > hyperlink_snapshot.len) return -1;
+    @memcpy(hyperlink_snapshot[0..uri.len], uri);
+    hyperlink_snapshot_len = @intCast(uri.len);
+    return 1;
+}
+
+export fn term_hyperlink_ptr() u32 {
+    return @intCast(@intFromPtr(&hyperlink_snapshot));
+}
+
+export fn term_hyperlink_len() u32 {
+    return hyperlink_snapshot_len;
+}
+
 export fn term_focus(focused: u32) i32 {
     if (busy) return 0;
     const value = if (terminal) |*t| t else return 0;
@@ -477,6 +519,15 @@ fn effectBell(_: *Handler) void {
 fn effectTitle(handler: *Handler) void {
     const title = handler.terminal.getTitle() orelse return;
     set_title(title.ptr, title.len);
+}
+
+fn effectDesktopNotification(_: *Handler, notification: ghostty.TerminalStream.Action.ShowDesktopNotification) void {
+    desktop_notification(
+        notification.title.ptr,
+        notification.title.len,
+        notification.body.ptr,
+        notification.body.len,
+    );
 }
 
 fn effectSize(_: *Handler) ?ghostty.size_report.Size {

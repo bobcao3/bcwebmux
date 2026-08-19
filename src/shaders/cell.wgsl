@@ -54,7 +54,7 @@ struct VertexOutput {
 @group(0) @binding(2) var<storage, read> styles: array<Style>;
 @group(0) @binding(3) var<storage, read> selections: array<u32>;
 @group(0) @binding(4) var atlas_texture: texture_2d<f32>;
-@group(0) @binding(5) var grain_texture: texture_2d<i32>;
+@group(0) @binding(5) var grain_texture: texture_2d<f32>;
 
 fn rgb(value: u32) -> vec3<Lowp> {
   return vec3<Lowp>(
@@ -187,7 +187,7 @@ fn fragment(input: VertexOutput) -> @location(0) vec4<f32> {
     }
     let grain = Lowp(textureLoad(grain_texture, vec2<i32>(grain_coord), 0).r);
     result = clamp(
-      result + vec3<Lowp>(grain * Lowp(uniforms.grain_strength) / Lowp(0.5 * 255.0)),
+      result + vec3<Lowp>(grain * Lowp(uniforms.grain_strength) / Lowp(255.0)),
       vec3<Lowp>(0.0),
       vec3<Lowp>(1.0)
     );

@@ -107,6 +107,12 @@ try {
     const exceptions = pageCdp.events.filter(event => event.method === "Runtime.exceptionThrown");
     return `terminal did not connect\n${JSON.stringify(exceptions)}\n${chromiumLog}`;
   });
+  if (await evaluate("Notification.permission") === "default") {
+    assert.equal(await evaluate("document.querySelector('#notification-dialog')?.open"), true, "notification dialog was not open by default");
+    await evaluate("document.querySelector('#notification-dialog-later').click()");
+    await evaluate("new Promise(resolve => requestAnimationFrame(resolve))");
+    assert.equal(await evaluate("document.querySelector('#notification-dialog')?.open"), false, "notification dialog did not close");
+  }
 
   const origin = `http://127.0.0.1:${serverPort}`;
   for (const name of ["clipboard-read", "clipboard-write"]) {

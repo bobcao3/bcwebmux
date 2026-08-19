@@ -350,7 +350,7 @@ export class GpuTerminal {
     this.drawIndirectBuffer = device.createBuffer({ size: 16, usage: GPUBufferUsage.INDIRECT | GPUBufferUsage.COPY_DST });
     this.grainTexture = device.createTexture({
       size: [grainSize, grainSize],
-      format: "r8sint",
+      format: "r8snorm",
       usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
     });
     device.queue.writeTexture(

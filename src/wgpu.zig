@@ -21,34 +21,33 @@ fn xorshift32(state: *u32) u32 {
     return state.*;
 }
 
-fn randomUniform(state: *u32) f64 {
-    return (@as(f64, @floatFromInt(xorshift32(state))) + 0.5) / 4294967296.0;
-}
-
 fn generateGrain() void {
-    var state: u32 = 0x6d2b79f5;
-    var grayscale: [grain_size * grain_size]i16 = undefined;
+    // r8snorm uses -127..127; keep a uniform histogram without -128's duplicate endpoint.
     var index: usize = 0;
-    while (index < grayscale.len) : (index += 2) {
-        const radius = @sqrt(-2.0 * @log(randomUniform(&state)));
-        const angle = 2.0 * std.math.pi * randomUniform(&state);
-        const z0 = radius * @cos(angle);
-        const z1 = radius * @sin(angle);
-        grayscale[index] = @intFromFloat(std.math.clamp(@round(127.0 + 0.5 * z0), 0.0, 254.0));
-        grayscale[index + 1] = @intFromFloat(std.math.clamp(@round(127.0 + 0.5 * z1), 0.0, 254.0));
+    const uniform_count = grain.len / 255;
+    var level: i16 = -127;
+    while (level <= 127) : (level += 1) {
+        var count: usize = 0;
+        while (count < uniform_count) : (count += 1) {
+            grain[index] = @intCast(level);
+            index += 1;
+        }
     }
 
-    var remaining = grayscale.len;
+    // The remainder is paired symmetrically to preserve the exact zero mean.
+    var magnitude: i8 = 1;
+    while (magnitude <= 8) : (magnitude += 1) {
+        grain[index] = -magnitude;
+        grain[index + 1] = magnitude;
+        index += 2;
+    }
+
+    var state: u32 = 0x6d2b79f5;
+    var remaining = grain.len;
     while (remaining > 1) {
         remaining -= 1;
         const swap_index = @as(usize, @intCast(xorshift32(&state) % @as(u32, @intCast(remaining + 1))));
-        std.mem.swap(i16, &grayscale[remaining], &grayscale[swap_index]);
-    }
-
-    // Keep 127 as the neutral grayscale point before signed conversion.
-    for (grayscale, 0..) |sample, i| {
-        // Recenter around zero for the r8sint grain ABI.
-        grain[i] = @intCast(sample - 127);
+        std.mem.swap(i8, &grain[remaining], &grain[swap_index]);
     }
 }
 

@@ -23,6 +23,16 @@ const inputDebugPanel = document.querySelector("#input-debug");
 const inputDebugLog = document.querySelector("#input-debug-log");
 const inputDebugClear = document.querySelector("#input-debug-clear");
 const inputDebugCopy = document.querySelector("#input-debug-copy");
+const linkDialog = document.querySelector("#link-dialog");
+const linkDialogUri = document.querySelector("#link-dialog-uri");
+const linkDialogCancel = document.querySelector("#link-dialog-cancel");
+const linkDialogOpen = document.querySelector("#link-dialog-open");
+const notificationDialog = document.querySelector("#notification-dialog");
+const notificationDialogLater = document.querySelector("#notification-dialog-later");
+const notificationDialogEnable = document.querySelector("#notification-dialog-enable");
+const notificationsEnable = document.querySelector("#notifications-enable");
+const notificationsStatus = document.querySelector("#notifications-status");
+const notificationPromptDismissalKey = "bcwebmux.notification-prompt-dismissed";
 const coarsePointer = window.matchMedia("(hover: none) and (pointer: coarse)");
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -70,6 +80,8 @@ let latestScrollTotal = 0;
 let latestScrollLength = 0;
 let encodedRightClick = false;
 let activeMouseGesture = null;
+let pendingLinkUri = null;
+let suppressNextTerminalClick = false;
 let scrollbarHideTimer = 0;
 const scrollbarHideDelay = 900;
 let touchCandidate = null;
@@ -311,6 +323,12 @@ const imports = {
       terminal.classList.add("flash");
       setTimeout(() => terminal.classList.remove("flash"), 80);
     },
+    desktop_notification(titlePtr, titleLen, bodyPtr, bodyLen) {
+      const memory = wasm.memory.buffer;
+      const title = decoder.decode(new Uint8Array(memory, titlePtr, titleLen));
+      const body = decoder.decode(new Uint8Array(memory, bodyPtr, bodyLen));
+      showDesktopNotification(title, body);
+    },
   },
 };
 
@@ -469,6 +487,83 @@ function setConnectionStatus(connected, label) {
   status.setAttribute("aria-label", label);
   status.setAttribute("title", label);
 }
+
+function showDesktopNotification(title, body) {
+  if (typeof Notification === "undefined" || Notification.permission !== "granted") return;
+  try {
+    const notification = new Notification(title || "bcwebmux", { body });
+    notification.addEventListener("click", () => {
+      window.focus();
+      notification.close();
+    });
+  } catch (error) {
+    console.error("desktop notification failed", error);
+  }
+}
+
+function updateNotificationPermissionUi() {
+  if (typeof Notification === "undefined") {
+    notificationsStatus.textContent = "Unsupported";
+    notificationsEnable.disabled = true;
+    return;
+  }
+  const permission = Notification.permission;
+  notificationsStatus.textContent = permission[0].toUpperCase() + permission.slice(1);
+  notificationsEnable.disabled = permission !== "default";
+}
+
+function notificationPromptWasDismissed() {
+  try {
+    return localStorage.getItem(notificationPromptDismissalKey) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function dismissNotificationPrompt() {
+  try {
+    localStorage.setItem(notificationPromptDismissalKey, "1");
+  } catch {}
+}
+
+function maybeShowNotificationPrompt() {
+  if (typeof Notification === "undefined" ||
+      Notification.permission !== "default" ||
+      notificationPromptWasDismissed() ||
+      notificationDialog.open) return;
+  terminalFocus.suspend();
+  notificationDialog.showModal();
+}
+
+notificationsEnable?.addEventListener("click", async () => {
+  try {
+    await Notification.requestPermission();
+  } catch (error) {
+    console.error("notification permission request failed", error);
+  } finally {
+    updateNotificationPermissionUi();
+  }
+});
+notificationDialogLater?.addEventListener("click", () => {
+  dismissNotificationPrompt();
+  notificationDialog.close();
+});
+notificationDialogEnable?.addEventListener("click", async () => {
+  dismissNotificationPrompt();
+  try {
+    await Notification.requestPermission();
+  } catch (error) {
+    console.error("notification permission request failed", error);
+  } finally {
+    updateNotificationPermissionUi();
+    notificationDialog.close();
+  }
+});
+notificationDialog?.addEventListener("close", () => {
+  terminalFocus.resume();
+  terminalFocus.focus();
+});
+updateNotificationPermissionUi();
 
 function formatMs(value) {
   if (value == null || !Number.isFinite(value)) return "—";
@@ -1093,8 +1188,12 @@ class TerminalFocusController {
 const terminalFocus = new TerminalFocusController();
 settings.setLifecycle({
   onOpen: () => terminalFocus.suspend(),
-  onClose: () => terminalFocus.resume(),
+  onClose: () => {
+    terminalFocus.resume();
+    terminalFocus.focus();
+  },
 });
+maybeShowNotificationPrompt();
 coarsePointer.addEventListener("change", () => {
   updateSoftkeysUi();
   if (!coarsePointer.matches && selectionMode) {
@@ -1318,12 +1417,71 @@ async function copySelectedText() {
   return true;
 }
 
+function hyperlinkAtEvent(event) {
+  const rect = scroll.getBoundingClientRect();
+  const x = Math.max(0, event.clientX - rect.left) * renderer.pixelScaleX;
+  const y = Math.max(0, event.clientY - rect.top) * renderer.pixelScaleY;
+  const status = wasm.term_hyperlink_at(x, y);
+  if (status < 0) throw new Error(`WASM hyperlink lookup failed: ${status}`);
+  if (status !== 1) return null;
+  const ptr = wasm.term_hyperlink_ptr();
+  const len = wasm.term_hyperlink_len();
+  const bytes = new Uint8Array(wasm.memory.buffer, ptr, len).slice();
+  try {
+    return strictDecoder.decode(bytes);
+  } catch (error) {
+    console.warn("invalid hyperlink URI encoding", error);
+    return null;
+  }
+}
+
+function validatedWebLink(uri) {
+  try {
+    const url = new URL(uri);
+    return url.protocol === "http:" || url.protocol === "https:" ? url : null;
+  } catch {
+    return null;
+  }
+}
+
+function showLinkConfirmation(uri) {
+  pendingLinkUri = uri;
+  linkDialogUri.textContent = uri;
+  const url = validatedWebLink(uri);
+  linkDialogOpen.disabled = !url;
+  linkDialogOpen.title = url ? "" : "Only absolute HTTP or HTTPS links can be opened.";
+  terminalFocus.suspend();
+  linkDialog.showModal();
+}
+
+linkDialogCancel.addEventListener("click", () => linkDialog.close());
+linkDialogOpen.addEventListener("click", () => {
+  const url = validatedWebLink(pendingLinkUri);
+  if (!url) return;
+  window.open(url.href, "_blank", "noopener,noreferrer");
+  linkDialog.close();
+});
+linkDialog.addEventListener("close", () => {
+  pendingLinkUri = null;
+  linkDialogUri.textContent = "";
+  terminalFocus.resume();
+  terminalFocus.focus();
+});
+
 function finishMouseGesture(event, cancelled = false) {
   const gesture = activeMouseGesture;
   if (!gesture || gesture.pointerId !== event.pointerId) return false;
   activeMouseGesture = null;
   if (cancelled) suppressedMousePointerUps.add(gesture.pointerId);
-  if (gesture.owner === "terminal") {
+  if (gesture.owner === "hyperlink") {
+    suppressNextTerminalClick = true;
+    setTimeout(() => {
+      suppressNextTerminalClick = false;
+    }, 0);
+    if (!cancelled && !gesture.moved) {
+      showLinkConfirmation(gesture.uri);
+    }
+  } else if (gesture.owner === "terminal") {
     sendMouse(event, 1, gesture.button);
   } else {
     sendSelection(event, cancelled ? 3 : 1);
@@ -1411,6 +1569,22 @@ scroll.addEventListener("pointerdown", (event) => {
     encodedRightClick = false;
     return;
   }
+  if (event.pointerType !== "touch" && event.button === 0 && !event.shiftKey) {
+    const uri = hyperlinkAtEvent(event);
+    if (uri) {
+      event.preventDefault();
+      activeMouseGesture = {
+        pointerId: event.pointerId,
+        owner: "hyperlink",
+        uri,
+        startX: event.clientX,
+        startY: event.clientY,
+        moved: false,
+      };
+      scroll.setPointerCapture(event.pointerId);
+      return;
+    }
+  }
   if (event.pointerType !== "touch" && terminalTextView.hasSelection()) {
     terminalTextView.clearBrowserSelection(true);
   }
@@ -1485,6 +1659,10 @@ scroll.addEventListener("pointermove", (event) => {
       event.pointerType !== "touch") {
     if (activeMouseGesture.owner === "terminal") {
       sendMouse(event, 2, activeMouseGesture.button);
+    } else if (activeMouseGesture.owner === "hyperlink") {
+      const dx = event.clientX - activeMouseGesture.startX;
+      const dy = event.clientY - activeMouseGesture.startY;
+      if (Math.hypot(dx, dy) > touchMoveThreshold) activeMouseGesture.moved = true;
     } else {
       sendSelection(event, 2);
     }
@@ -1520,11 +1698,24 @@ scroll.addEventListener("contextmenu", (event) => {
 });
 scroll.addEventListener("click", (event) => {
   if (selectionMode) return;
+  if (suppressNextTerminalClick) {
+    suppressNextTerminalClick = false;
+    return;
+  }
   if (terminalTextView.hasSelection()) {
     touchCandidate = null;
     return;
   }
   if (!isTerminalPointer(event)) return;
+  if (!event.shiftKey) {
+    const uri = hyperlinkAtEvent(event);
+    if (uri) {
+      touchCandidate = null;
+      event.preventDefault();
+      showLinkConfirmation(uri);
+      return;
+    }
+  }
   if (touchCandidate?.ended) {
     const suppress = touchCandidate.suppress;
     touchCandidate = null;
