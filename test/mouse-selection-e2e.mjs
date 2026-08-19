@@ -123,6 +123,14 @@ try {
     });
   }
 
+  await evaluate("navigator.clipboard.writeText('sentinel')");
+  const osc52Text = "OSC 52 ✓";
+  const osc52Payload = Buffer.from(osc52Text).toString("base64");
+  await evaluate(`window.bcwebmux.write(${JSON.stringify(`printf '\\033]52;c;${osc52Payload}\\007'\r`)})`);
+  await waitFor(async () => evaluate(`(async () => await navigator.clipboard.readText() === ${JSON.stringify(osc52Text)})()`), 1500, () => "OSC 52 clipboard write failed");
+  await evaluate(`window.bcwebmux.write(${JSON.stringify("printf '\\033]52;c;\\007'\r")})`);
+  await waitFor(async () => evaluate("(async () => await navigator.clipboard.readText() === '')()"), 1500, () => "OSC 52 clipboard clear failed");
+
   const geometry = await evaluate(`(() => {
     const scroll = document.querySelector("#scroll");
     const terminal = document.querySelector("#terminal");

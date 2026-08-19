@@ -37,6 +37,7 @@ const coarsePointer = window.matchMedia("(hover: none) and (pointer: coarse)");
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 const strictDecoder = new TextDecoder("utf-8", { fatal: true });
+let clipboardWriteQueue = Promise.resolve();
 const settings = initializeSettings();
 const requestedRenderer = new URLSearchParams(location.search).get("renderer");
 const textRenderer = requestedRenderer === "kb-canvas" ? "kb-canvas" : settings.renderer;
@@ -315,6 +316,19 @@ const imports = {
       socket.send(view);
       state.txBytes += len;
       return 1;
+    },
+    clipboard_write(location, ptr, len) {
+      if (location !== 0 || !navigator.clipboard?.writeText) return 2;
+      let text;
+      try {
+        text = strictDecoder.decode(new Uint8Array(wasm.memory.buffer, ptr, len));
+      } catch {
+        return 4;
+      }
+      clipboardWriteQueue = clipboardWriteQueue
+        .then(() => navigator.clipboard.writeText(text))
+        .catch((error) => console.error("clipboard write failed", error));
+      return 0;
     },
     set_title(ptr, len) {
       document.title = decoder.decode(new Uint8Array(wasm.memory.buffer, ptr, len)) || "bcwebmux";

@@ -32,6 +32,12 @@ extern "host" fn pty_write(ptr: [*]const u8, len: usize) i32;
 extern "host" fn set_title(ptr: [*]const u8, len: usize) void;
 extern "host" fn ring_bell() void;
 extern "host" fn desktop_notification(title_ptr: [*]const u8, title_len: usize, body_ptr: [*]const u8, body_len: usize) void;
+extern "host" fn clipboard_write(location: i32, ptr: [*]const u8, len: usize) i32;
+
+const ClipboardWriteFn = @typeInfo(@typeInfo(@FieldType(Handler.Effects, "clipboard_write")).optional.child).pointer.child;
+const ClipboardWriteInfo = @typeInfo(ClipboardWriteFn).@"fn";
+const ClipboardWrite = ClipboardWriteInfo.params[1].type.?;
+const ClipboardWriteResult = ClipboardWriteInfo.return_type.?;
 
 export fn bc_font_alloc(len: u32) u32 {
     const total = std.math.add(usize, @as(usize, len), 16) catch return 0;
@@ -94,6 +100,7 @@ export fn term_init(cols: u16, rows: u16) i32 {
     handler.effects.enquiry = effectEnquiry;
     handler.effects.xtversion = effectVersion;
     handler.effects.desktop_notification = effectDesktopNotification;
+    handler.effects.clipboard_write = effectClipboardWrite;
     stream = ghostty.TerminalStream.init(.{ .allocator = alloc, .handler = handler });
     render_state.update(alloc, value) catch {
         term_deinit();
@@ -529,6 +536,29 @@ fn effectDesktopNotification(_: *Handler, notification: ghostty.TerminalStream.A
         notification.body.ptr,
         notification.body.len,
     );
+}
+
+fn effectClipboardWrite(_: *Handler, write: ClipboardWrite) ClipboardWriteResult {
+    if (write.location != .standard) return .unsupported;
+
+    var data: []const u8 = &.{};
+    if (write.contents.len != 0) {
+        if (write.contents.len != 1) return .unsupported;
+        const content = write.contents[0];
+        if (!std.mem.eql(u8, content.mime, "text/plain")) return .unsupported;
+        if (!std.unicode.utf8ValidateSlice(content.data)) return .invalid_data;
+        data = content.data;
+    }
+
+    return switch (clipboard_write(@intCast(@intFromEnum(write.location)), data.ptr, data.len)) {
+        0 => @enumFromInt(0),
+        1 => @enumFromInt(1),
+        2 => @enumFromInt(2),
+        3 => @enumFromInt(3),
+        4 => @enumFromInt(4),
+        5 => @enumFromInt(5),
+        else => .io_error,
+    };
 }
 
 fn effectSize(_: *Handler) ?ghostty.size_report.Size {
