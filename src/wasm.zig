@@ -351,11 +351,12 @@ export fn term_selection(action_raw: u8, x: f32, y: f32) i32 {
 export fn term_selection_clear() i32 {
     if (busy) return 0;
     const value = if (terminal) |*t| t else return 0;
+    const had_selection = value.screens.active.selection != null;
     busy = true;
     defer busy = false;
     selection_gesture.reset(value);
     value.screens.active.clearSelection();
-    return 1;
+    return if (had_selection) 1 else 0;
 }
 
 export fn term_selection_set_range(start_row: u32, start_col: u32, end_row: u32, end_col: u32) i32 {

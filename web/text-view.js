@@ -273,5 +273,6 @@ export class TerminalTextView {
     if (text === null) return;
     event.clipboardData.setData("text/plain", text);
     event.preventDefault();
+    this.clearBrowserSelection(true);
   }
 }

@@ -805,7 +805,20 @@ function sendRttProbe() {
   outstandingRttProbes.set(sequence, performance.now());
 }
 
+function isModifierCode(code) {
+  return /^(Alt|Control|Meta|Shift|CapsLock|NumLock|ScrollLock|Fn)/.test(code);
+}
+
+function clearActiveSelection() {
+  if (terminalTextView.hasSelection()) {
+    terminalTextView.clearBrowserSelection(true);
+    return;
+  }
+  if (wasm.term_selection_clear() === 1) scheduleFrame(true);
+}
+
 function sendText(text, paste = false) {
+  if (text) clearActiveSelection();
   let remaining = text;
   while (remaining.length) {
     const ptr = wasm.term_reserve(48 * 1024);
@@ -860,6 +873,7 @@ function sendKey(event, action) {
 }
 
 function sendEncodedKey(code, key, action, mods, consumed) {
+  if (action !== 0 && !isModifierCode(code)) clearActiveSelection();
   const codepoint = key.codePointAt(0);
   const printable = codepoint !== undefined && key.length === (codepoint > 0xffff ? 2 : 1);
   const text = printable ? key : "";
@@ -1414,6 +1428,7 @@ async function copySelectedText() {
   const text = getSelectedText();
   if (text === null) return false;
   await navigator.clipboard.writeText(text);
+  clearActiveSelection();
   return true;
 }
 
@@ -1736,6 +1751,7 @@ input.addEventListener("keydown", async (event) => {
       suppressedShortcutKeyUps.add(code);
       try {
         await navigator.clipboard.writeText(selectedText);
+        clearActiveSelection();
       } catch (error) {
         console.error("clipboard copy failed", error);
       }
@@ -1776,6 +1792,7 @@ input.addEventListener("copy", (event) => {
   if (text === null) return;
   event.clipboardData.setData("text/plain", text);
   event.preventDefault();
+  clearActiveSelection();
 });
 input.addEventListener("focus", () => {
   terminalInput.sync();

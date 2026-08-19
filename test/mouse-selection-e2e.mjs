@@ -359,12 +359,9 @@ try {
   });
   await waitFor(async () => evaluate("(async () => await navigator.clipboard.readText() === 'é中')()"), 1500, () => "keyboard shortcut did not copy selection");
   assert.equal(await evaluate("window.bcwebmux.state.txBytes"), txBeforeShortcut, "keyboard shortcut emitted PTY bytes");
-  const selectedColors = await Promise.all([0, 1, 2, 3, 4].map(column => sampleCell(column, 0)));
-  assertGray(selectedColors[0], "leading adjacent cell");
-  assertDark(selectedColors[1], "selected narrow cell");
-  assertDark(selectedColors[2], "selected wide lead");
-  assertDark(selectedColors[3], "selected wide tail");
-  assertGray(selectedColors[4], "trailing adjacent cell");
+  await waitFor(async () => evaluate("window.bcwebmux.selectionText() === null"), 1500, () => "copy did not clear selection");
+  const unselectedColors = await Promise.all([0, 1, 2, 3, 4].map(column => sampleCell(column, 0)));
+  unselectedColors.forEach((color, column) => assertGray(color, `cell ${column} did not retain its background`));
 
   await evaluate(`window.bcwebmux.write(${JSON.stringify(selectionScreen.replace("?1002l", "?1002h").replace("?1006l", "?1006h"))})`);
   await waitCellColor(0, 0, [127, 127, 127], "Shift selection fixture did not render");
@@ -374,6 +371,32 @@ try {
   await dispatchRelease(2, 0, 0, 0.8);
   await waitFor(async () => evaluate("window.bcwebmux.selectionText() === 'é中'"), 1500, () => "Shift override selection text mismatch");
   assert.equal(await evaluate("window.bcwebmux.state.txBytes"), txBeforeShiftSelection, "Shift selection emitted PTY mouse reports");
+  await pageCdp.call("Input.dispatchKeyEvent", {
+    type: "rawKeyDown",
+    key: "Shift",
+    code: "ShiftLeft",
+    modifiers: 8,
+  });
+  await pageCdp.call("Input.dispatchKeyEvent", {
+    type: "keyUp",
+    key: "Shift",
+    code: "ShiftLeft",
+    modifiers: 8,
+  });
+  assert.equal(await evaluate("window.bcwebmux.selectionText()"), "é中", "modifier-only input cleared selection");
+  await pageCdp.call("Input.dispatchKeyEvent", {
+    type: "rawKeyDown",
+    key: "Enter",
+    code: "Enter",
+    windowsVirtualKeyCode: 13,
+  });
+  await pageCdp.call("Input.dispatchKeyEvent", {
+    type: "keyUp",
+    key: "Enter",
+    code: "Enter",
+    windowsVirtualKeyCode: 13,
+  });
+  await waitFor(async () => evaluate("window.bcwebmux.selectionText() === null"), 1500, () => "non-modifier input did not clear selection");
 
   const tailScreen = "printf '\\033[?1002l\\033[?1006l\\033[2J\\033[H\\033[38;2;240;240;240m\\033[48;2;127;127;127mA中Z \\033[0m\\033[10;1H'\r";
   await evaluate(`window.bcwebmux.write(${JSON.stringify(tailScreen)})`);
