@@ -2,3 +2,4 @@
 // Copyright (c) 2026 Cheng Cao
 
 export { Terminal } from "./Terminal.js";
+export { TerminalCore } from "./TerminalCore.js";

@@ -11,6 +11,7 @@ export class ViewportController {
     this.getWasm = options.getWasm;
     this.getRenderer = options.getRenderer;
     this.getInputController = options.getInputController;
+    this.resizeTerminal = options.resizeTerminal;
     this.onResize = options.onResize || (() => {});
     this.onBeforeResize = options.onBeforeResize || (() => {});
     this.scheduleFrame = options.scheduleFrame;
@@ -116,16 +117,18 @@ export class ViewportController {
     renderer.resize(pixelViewport.width, pixelViewport.height);
     this.terminalElement.style.setProperty("--cell-width", `${this.cssCellMetrics.width}px`);
     this.terminalElement.style.setProperty("--cell-height", `${this.cssCellMetrics.height}px`);
-    const result = wasm.term_resize(
-      layout.cols,
-      layout.rows,
-      layout.cellWidth,
-      layout.cellHeight,
-      layout.cellWidth,
-      layout.cellHeight,
-      layout.fontSize,
-      renderer.atlasColumns,
-    );
+    const result = this.resizeTerminal
+      ? this.resizeTerminal(layout, renderer.atlasColumns)
+      : wasm.term_resize(
+        layout.cols,
+        layout.rows,
+        layout.cellWidth,
+        layout.cellHeight,
+        layout.cellWidth,
+        layout.cellHeight,
+        layout.fontSize,
+        renderer.atlasColumns,
+      );
     if (result !== 1) throw new Error("terminal resize failed");
     this.onResize({ cols: layout.cols, rows: layout.rows });
     this.scheduleFrame();

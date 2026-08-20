@@ -1,6 +1,19 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Cheng Cao
 
+import {
+  initialize as initializeResources,
+  rebuildCellBundle as rebuildCellBundleResources,
+  setPhysicalCellMetrics as setPhysicalCellMetricsResources,
+  setGrainStrength as setGrainStrengthResources,
+  resize as resizeResources,
+  reloadFont as reloadFontResources,
+  resetForCore as resetForCoreResources,
+  setTextRenderer as setTextRendererResources,
+  readPixels as readPixelsResources,
+  dispose as disposeResources,
+} from "./GpuTerminalResources.js";
+
 const UNIFORM_BUFFER_SIZE = 72;
 const strictDecoder = new TextDecoder("utf-8", { fatal: true });
 
@@ -16,197 +29,6 @@ function validateRecords(memoryLength, ptr, count, size, label) {
     throw new Error(`invalid submission ${label} count`);
   }
   validateRange(memoryLength, ptr, count * size, label);
-}
-
-function createRasterCanvas() {
-  const canvas = document.createElement("canvas");
-  canvas.width = 1;
-  canvas.height = 1;
-  return canvas;
-}
-
-class GlyphAtlas {
-  constructor(device, font, requiredSlots, maxSlots, format, cellWidth, cellHeight, fontSize) {
-    this.device = device;
-    this.font = font;
-    this.maxSlots = maxSlots;
-    this.format = format;
-    if (format !== "r8unorm" && format !== "rgba8unorm") throw new Error("invalid glyph atlas format");
-    this.tileWidth = Math.max(2, Math.round(cellWidth) * 2);
-    this.tileHeight = Math.max(2, Math.round(cellHeight));
-    const maxDimension = device.limits.maxTextureDimension2D;
-    const maxColumns = Math.floor(maxDimension / this.tileWidth);
-    const maxRows = Math.floor(maxDimension / this.tileHeight);
-    this.columns = Math.max(Math.min(256, maxColumns), Math.ceil(maxSlots / maxRows));
-    if (maxColumns < 1 || maxRows < 1 || this.columns > maxColumns || maxSlots > this.columns * maxRows) {
-      throw new Error("glyph atlas capacity exceeded");
-    }
-    this.fontFamily = font.fontFamily;
-    this.fontSize = Math.max(1, Math.round(fontSize));
-    this.baseline = Math.min(this.tileHeight - 1, Math.round((this.tileHeight - this.fontSize) * 0.5 + this.fontSize * 0.82));
-    this.runCanvas = createRasterCanvas();
-    this.runContext = this.runCanvas.getContext("2d", { alpha: true, willReadFrequently: true });
-    this.runContext.textBaseline = "alphabetic";
-    this.runContext.fillStyle = "white";
-    this.runContext.textRendering = "geometricPrecision";
-    this.nextSlot = 0;
-    this.pendingTextureCopies = [];
-    this.rows = Math.max(1, Math.ceil(requiredSlots / this.columns));
-    this.texture = this.device.createTexture({
-      size: [this.columns * this.tileWidth, this.rows * this.tileHeight],
-      format: this.format,
-      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.COPY_SRC | GPUTextureUsage.RENDER_ATTACHMENT,
-    });
-    if (this.rows * this.columns < requiredSlots) throw new Error("glyph atlas capacity exceeded");
-  }
-
-  get capacity() {
-    return this.columns * this.rows;
-  }
-
-  setFormat(format) {
-    if (format !== "r8unorm" && format !== "rgba8unorm") throw new Error("invalid glyph atlas format");
-    if (format === this.format) return false;
-    for (const copy of this.pendingTextureCopies) copy.source.destroy();
-    this.pendingTextureCopies = [];
-    this.texture.destroy();
-    this.format = format;
-    this.nextSlot = 0;
-    this.texture = this.device.createTexture({
-      size: [this.columns * this.tileWidth, this.rows * this.tileHeight],
-      format: this.format,
-      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.COPY_SRC | GPUTextureUsage.RENDER_ATTACHMENT,
-    });
-    return true;
-  }
-
-  ensureCapacity(requiredSlots) {
-    if (requiredSlots <= this.capacity) return false;
-    const maxRows = Math.floor(this.device.limits.maxTextureDimension2D / this.tileHeight);
-    const rows = Math.ceil(Math.max(requiredSlots, Math.ceil(this.capacity * 1.5)) / this.columns);
-    if (rows > maxRows || requiredSlots > this.maxSlots) throw new Error("glyph atlas capacity exceeded");
-    const oldTexture = this.texture;
-    const oldWidth = this.columns * this.tileWidth;
-    const oldHeight = this.rows * this.tileHeight;
-    this.rows = Math.max(1, rows);
-    this.texture = this.device.createTexture({
-      size: [oldWidth, this.rows * this.tileHeight],
-      format: this.format,
-      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.COPY_SRC | GPUTextureUsage.RENDER_ATTACHMENT,
-    });
-    if (this.nextSlot > 0) {
-      this.pendingTextureCopies.push({
-        source: oldTexture,
-        destination: this.texture,
-        width: oldWidth,
-        height: oldHeight,
-      });
-    } else {
-      oldTexture?.destroy();
-    }
-    return true;
-  }
-
-  setCanvasRun(firstSlot, slotCount, spanCells, text, flags) {
-    if (this.format !== "rgba8unorm") throw new Error("canvas glyph runs require rgba8unorm atlas format");
-    if (!Number.isInteger(firstSlot) || !Number.isInteger(slotCount) || !Number.isInteger(spanCells) ||
-        firstSlot < 0 || slotCount <= 0 || spanCells <= 0 ||
-        (slotCount !== 1 && slotCount !== spanCells) || firstSlot + slotCount > this.capacity) {
-      throw new Error("invalid glyph atlas run");
-    }
-    if (slotCount === 1 && spanCells > 2) throw new Error("invalid glyph atlas run");
-    const cellWidth = this.tileWidth / 2;
-    const runWidth = spanCells * cellWidth;
-    if (runWidth > this.runCanvas.width || this.tileHeight > this.runCanvas.height) {
-      this.runCanvas.width = Math.max(this.runCanvas.width, runWidth);
-      this.runCanvas.height = Math.max(this.runCanvas.height, this.tileHeight);
-      this.runContext = this.runCanvas.getContext("2d", { alpha: true, willReadFrequently: true });
-      this.runContext.textBaseline = "alphabetic";
-      this.runContext.fillStyle = "white";
-      this.runContext.textRendering = "geometricPrecision";
-    }
-    this.runContext.textBaseline = "alphabetic";
-    this.runContext.fillStyle = "white";
-    this.runContext.clearRect(0, 0, runWidth, this.tileHeight);
-    const weight = (flags & 1) !== 0 ? "700" : "400";
-    const italic = (flags & 2) !== 0 ? "italic" : "normal";
-    // Half-pixel em adjustment accounts for Canvas2D's pixel-edge convention versus stb.
-    this.runContext.font = `${italic} ${weight} ${Math.max(1, this.fontSize - 0.5)}px ${this.fontFamily}`;
-    this.runContext.fillText(text, 0, this.baseline);
-    for (let index = 0; index < slotCount; index += 1) {
-      const slot = firstSlot + index;
-      const width = slotCount === 1 ? spanCells * cellWidth : cellWidth;
-      this.device.queue.copyExternalImageToTexture(
-        { source: this.runCanvas, origin: [index * cellWidth, 0] },
-        {
-          texture: this.texture,
-          origin: [(slot % this.columns) * this.tileWidth, Math.floor(slot / this.columns) * this.tileHeight, 0],
-          premultipliedAlpha: false,
-        },
-        [width, this.tileHeight, 1],
-      );
-    }
-    this.nextSlot = Math.max(this.nextSlot, firstSlot + slotCount);
-    return firstSlot + slotCount;
-  }
-
-  reloadFont(fontFamily) {
-    if (typeof fontFamily !== "string" || fontFamily.trim() === "") {
-      throw new Error("invalid glyph font family");
-    }
-    this.fontFamily = fontFamily;
-    this.nextSlot = 0;
-    this.runCanvas = new OffscreenCanvas(1, 1);
-    this.runContext = this.runCanvas.getContext("2d", { alpha: true, willReadFrequently: true });
-    this.runContext.textBaseline = "alphabetic";
-    this.runContext.fillStyle = "white";
-    this.runContext.textRendering = "geometricPrecision";
-  }
-
-  setPhysicalMetrics(cellWidth, cellHeight, fontSize) {
-    if (!Number.isInteger(cellWidth) || !Number.isInteger(cellHeight) || !Number.isInteger(fontSize) ||
-        cellWidth <= 0 || cellHeight <= 0 || fontSize <= 0) {
-      throw new Error("invalid physical cell metrics");
-    }
-    const maxDimension = this.device.limits.maxTextureDimension2D;
-    const tileWidth = cellWidth * 2;
-    const tileHeight = cellHeight;
-    if (tileWidth === this.tileWidth && tileHeight === this.tileHeight && fontSize === this.fontSize) return false;
-    const maxColumns = Math.floor(maxDimension / tileWidth);
-    const maxRows = Math.floor(maxDimension / tileHeight);
-    const columns = Math.max(Math.min(256, maxColumns), Math.ceil(this.maxSlots / maxRows));
-    if (maxColumns < 1 || maxRows < 1 || columns > maxColumns || this.maxSlots > columns * maxRows) {
-      throw new Error("glyph atlas capacity exceeded");
-    }
-    const oldTexture = this.texture;
-    for (const copy of this.pendingTextureCopies) copy.source.destroy();
-    this.pendingTextureCopies = [];
-    this.tileWidth = tileWidth;
-    this.tileHeight = tileHeight;
-    this.columns = columns;
-    this.fontSize = fontSize;
-    this.baseline = Math.min(this.tileHeight - 1, Math.round((this.tileHeight - this.fontSize) * 0.5 + this.fontSize * 0.82));
-    this.rows = Math.max(1, Math.ceil(Math.min(256, this.maxSlots) / this.columns));
-    this.texture = this.device.createTexture({
-      size: [this.columns * this.tileWidth, this.rows * this.tileHeight],
-      format: this.format,
-      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.COPY_SRC | GPUTextureUsage.RENDER_ATTACHMENT,
-    });
-    this.runCanvas = new OffscreenCanvas(1, 1);
-    this.runContext = this.runCanvas.getContext("2d", { alpha: true, willReadFrequently: true });
-    this.runContext.textBaseline = "alphabetic";
-    this.runContext.fillStyle = "white";
-    this.runContext.textRendering = "geometricPrecision";
-    this.nextSlot = 0;
-    oldTexture?.destroy();
-    return true;
-  }
-
-  takePendingTextureCopies() {
-    const copies = this.pendingTextureCopies;
-    this.pendingTextureCopies = [];
-    return copies;
-  }
 }
 
 // JS drives WebGPU, but WASM owns the data-driven frame/cell/bitmap buffers shared across this boundary. CSS/DPR is converted once to integer raw-pixel font/cell metrics, which are then the single source of truth for both WASM rasterization and GPU uniforms.
@@ -269,6 +91,7 @@ export class GpuTerminal {
     this.frameUploadBytes = new Uint8Array(this.frameUploadData);
     this.indirectDirty = true;
     this.fontReloads = 0;
+    this.coreSwitches = 0;
     this.frames = 0;
     this.frameMs = null;
     this.gpuFrameMs = null;
@@ -310,90 +133,9 @@ export class GpuTerminal {
     this.device.addEventListener("uncapturederror", event => { if (this.error === null) this.error = event.error.message; });
   }
 
-  initialize(cellSource, grain, grainSize, maxCellsValue, maxGlyphsValue, maxStylesValue, styleSize, atlasSlots, cellSize) {
-    if (this.initialized) return 1;
-    if (!(grain instanceof Int8Array) || grainSize !== 64 || grain.length !== grainSize * grainSize) {
-      throw new Error("invalid grain texture");
-    }
-    if (maxCellsValue <= 0 || maxGlyphsValue <= 0 || maxStylesValue <= 0 ||
-        styleSize !== 12 || atlasSlots <= 0 || atlasSlots > maxGlyphsValue || cellSize !== 8) {
-      throw new Error("invalid GPU initialization constants");
-    }
-    this.maxCells = maxCellsValue;
-    this.maxGlyphs = maxGlyphsValue;
-    this.maxStyles = maxStylesValue;
-    this.styleSize = styleSize;
-    this.atlasRequiredSlots = atlasSlots;
-    this.cellSize = cellSize;
-    const device = this.device;
-    this.context.configure({
-      device,
-      format: this.format,
-      alphaMode: "opaque",
-      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_DST,
-    });
-    const font = getComputedStyle(this.canvas.parentElement);
-    this.atlas = new GlyphAtlas(
-      device,
-      font,
-      atlasSlots,
-      this.maxGlyphs,
-      this.textRenderer === "kb-canvas" ? "rgba8unorm" : "r8unorm",
-      this.physicalCellWidth,
-      this.physicalCellHeight,
-      this.physicalFontSize,
-    );
-    this.uniformBuffer = device.createBuffer({ size: UNIFORM_BUFFER_SIZE, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
-    this.cellBuffer = device.createBuffer({ size: maxCellsValue * cellSize, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
-    this.styleBuffer = device.createBuffer({ size: maxStylesValue * styleSize, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
-    this.selectionBuffer = device.createBuffer({ size: maxCellsValue * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
-    this.drawIndirectBuffer = device.createBuffer({ size: 16, usage: GPUBufferUsage.INDIRECT | GPUBufferUsage.COPY_DST });
-    this.grainTexture = device.createTexture({
-      size: [grainSize, grainSize],
-      format: "r8snorm",
-      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
-    });
-    device.queue.writeTexture(
-      { texture: this.grainTexture },
-      grain,
-      { offset: 0, bytesPerRow: grainSize, rowsPerImage: grainSize },
-      [grainSize, grainSize, 1],
-    );
-    const shaderMarker = "alias Lowp = f32;";
-    if (!cellSource.includes(shaderMarker)) throw new Error("invalid cell shader source");
-    const selectedCellSource = this.shaderF16
-      ? cellSource.replace(shaderMarker, "enable f16;\nalias Lowp = f16;")
-      : cellSource;
-    const cellModule = device.createShaderModule({ code: selectedCellSource });
-    this.cellPipeline = device.createRenderPipeline({
-      layout: "auto",
-      vertex: { module: cellModule, entryPoint: "vertex" },
-      fragment: { module: cellModule, entryPoint: "fragment", targets: [{ format: this.format }] },
-      primitive: { topology: "triangle-list" },
-    });
-    this.rebuildCellBundle();
-    this.initialized = true;
-    return 1;
-  }
+  initialize(cellSource, grain, grainSize, maxCellsValue, maxGlyphsValue, maxStylesValue, styleSize, atlasSlots, cellSize) { return initializeResources(this, cellSource, grain, grainSize, maxCellsValue, maxGlyphsValue, maxStylesValue, styleSize, atlasSlots, cellSize); }
 
-  rebuildCellBundle() {
-    this.cellBindGroup = this.device.createBindGroup({
-      layout: this.cellPipeline.getBindGroupLayout(0),
-      entries: [
-        { binding: 0, resource: { buffer: this.uniformBuffer } },
-        { binding: 1, resource: { buffer: this.cellBuffer } },
-        { binding: 2, resource: { buffer: this.styleBuffer } },
-        { binding: 3, resource: { buffer: this.selectionBuffer } },
-        { binding: 4, resource: this.atlas.texture.createView() },
-        { binding: 5, resource: this.grainTexture.createView() },
-      ],
-    });
-    const encoder = this.device.createRenderBundleEncoder({ colorFormats: [this.format] });
-    encoder.setPipeline(this.cellPipeline);
-    encoder.setBindGroup(0, this.cellBindGroup);
-    encoder.drawIndirect(this.drawIndirectBuffer, 0);
-    this.cellBundle = encoder.finish();
-  }
+  rebuildCellBundle() { return rebuildCellBundleResources(this); }
 
   ensureFrameUploadCapacity(size) {
     if (size <= this.frameUploadCapacity) return;
@@ -408,51 +150,11 @@ export class GpuTerminal {
     this.frameUploadBytes = new Uint8Array(this.frameUploadData);
   }
 
-  setPhysicalCellMetrics(width, height, fontSize) {
-    if (!Number.isInteger(width) || !Number.isInteger(height) || !Number.isInteger(fontSize) ||
-        width <= 0 || height <= 0 || fontSize <= 0) {
-      throw new Error("invalid physical cell metrics");
-    }
-    this.physicalCellWidth = width;
-    this.physicalCellHeight = height;
-    this.physicalFontSize = fontSize;
-    if (this.initialized && this.atlas.setPhysicalMetrics(width, height, fontSize)) this.rebuildCellBundle();
-  }
+  setPhysicalCellMetrics(width, height, fontSize) { return setPhysicalCellMetricsResources(this, width, height, fontSize); }
 
-  setGrainStrength(value) {
-    const strength = Number(value);
-    if (!Number.isFinite(strength) || strength < 0 || strength > 32) {
-      throw new Error("invalid grain strength");
-    }
-    if (strength === this.grainStrength) return;
-    this.grainStrength = strength;
-    if (this.initialized && this.rows) this.draw();
-  }
+  setGrainStrength(value) { return setGrainStrengthResources(this, value); }
 
-  resize(widthValue, heightValue) {
-    const width = Math.round(Number(widthValue));
-    const height = Math.round(Number(heightValue));
-    const maxDimension = this.device.limits.maxTextureDimension2D;
-    if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0 ||
-        width > maxDimension || height > maxDimension) {
-      throw new Error("invalid GPU viewport dimensions");
-    }
-    this.viewportWidth = width;
-    this.viewportHeight = height;
-    this.pixelScaleX = width / Math.max(1, this.canvas.clientWidth);
-    this.pixelScaleY = height / Math.max(1, this.canvas.clientHeight);
-    if (this.canvas.width === width && this.canvas.height === height && this.offscreen) return;
-    this.canvas.width = width;
-    this.canvas.height = height;
-    this.offscreen?.destroy();
-    this.offscreen = this.device.createTexture({
-      size: [width, height],
-      format: this.format,
-      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
-    });
-    this.offscreenView = this.offscreen.createView();
-    if (this.rows) this.draw();
-  }
+  resize(widthValue, heightValue) { return resizeResources(this, widthValue, heightValue); }
 
   flushAtlasGrowthCopies() {
     const copies = this.atlas.takePendingTextureCopies();
@@ -469,22 +171,11 @@ export class GpuTerminal {
     for (const copy of copies) copy.source.destroy();
   }
 
-  reloadFont(fontFamily) {
-    if (!this.initialized) throw new Error("GPU terminal is not initialized");
-    this.atlas.reloadFont(fontFamily);
-    this.rebuildCellBundle();
-    this.fontReloads += 1;
-  }
+  reloadFont(fontFamily) { return reloadFontResources(this, fontFamily); }
 
-  setTextRenderer(textRenderer) {
-    if (textRenderer !== "kb-stb" && textRenderer !== "kb-canvas") {
-      throw new Error("invalid text renderer");
-    }
-    this.textRenderer = textRenderer;
-    if (this.initialized && this.atlas.setFormat(textRenderer === "kb-canvas" ? "rgba8unorm" : "r8unorm")) {
-      this.rebuildCellBundle();
-    }
-  }
+  resetForCore(fontFamily) { return resetForCoreResources(this, fontFamily); }
+
+  setTextRenderer(textRenderer) { return setTextRendererResources(this, textRenderer); }
 
   get atlasColumns() {
     if (!this.initialized) throw new Error("GPU terminal is not initialized");
@@ -825,32 +516,7 @@ export class GpuTerminal {
     this.rasterPasses += 1;
   }
 
-  async readPixels() {
-    await this.device.queue.onSubmittedWorkDone();
-    const width = this.canvas.width;
-    const height = this.canvas.height;
-    const bytesPerRow = Math.ceil(width * 4 / 256) * 256;
-    const buffer = this.device.createBuffer({
-      size: bytesPerRow * height,
-      usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
-    });
-    const encoder = this.device.createCommandEncoder();
-    encoder.copyTextureToBuffer(
-      { texture: this.offscreen },
-      { buffer, bytesPerRow, rowsPerImage: height },
-      [width, height, 1],
-    );
-    this.device.queue.submit([encoder.finish()]);
-    await buffer.mapAsync(GPUMapMode.READ);
-    const source = new Uint8Array(buffer.getMappedRange());
-    const data = new Uint8Array(width * height * 4);
-    for (let y = 0; y < height; y += 1) {
-      data.set(source.subarray(y * bytesPerRow, y * bytesPerRow + width * 4), y * width * 4);
-    }
-    buffer.unmap();
-    buffer.destroy();
-    return { width, height, format: this.format, data };
-  }
+  async readPixels() { return readPixelsResources(this); }
 
   updateBlinkTimer() {
     const animated = (this.cursorFlags & 6) !== 0;
@@ -868,27 +534,7 @@ export class GpuTerminal {
     }
   }
 
-  dispose() {
-    if (this.error === "disposed") return;
-    if (this.blinkTimer) {
-      clearTimeout(this.blinkTimer);
-      this.blinkTimer = 0;
-    }
-    const pendingTextureCopies = this.atlas?.takePendingTextureCopies?.() ?? [];
-    for (const copy of pendingTextureCopies) copy.source?.destroy?.();
-    this.atlas?.texture?.destroy?.();
-    this.offscreen?.destroy?.();
-    this.frameUploadBuffer?.destroy?.();
-    this.uniformBuffer?.destroy?.();
-    this.cellBuffer?.destroy?.();
-    this.styleBuffer?.destroy?.();
-    this.selectionBuffer?.destroy?.();
-    this.drawIndirectBuffer?.destroy?.();
-    this.grainTexture?.destroy?.();
-    this.device?.destroy?.();
-    this.error = "disposed";
-    this.initialized = false;
-  }
+  dispose() { return disposeResources(this); }
 
   get stats() {
     return {
@@ -897,6 +543,7 @@ export class GpuTerminal {
       shaderF16: this.shaderF16,
       fontFamily: this.atlas.fontFamily,
       fontReloads: this.fontReloads,
+      coreSwitches: this.coreSwitches,
       gpuFrames: this.frames,
       frameMs: this.frameMs,
       queueDrainMs: this.gpuFrameMs,

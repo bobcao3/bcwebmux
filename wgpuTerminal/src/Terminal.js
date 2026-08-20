@@ -1,6 +1,12 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Cheng Cao
 
+import { TerminalCore } from "./TerminalCore.js";
+import {
+  createCore as createHostedCore,
+  attachCore as attachHostedCore,
+  restoreSnapshot as restoreHostedSnapshot,
+} from "./TerminalCoreHost.js";
 import { EventEmitter } from "./common/EventEmitter.js";
 import { GpuTerminal } from "./browser/render/webgpu/GpuTerminal.js";
 import { TerminalTextView } from "./browser/selection/TerminalTextView.js";
@@ -16,41 +22,15 @@ import {
   modifierBits,
 } from "./browser/input/InputController.js";
 import { PointerController } from "./browser/input/PointerController.js";
-
-const encoder = new TextEncoder();
-const decoder = new TextDecoder();
-const strictDecoder = new TextDecoder("utf-8", { fatal: true });
-const WASM_STAGING_CAPACITY = 64 * 1024;
-const TEXT_STAGING_CHUNK = 48 * 1024;
-const COLOR_FIELDS = ["background", "foreground", "surface", "border", "accent", "muted", "success", "danger"];
-
-const DEFAULT_THEME = Object.freeze({
-  background: "#0a0c10",
-  foreground: "#f0f3f6",
-  surface: "#161b22",
-  border: "#7a828e",
-  accent: "#58a6ff",
-  muted: "#9ea7b3",
-  success: "#3fb950",
-  danger: "#ff6a69",
-  ansi: Object.freeze([
-    "#0a0c10", "#ff6a69", "#56d364", "#e3b341", "#58a6ff", "#d2a8ff", "#39c5cf", "#b1bac4",
-    "#7a828e", "#ff938a", "#6bc46d", "#f2cc60", "#79c0ff", "#d2a8ff", "#56d4dd", "#ffffff",
-  ]),
-});
-
-const DEFAULT_FONT = Object.freeze({
-  id: "jetbrains-mono",
-  name: "JetBrains Mono Nerd Font",
-  cssFamily: "JetBrains Mono Nerd Font",
-  wasmId: 0,
-  size: 15,
-  ligatures: true,
-  fallbacks: Object.freeze([
-    "ui-monospace", "Noto Emoji", "SFMono-Regular", "Cascadia Mono", "Noto Sans Mono CJK SC",
-    "Noto Sans CJK SC", "Microsoft YaHei UI", "PingFang SC", "Noto Sans Symbols 2", "monospace",
-  ]),
-});
+import {
+  COLOR_FIELDS,
+  DEFAULT_FONT,
+  DEFAULT_THEME,
+  decoder,
+  loadTerminalFonts,
+  normalizeFont,
+  renderFontFamily,
+} from "./TerminalOptions.js";
 
 function listenerError(error) {
   console.error("terminal event listener failed", error);
@@ -58,53 +38,6 @@ function listenerError(error) {
 
 function createEmitter() {
   return new EventEmitter({ onListenerError: listenerError });
-}
-
-function packedColor(color) {
-  if (typeof color !== "string" || !/^#[0-9a-f]{6}$/i.test(color)) {
-    throw new TypeError(`invalid terminal color: ${color}`);
-  }
-  return Number.parseInt(color.slice(1), 16) >>> 0;
-}
-
-function renderFontFamily(families) {
-  return families.map((family) => {
-    const generic = family.toLowerCase();
-    if (generic === "monospace" || generic === "ui-monospace") return generic;
-    return `"${family.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
-  }).join(", ");
-}
-
-function normalizeFont(font) {
-  const value = { ...DEFAULT_FONT, ...(font || {}) };
-  value.size = Math.min(32, Math.max(8, Math.round(Number(value.size) || DEFAULT_FONT.size)));
-  value.ligatures = value.ligatures !== false;
-  value.wasmId = Number.isInteger(value.wasmId) ? value.wasmId : 0;
-  value.fallbacks = Array.isArray(value.fallbacks) ? [...value.fallbacks] : [...DEFAULT_FONT.fallbacks];
-  if (!value.fallbacks.includes("monospace")) value.fallbacks.push("monospace");
-  if (!value.cssFamily) throw new TypeError("terminal font cssFamily is required");
-  return value;
-}
-
-function loadTerminalFonts(font) {
-  const loads = [
-    document.fonts.load(`normal 400 ${font.size}px "${font.cssFamily}"`),
-    document.fonts.load(`normal 700 ${font.size}px "${font.cssFamily}"`),
-    document.fonts.load(`italic 400 ${font.size}px "${font.cssFamily}"`),
-    document.fonts.load(`italic 700 ${font.size}px "${font.cssFamily}"`),
-  ];
-  if (font.fallbacks.some((fallback) => /noto emoji/i.test(fallback))) {
-    loads.push(document.fonts.load(`normal 400 ${font.size}px "Noto Emoji"`, "😀"));
-  }
-  return loads;
-}
-
-function normalizeBinary(data) {
-  if (typeof data === "string") return encoder.encode(data);
-  if (data instanceof Uint8Array) return data;
-  if (data instanceof ArrayBuffer) return new Uint8Array(data);
-  if (ArrayBuffer.isView(data)) return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
-  throw new TypeError("terminal data must be a string, ArrayBuffer, or ArrayBufferView");
 }
 
 export class Terminal {
@@ -127,6 +60,9 @@ export class Terminal {
     this._opening = null;
     this._addons = new Set();
     this._activeAddons = new Set();
+    this._cores = new Set();
+    this._core = null;
+    this._renderingCore = null;
     this._wasm = null;
     this._renderer = null;
     this._view = null;
@@ -144,18 +80,12 @@ export class Terminal {
     this._selectionMode = false;
     this._restoreInputFocus = false;
     this._softModifiers = 0;
-    this._clipboardWriteQueue = Promise.resolve();
     this._pendingRxAt = 0;
     this._pendingInputAt = 0;
     this._state = {
       selectionMode: false,
-      frames: 0,
-      rxBytes: 0,
-      txBytes: 0,
       cols: 0,
       rows: 0,
-      wasmParseMs: null,
-      wasmFrameMs: null,
       rxLatencyMs: null,
       inputLatencyMs: null,
     };
@@ -174,6 +104,8 @@ export class Terminal {
   get element() { return this._view?.viewport; }
   get screenElement() { return this._view?.screen; }
   get textarea() { return this._view?.input; }
+  get core() { return this._core; }
+  get coreCount() { return this._cores.size; }
   get cols() { return this._state.cols; }
   get rows() { return this._state.rows; }
   get selectionMode() { return this._selectionMode; }
@@ -184,7 +116,7 @@ export class Terminal {
   get inputTrace() { return this._inputController?.trace || ""; }
   get state() {
     const snapshot = this._renderer?.initialized ? this._renderer.stats : {};
-    Object.assign(snapshot, this._state);
+    Object.assign(snapshot, this._core?.state || {}, this._state);
     return snapshot;
   }
 
@@ -256,6 +188,7 @@ export class Terminal {
       getWasm: () => this._wasm,
       getRenderer: () => this._renderer,
       getInputController: () => this._inputController,
+      resizeTerminal: (layout, atlasColumns) => this._resizeActiveCore(layout, atlasColumns),
       onResize: ({ cols, rows }) => {
         this._state.cols = cols;
         this._state.rows = rows;
@@ -272,11 +205,21 @@ export class Terminal {
     this._renderer.setPhysicalCellMetrics(initialLayout.cellWidth, initialLayout.cellHeight, initialLayout.fontSize);
     this._renderer.setGrainStrength(this.options.grainStrength);
 
-    const imports = this._createWasmImports();
-    const result = await WebAssembly.instantiateStreaming(fetch(this.options.wasmUrl), imports);
-    this._wasm = result.instance.exports;
-    if (this._wasm.term_init(initialLayout.cols, initialLayout.rows) !== 1) {
-      throw new Error("terminal initialization failed");
+    const core = new TerminalCore({
+      wasmUrl: this.options.wasmUrl,
+      renderer: this.options.renderer,
+      font: this.options.font,
+      theme: this.options.theme,
+      clipboardWrite: this.options.clipboardWrite,
+    });
+    this._cores.add(core);
+    this._renderingCore = core;
+    try {
+      await core.open({ cols: initialLayout.cols, rows: initialLayout.rows, host: this });
+      this._core = core;
+      this._wasm = core.wasm;
+    } finally {
+      this._renderingCore = null;
     }
 
     this._textView = new TerminalTextView(this._view.textView, {
@@ -335,90 +278,81 @@ export class Terminal {
     this._installWindowListeners();
   }
 
-  _createWasmImports() {
-    return {
-      host: {
-        gpu_text_backend: () => this._activeTextRenderer === "kb-canvas" ? 1 : 0,
-        gpu_init: (cellPtr, cellLen, grainPtr, grainLen, grainSize, maxCells, maxGlyphs, maxStyles, styleSize, atlasSlots, cellSize) => {
-          try {
-            const memory = this._wasm.memory.buffer;
-            const cellSource = decoder.decode(new Uint8Array(memory, cellPtr, cellLen));
-            const grain = new Int8Array(memory, grainPtr, grainLen);
-            return this._renderer.initialize(cellSource, grain, grainSize, maxCells, maxGlyphs, maxStyles, styleSize, atlasSlots, cellSize);
-          } catch (error) {
-            console.error(error);
-            this._errorEmitter.emit(error);
-            return 0;
-          }
-        },
-        gpu_submit: (submissionPtr) => {
-          try {
-            const memory = this._wasm.memory.buffer;
-            const metadata = this._renderer.submitWasm(memory, submissionPtr);
-            this._submitFrameMetadata(metadata);
-            this._viewportController.submitFrameMetadata(metadata);
-            this._textView?.update(
-              memory,
-              metadata,
-              metadata.textRowsPtr,
-              metadata.textCellsPtr,
-              metadata.textBytesPtr,
-              metadata.textBytesLen,
-              metadata.textChanged,
-            );
-            return 1;
-          } catch (error) {
-            console.error(error);
-            this._errorEmitter.emit(error);
-            return 0;
-          }
-        },
-        pty_write: (ptr, len) => {
-          if (this._dataEmitter.size === 0) return 0;
-          const view = new Uint8Array(this._wasm.memory.buffer, ptr, len);
-          if (this._inputController?.diagnostics.enabled) {
-            const sample = view.subarray(0, 64);
-            this._inputController.diagnostics.log("pty_write", {
-              len,
-              hex: Array.from(sample, (byte) => byte.toString(16).padStart(2, "0")).join(" "),
-              text: decoder.decode(sample),
-            });
-          }
-          if (!this._pendingInputAt) this._pendingInputAt = performance.now();
-          this._dataEmitter.emit(view);
-          this._state.txBytes += len;
-          return 1;
-        },
-        clipboard_write: (location, ptr, len) => this._clipboardWrite(location, ptr, len),
-        set_title: (ptr, len) => {
-          const title = decoder.decode(new Uint8Array(this._wasm.memory.buffer, ptr, len));
-          this._titleEmitter.emit(title);
-        },
-        ring_bell: () => this._bellEmitter.emit(),
-        desktop_notification: (titlePtr, titleLen, bodyPtr, bodyLen) => {
-          const memory = this._wasm.memory.buffer;
-          this._notificationEmitter.emit({
-            title: decoder.decode(new Uint8Array(memory, titlePtr, titleLen)),
-            body: decoder.decode(new Uint8Array(memory, bodyPtr, bodyLen)),
-          });
-        },
-      },
-    };
+  _isCoreActive(core) {
+    return core === this._core || core === this._renderingCore;
   }
 
-  _clipboardWrite(location, ptr, len) {
-    const writer = this.options.clipboardWrite || navigator.clipboard?.writeText?.bind(navigator.clipboard);
-    if (location !== 0 || typeof writer !== "function") return 2;
-    let text;
-    try {
-      text = strictDecoder.decode(new Uint8Array(this._wasm.memory.buffer, ptr, len));
-    } catch {
-      return 4;
+  _resizeActiveCore(layout, atlasColumns) {
+    const core = this._renderingCore ?? this._core;
+    if (core?.wasm && core.resize(layout, atlasColumns) !== 1) {
+      throw new Error("terminal core resize failed");
     }
-    this._clipboardWriteQueue = this._clipboardWriteQueue
-      .then(() => writer(text))
-      .catch((error) => console.error("clipboard write failed", error));
-    return 0;
+    return 1;
+  }
+
+  _gpuInit(core, cellPtr, cellLen, grainPtr, grainLen, grainSize, maxCells, maxGlyphs, maxStyles, styleSize, atlasSlots, cellSize) {
+    if (!this._cores.has(core)) return 0;
+    try {
+      const memory = core.wasm.memory.buffer;
+      const cellSource = decoder.decode(new Uint8Array(memory, cellPtr, cellLen));
+      const grain = new Int8Array(memory, grainPtr, grainLen);
+      return this._renderer.initialize(cellSource, grain, grainSize, maxCells, maxGlyphs, maxStyles, styleSize, atlasSlots, cellSize);
+    } catch (error) {
+      console.error(error);
+      this._errorEmitter.emit(error);
+      return 0;
+    }
+  }
+
+  _gpuSubmit(core, submissionPtr) {
+    if (!this._isCoreActive(core)) return 0;
+    try {
+      const memory = core.wasm.memory.buffer;
+      const metadata = this._renderer.submitWasm(memory, submissionPtr);
+      this._submitFrameMetadata(metadata);
+      this._viewportController.submitFrameMetadata(metadata);
+      this._textView?.update(
+        memory,
+        metadata,
+        metadata.textRowsPtr,
+        metadata.textCellsPtr,
+        metadata.textBytesPtr,
+        metadata.textBytesLen,
+        metadata.textChanged,
+      );
+      return 1;
+    } catch (error) {
+      console.error(error);
+      this._errorEmitter.emit(error);
+      return 0;
+    }
+  }
+
+  _coreTitleChanged(core, title) {
+    if (core === this._core) this._titleEmitter.emit(title);
+  }
+
+  _coreBell(core) {
+    if (core === this._core) this._bellEmitter.emit();
+  }
+
+  _coreNotification(core, notification) {
+    if (core === this._core) this._notificationEmitter.emit(notification);
+  }
+
+  _coreRestored(core) {
+    if (this._isCoreActive(core)) {
+      this._viewportController.resize(this._viewportController.latestPixelViewport);
+    }
+  }
+
+  _coreDisposed(core) {
+    this._cores.delete(core);
+    if (this._core === core) {
+      this._core = null;
+      this._wasm = null;
+    }
+    if (this._renderingCore === core) this._renderingCore = null;
   }
 
   _installWindowListeners() {
@@ -453,10 +387,16 @@ export class Terminal {
   }
 
   _renderFrame() {
-    if (!this._wasm) return;
+    const core = this._core;
+    if (!core) return;
     const startedAt = performance.now();
-    this._wasm.term_frame();
-    this._sampleMetric("wasmFrameMs", performance.now() - startedAt);
+    core.wasm.term_frame();
+    const elapsed = performance.now() - startedAt;
+    if (Number.isFinite(elapsed)) {
+      core._state.wasmFrameMs = core._state.wasmFrameMs == null
+        ? elapsed
+        : core._state.wasmFrameMs * 0.8 + elapsed * 0.2;
+    }
   }
 
   _submitFrameMetadata(metadata) {
@@ -471,7 +411,8 @@ export class Terminal {
     }
     this._state.cols = metadata.cols;
     this._state.rows = metadata.rows;
-    this._state.frames += 1;
+    if (this._renderingCore) this._renderingCore.frameSubmitted();
+    else this._core?.frameSubmitted();
   }
 
   _applyCssTheme(theme) {
@@ -490,14 +431,7 @@ export class Terminal {
     this.options.theme = theme;
     if (!this._terminalElement) return;
     this._applyCssTheme(theme);
-    if (!this._wasm) return;
-    const colors = [theme.background, theme.foreground, ...(theme.ansi || [])];
-    if (colors.length !== 18) throw new TypeError("terminal theme must provide 16 ANSI colors");
-    const view = new DataView(this._wasm.memory.buffer);
-    const ptr = this._wasm.term_theme_ptr();
-    colors.forEach((color, index) => view.setUint32(ptr + index * 4, packedColor(color), true));
-    const result = this._wasm.term_apply_theme();
-    if (result !== 1) throw new Error(`WASM theme application failed: ${result}`);
+    for (const core of this._cores) core.setTheme(theme);
     this._scheduler.schedule(true);
   }
 
@@ -514,9 +448,7 @@ export class Terminal {
       if (font.canvasOnly && this._activeTextRenderer !== "kb-canvas") {
         throw new Error("Canvas-only font requires the kb-canvas renderer");
       }
-      if (this._wasm.term_set_font(font.wasmId, font.ligatures ? 1 : 0) !== 1) {
-        throw new Error("WASM font configuration failed");
-      }
+      for (const core of this._cores) core.setFont(font);
       this._viewportController.remeasureCells();
       this._viewportController.resize(this._viewportController.latestPixelViewport);
       this._reloadRendererFont();
@@ -536,11 +468,22 @@ export class Terminal {
     this.options.renderer = normalized;
     this._activeTextRenderer = normalized;
     if (!this._wasm || !this._renderer) return;
-    const result = this._wasm.term_set_renderer(normalized === "kb-canvas" ? 1 : 0);
-    if (result !== 1) throw new Error(`WASM renderer configuration failed: ${result}`);
+    for (const core of this._cores) core.setRenderer(normalized);
     this._renderer.setTextRenderer(normalized);
     this._reloadRendererFont();
     this._scheduler.schedule(true);
+  }
+
+  async createCore(options = {}) {
+    return createHostedCore(this, options);
+  }
+
+  attachCore(core) {
+    return attachHostedCore(this, core);
+  }
+
+  restoreSnapshot(data, core = this._core) {
+    return restoreHostedSnapshot(this, data, core);
   }
 
   setGrainStrength(value) {
@@ -553,49 +496,22 @@ export class Terminal {
   }
 
   _reloadRendererFont() {
-    if (!this._renderer || !this._wasm) return;
+    if (!this._renderer) return;
     this._renderer.reloadFont(getComputedStyle(this._terminalElement).fontFamily);
-    this._wasm.term_invalidate_glyph_cache();
+    for (const core of this._cores) core.wasm.term_invalidate_glyph_cache();
   }
 
   write(data) {
-    if (!this._wasm) throw new Error("terminal is not open");
-    const bytes = normalizeBinary(data);
-    if (!bytes.length) return;
+    if (!this._core) throw new Error("terminal is not open");
     if (!this._pendingRxAt) this._pendingRxAt = performance.now();
-    let offset = 0;
-    const parseStartedAt = performance.now();
-    while (offset < bytes.length) {
-      const length = Math.min(WASM_STAGING_CAPACITY, bytes.length - offset);
-      const ptr = this._wasm.term_reserve(length);
-      if (!ptr) throw new Error("WASM receive buffer exhausted");
-      const chunk = offset === 0 && length === bytes.length
-        ? bytes
-        : bytes.subarray(offset, offset + length);
-      new Uint8Array(this._wasm.memory.buffer, ptr, length).set(chunk);
-      if (this._wasm.term_feed(length) !== 1) throw new Error("WASM terminal feed failed");
-      offset += length;
-    }
-    this._sampleMetric("wasmParseMs", performance.now() - parseStartedAt);
-    this._state.rxBytes += bytes.length;
-    this._scheduler.schedule(true);
+    this._core.write(data);
   }
 
   _input(text, paste) {
-    if (!this._wasm) throw new Error("terminal is not open");
+    const core = this._core;
+    if (!core) throw new Error("terminal is not open");
     if (text) this.clearSelection();
-    let remaining = String(text ?? "");
-    while (remaining.length) {
-      const ptr = this._wasm.term_reserve(TEXT_STAGING_CHUNK);
-      if (!ptr) throw new Error("WASM staging buffer exhausted");
-      const buffer = new Uint8Array(this._wasm.memory.buffer, ptr, TEXT_STAGING_CHUNK);
-      const result = encoder.encodeInto(remaining, buffer);
-      if (!result.read && !result.written) throw new Error("text encoding made no progress");
-      if (this._wasm.term_text(result.written, paste ? 1 : 0) !== 1) {
-        throw new Error("WASM text submission failed");
-      }
-      remaining = result.read < remaining.length ? remaining.slice(result.read) : "";
-    }
+    core._input(text, paste);
   }
 
   input(text, options) {
@@ -633,14 +549,7 @@ export class Terminal {
     const codepoint = key.codePointAt(0);
     const printable = codepoint !== undefined && key.length === (codepoint > 0xffff ? 2 : 1);
     const text = printable ? key : "";
-    const ptr = this._wasm.term_reserve(512);
-    if (!ptr) return 0;
-    const buffer = new Uint8Array(this._wasm.memory.buffer, ptr, 512);
-    const codeResult = encoder.encodeInto(code, buffer);
-    if (codeResult.read !== code.length) return 0;
-    const textResult = encoder.encodeInto(text, buffer.subarray(codeResult.written));
-    if (textResult.read !== text.length) return 0;
-    return this._wasm.term_key(action, mods, consumed ? 1 : 0, codeResult.written, textResult.written);
+    return this._core.sendEncodedKey(code, text, action, mods, consumed);
   }
 
   setSoftModifiers(value) {
@@ -692,17 +601,7 @@ export class Terminal {
   }
 
   getSelection() {
-    if (!this._wasm) return null;
-    const status = this._wasm.term_selection_snapshot();
-    if (status === 0) return null;
-    if (status < 0) throw new Error(`WASM selection snapshot failed: ${status}`);
-    try {
-      const ptr = this._wasm.term_selection_snapshot_ptr();
-      const len = this._wasm.term_selection_snapshot_len();
-      return strictDecoder.decode(new Uint8Array(this._wasm.memory.buffer, ptr, len));
-    } finally {
-      this._wasm.term_selection_snapshot_release();
-    }
+    return this._core?.getSelection() ?? null;
   }
 
   async copySelection() {
@@ -714,12 +613,13 @@ export class Terminal {
   }
 
   clearSelection() {
-    if (!this._wasm) return false;
+    const core = this._core;
+    if (!core) return false;
     if (this._textView?.hasSelection()) {
       this._textView.clearBrowserSelection(true);
       return true;
     }
-    const handled = this._wasm.term_selection_clear() === 1;
+    const handled = core.clearSelection();
     if (handled) this._scheduler.schedule(true);
     return handled;
   }
@@ -779,12 +679,11 @@ export class Terminal {
   }
 
   reset() {
-    if (!this._wasm) return false;
+    const core = this._core;
+    if (!core) return false;
     if (this._selectionMode) this.exitSelectionMode({ flush: false, restoreFocus: false });
     this.clearPendingLatency();
-    this._wasm.term_deinit();
-    const { cols, rows } = this._viewportController.dimensions;
-    if (this._wasm.term_init(cols, rows) !== 1) throw new Error("terminal reset failed");
+    core.reset();
     this._viewportController.resize();
     return true;
   }
@@ -792,6 +691,7 @@ export class Terminal {
   clearPendingLatency() {
     this._pendingRxAt = 0;
     this._pendingInputAt = 0;
+    this._core?.clearPendingLatency();
   }
 
   readPixels() {
@@ -824,10 +724,14 @@ export class Terminal {
     this._viewportController?.dispose();
     this._scheduler?.dispose();
     this._textView?.setEnabled(false);
-    if (this._wasm) this._wasm.term_deinit();
+    const cores = [...this._cores];
+    for (const core of cores) core.dispose();
+    this._cores.clear();
+    this._core = null;
+    this._renderingCore = null;
+    this._wasm = null;
     this._renderer?.dispose?.();
     this._view?.dispose();
-    this._wasm = null;
     this._renderer = null;
     this._view = null;
     this._opened = false;

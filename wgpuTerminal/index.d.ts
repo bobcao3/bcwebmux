@@ -16,6 +16,7 @@ export interface GpuTerminalStatsDraft {
   fontFamily: string;
   fontReloads: number;
   gpuFrames: number;
+  coreSwitches: number;
   frameMs: number | null;
   queueDrainMs: number | null;
   gpuFrameMs: number | null;
@@ -96,6 +97,14 @@ export interface TerminalOptions {
   clipboardWrite?: (text: string) => void | Promise<void>;
 }
 
+export interface TerminalCoreOptions {
+  wasmUrl?: string | URL;
+  renderer?: TerminalRenderer;
+  font?: Partial<TerminalFont>;
+  theme?: TerminalTheme;
+  clipboardWrite?: (text: string) => void | Promise<void>;
+}
+
 export interface TerminalAddon extends IDisposable {
   activate(terminal: Terminal): void;
 }
@@ -119,9 +128,53 @@ export interface TerminalState extends Partial<GpuTerminalStatsDraft> {
   inputLatencyMs: number | null;
 }
 
+export interface TerminalCoreState {
+  frames: number;
+  rxBytes: number;
+  txBytes: number;
+  replyBytes: number;
+  cols: number;
+  rows: number;
+  wasmParseMs: number | null;
+  wasmFrameMs: number | null;
+}
+
+export declare class TerminalCore implements IDisposable {
+  constructor(options?: TerminalCoreOptions);
+  readonly options: TerminalCoreOptions;
+  readonly opened: boolean;
+  readonly disposed: boolean;
+  readonly cols: number;
+  readonly rows: number;
+  readonly state: TerminalCoreState;
+
+  onData(listener: (data: Uint8Array) => void): IDisposable;
+  onReply(listener: (data: Uint8Array) => void): IDisposable;
+  onTitleChange(listener: (title: string) => void): IDisposable;
+  onBell(listener: () => void): IDisposable;
+  onNotification(listener: (notification: { title: string; body: string }) => void): IDisposable;
+  onError(listener: (error: unknown) => void): IDisposable;
+
+  open(size?: { cols?: number; rows?: number }): Promise<this>;
+  write(data: string | ArrayBuffer | ArrayBufferView): void;
+  input(text: string, options?: { paste?: boolean }): void;
+  paste(text: string): void;
+  setTheme(theme: TerminalTheme): void;
+  setFont(font: Partial<TerminalFont>): void;
+  setRenderer(renderer: TerminalRenderer): void;
+  getSelection(): string | null;
+  clearSelection(): boolean;
+  reset(): boolean;
+  restoreSnapshot(data: string | ArrayBuffer | ArrayBufferView): void;
+  clearPendingLatency(): void;
+  dispose(): void;
+}
+
 export declare class Terminal implements IDisposable {
   constructor(options?: TerminalOptions);
   readonly options: TerminalOptions;
+  readonly core: TerminalCore | undefined;
+  readonly coreCount: number;
   readonly element: HTMLElement | undefined;
   readonly screenElement: HTMLCanvasElement | undefined;
   readonly textarea: HTMLTextAreaElement | undefined;
@@ -145,6 +198,8 @@ export declare class Terminal implements IDisposable {
 
   loadAddon(addon: TerminalAddon): void;
   open(parent: HTMLElement): Promise<this>;
+  createCore(options?: TerminalCoreOptions): Promise<TerminalCore>;
+  attachCore(core: TerminalCore): TerminalCore;
   write(data: string | ArrayBuffer | ArrayBufferView): void;
   input(text: string, options?: { paste?: boolean }): void;
   paste(text: string): void;
@@ -167,6 +222,7 @@ export declare class Terminal implements IDisposable {
   resumeFocus(options?: { focus?: boolean }): void;
   resize(): unknown;
   reset(): boolean;
+  restoreSnapshot(data: string | ArrayBuffer | ArrayBufferView, core?: TerminalCore): void;
   readPixels(): Promise<{ width: number; height: number; format: string; data: Uint8Array }>;
   clearPendingLatency(): void;
   dispose(): void;

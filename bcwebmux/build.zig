@@ -22,7 +22,14 @@ pub fn build(b: *std.Build) void {
         .optimize = wasm_optimize,
         .simd = false,
         .@"emit-lib-vt" = true,
-        .@"vt-features" = "-all,+render-state,+input-encode,+selection",
+        .@"vt-features" = "-all,+render-state,+input-encode,+selection,+snapshot",
+    });
+    const native_ghostty = b.dependency("ghostty", .{
+        .target = target,
+        .optimize = optimize,
+        .simd = false,
+        .@"emit-lib-vt" = true,
+        .@"vt-features" = "-all,+snapshot",
     });
     const terminal_fonts = b.addWriteFiles();
     _ = terminal_fonts.addCopyFile(
@@ -78,6 +85,25 @@ pub fn build(b: *std.Build) void {
     wasm.rdynamic = true;
     wasm.export_memory = true;
 
+    const snapshot_fixture = b.addExecutable(.{
+        .name = "snapshot-fixture",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("test/snapshot-fixture.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{.{
+                .name = "ghostty-vt",
+                .module = native_ghostty.module("ghostty-vt"),
+            }},
+        }),
+    });
+    const snapshot_fixture_csi_run = b.addRunArtifact(snapshot_fixture);
+    const snapshot_csi_file = snapshot_fixture_csi_run.addOutputFileArg("terminal-core-csi.snapshot");
+    snapshot_fixture_csi_run.addArg("csi");
+    const snapshot_fixture_utf8_run = b.addRunArtifact(snapshot_fixture);
+    const snapshot_utf8_file = snapshot_fixture_utf8_run.addOutputFileArg("terminal-core-utf8.snapshot");
+    snapshot_fixture_utf8_run.addArg("utf8");
+
     const terminal_wasm_install = b.addInstallFile(wasm.getEmittedBin(), "wgpu-terminal/terminal.wasm");
     const terminal_wasm_step = b.step("terminal-wasm", "Build the embeddable terminal WASM package asset");
     terminal_wasm_step.dependOn(&terminal_wasm_install.step);
@@ -103,6 +129,8 @@ pub fn build(b: *std.Build) void {
         "fonts/NotoEmoji-Regular.woff2",
     );
     _ = web_assets.addCopyFile(wasm.getEmittedBin(), "terminal.wasm");
+    _ = web_assets.addCopyFile(snapshot_csi_file, "test/terminal-core-csi.snapshot");
+    _ = web_assets.addCopyFile(snapshot_utf8_file, "test/terminal-core-utf8.snapshot");
 
     const tar = b.addSystemCommand(&.{
         "tar",
@@ -170,9 +198,16 @@ pub fn build(b: *std.Build) void {
         b.getInstallPath(.bin, "bcwebmux-server"),
         b.getInstallPath(.prefix, "web"),
     });
+    const terminal_core_smoke_cmd = b.addSystemCommand(&.{ "node", "test/terminal-core-smoke.mjs" });
+    terminal_core_smoke_cmd.step.dependOn(b.getInstallStep());
+    terminal_core_smoke_cmd.addArgs(&.{
+        b.getInstallPath(.bin, "bcwebmux-server"),
+        b.getInstallPath(.prefix, "web"),
+    });
     e2e_cmd.step.dependOn(&mouse_selection_cmd.step);
     const e2e_step = b.step("e2e", "Run the physical-GPU browser-to-PTY end-to-end test");
     e2e_step.dependOn(&e2e_cmd.step);
+    e2e_step.dependOn(&terminal_core_smoke_cmd.step);
 
     const protocol_tests = b.addTest(.{
         .root_module = b.createModule(.{
@@ -196,6 +231,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_vfs_tests.step);
     test_step.dependOn(&protocol_contract_cmd.step);
     test_step.dependOn(&e2e_cmd.step);
+    test_step.dependOn(&terminal_core_smoke_cmd.step);
 }
 
 fn compressWoff2(b: *std.Build, input: std.Build.LazyPath, basename: []const u8) std.Build.LazyPath {
@@ -225,3 +261,4 @@ fn compressWoff2(b: *std.Build, input: std.Build.LazyPath, basename: []const u8)
     const output = command.addOutputFileArg(b.fmt("{s}.woff2", .{basename}));
     return output;
 }
+

@@ -3,6 +3,7 @@
 
 const std = @import("std");
 const fonts = @import("fonts");
+const Self = @This();
 
 const c = @cImport({
     @cInclude("kb_text_shape.h");
@@ -39,9 +40,14 @@ const Face = struct {
     raster: c.stbtt_fontinfo,
 };
 
-var context: ?*c.kbts_shape_context = null;
-var faces: [4]Face = undefined;
-var face_ready = [_]bool{false} ** 4;
+context: ?*c.kbts_shape_context = null,
+faces: [4]Face = undefined,
+face_ready: [4]bool = [_]bool{false} ** 4,
+
+pub fn bootstrap(self: *Self) void {
+    self.context = null;
+    self.face_ready = [_]bool{false} ** 4;
+}
 
 pub fn cAlloc(len: usize) ?*anyopaque {
     const total = std.math.add(usize, len, 16) catch return null;
@@ -67,23 +73,23 @@ fn kbAllocator(_: ?*anyopaque, op: [*c]c.kbts_allocator_op) callconv(.c) void {
     }
 }
 
-pub fn init() !void {
-    if (context != null) return;
-    context = c.kbts_CreateShapeContext(&kbAllocator, null) orelse return error.ShapeContextInitFailed;
+pub fn init(self: *Self) !void {
+    if (self.context != null) return;
+    self.context = c.kbts_CreateShapeContext(&kbAllocator, null) orelse return error.ShapeContextInitFailed;
 }
 
-fn ensureFace(style: FontStyle) !*Face {
+fn ensureFace(self: *Self, style: FontStyle) !*Face {
     const index = @intFromEnum(style);
-    if (face_ready[index]) return &faces[index];
+    if (self.face_ready[index]) return &self.faces[index];
     const data = switch (style) {
         .regular => fonts.regular,
         .bold => fonts.bold,
         .italic => fonts.italic,
         .bold_italic => fonts.bold_italic,
     };
-    try initFace(&faces[index], data);
-    face_ready[index] = true;
-    return &faces[index];
+    try initFace(&self.faces[index], data);
+    self.face_ready[index] = true;
+    return &self.faces[index];
 }
 
 fn initFace(face: *Face, data: []const u8) !void {
@@ -96,14 +102,15 @@ fn initFace(face: *Face, data: []const u8) !void {
 }
 
 pub fn shape(
+    self: *Self,
     style: FontStyle,
     ligatures: bool,
     input: []const Input,
 ) !RenderStats {
-    const shape_context = context orelse return error.NotInitialized;
+    const shape_context = self.context orelse return error.NotInitialized;
     if (input.len == 0) return error.EmptyRun;
 
-    const face = try ensureFace(style);
+    const face = try self.ensureFace(style);
     if (c.kbts_ShapePushFont(shape_context, &face.shape) == null)
         return error.ShapeFontPushFailed;
     defer _ = c.kbts_ShapePopFont(shape_context);
@@ -143,6 +150,7 @@ pub fn shape(
 }
 
 pub fn render(
+    self: *Self,
     style: FontStyle,
     ligatures: bool,
     input: []const Input,
@@ -150,14 +158,14 @@ pub fn render(
     metrics: Metrics,
     mask: []u8,
 ) !RenderStats {
-    const shape_context = context orelse return error.NotInitialized;
+    const shape_context = self.context orelse return error.NotInitialized;
     if (input.len == 0 or span_cells == 0) return error.EmptyRun;
     const width = try std.math.mul(usize, span_cells, metrics.cell_width);
     const required = try std.math.mul(usize, width, metrics.cell_height);
     if (mask.len < required) return error.MaskTooSmall;
     @memset(mask[0..required], 0);
 
-    const face = try ensureFace(style);
+    const face = try self.ensureFace(style);
     if (c.kbts_ShapePushFont(shape_context, &face.shape) == null)
         return error.ShapeFontPushFailed;
     defer _ = c.kbts_ShapePopFont(shape_context);
