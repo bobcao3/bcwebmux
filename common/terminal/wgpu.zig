@@ -775,7 +775,8 @@ fn submitCached(state: *ghostty.RenderState, terminal: *ghostty.Terminal) !void 
                 if (text_backend == .kb_canvas and canvas_request_count >= canvas_requests.len) return error.CanvasBatchFull;
                 const text_destination: ?[]u8 = if (text_backend == .kb_canvas)
                     canvas_text[canvas_text_len..]
-                else null;
+                else
+                    null;
                 const miss = try prepareRunMiss(raws, graphemes, start, end, text_backend == .kb_stb, text_destination);
                 if (text_backend == .kb_stb) {
                     run_width = @as(usize, font_cell_width) * span;

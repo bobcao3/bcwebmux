@@ -1,0 +1,29 @@
+{
+  "name": "@bcwebmux/wgpu-terminal",
+  "version": "0.0.0",
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "prepack": "node scripts/prepare-wasm.mjs"
+  },
+  "main": "./src/index.js",
+  "types": "./index.d.ts",
+  "sideEffects": [
+    "./css/terminal.css"
+  ],
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "default": "./src/index.js"
+    },
+    "./terminal.wasm": "./dist/terminal.wasm",
+    "./css/terminal.css": "./css/terminal.css"
+  },
+  "files": [
+    "css",
+    "dist",
+    "src",
+    "index.d.ts"
+  ]
+}

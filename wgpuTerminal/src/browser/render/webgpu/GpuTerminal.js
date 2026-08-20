@@ -868,6 +868,28 @@ export class GpuTerminal {
     }
   }
 
+  dispose() {
+    if (this.error === "disposed") return;
+    if (this.blinkTimer) {
+      clearTimeout(this.blinkTimer);
+      this.blinkTimer = 0;
+    }
+    const pendingTextureCopies = this.atlas?.takePendingTextureCopies?.() ?? [];
+    for (const copy of pendingTextureCopies) copy.source?.destroy?.();
+    this.atlas?.texture?.destroy?.();
+    this.offscreen?.destroy?.();
+    this.frameUploadBuffer?.destroy?.();
+    this.uniformBuffer?.destroy?.();
+    this.cellBuffer?.destroy?.();
+    this.styleBuffer?.destroy?.();
+    this.selectionBuffer?.destroy?.();
+    this.drawIndirectBuffer?.destroy?.();
+    this.grainTexture?.destroy?.();
+    this.device?.destroy?.();
+    this.error = "disposed";
+    this.initialized = false;
+  }
+
   get stats() {
     return {
       backend: "webgpu",
@@ -901,4 +923,5 @@ export class GpuTerminal {
       gpuError: this.error,
     };
   }
+
 }

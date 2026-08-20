@@ -1,0 +1,175 @@
+/* SPDX-License-Identifier: MIT */
+/* Copyright (c) 2026 Cheng Cao */
+
+.wgpu-terminal[data-terminal-role="viewport"] {
+  --cell-width: 8px;
+  --cell-height: 16px;
+  position: relative;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  outline: none;
+  background: var(--color-background);
+  color: var(--color-foreground);
+  font-family: var(--terminal-font);
+  line-height: 1.2;
+  font-kerning: none;
+  font-variant-ligatures: none;
+  touch-action: pan-y;
+}
+
+.wgpu-terminal[data-terminal-role="viewport"] [data-terminal-role="scroll"] {
+  position: absolute;
+  z-index: 2;
+  inset: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overflow-anchor: none;
+  overscroll-behavior: contain;
+  touch-action: pan-y;
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+}
+
+.wgpu-terminal[data-terminal-role="viewport"] [data-terminal-role="scroll"].scrollbar-active {
+  scrollbar-color: var(--color-muted) transparent;
+}
+
+.wgpu-terminal[data-terminal-role="viewport"] [data-terminal-role="scroll"]::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.wgpu-terminal[data-terminal-role="viewport"] [data-terminal-role="scroll"]::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.wgpu-terminal[data-terminal-role="viewport"] [data-terminal-role="scroll"]::-webkit-scrollbar-thumb {
+  background: transparent;
+}
+
+.wgpu-terminal[data-terminal-role="viewport"] [data-terminal-role="scroll"].scrollbar-active::-webkit-scrollbar-thumb {
+  background: var(--color-muted);
+}
+
+.wgpu-terminal[data-terminal-role="viewport"] [data-terminal-role="spacer"] {
+  position: relative;
+  width: 100%;
+  min-height: 100%;
+}
+
+.wgpu-terminal[data-terminal-role="viewport"] [data-terminal-role="text-view"] {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  width: 100%;
+  height: 0;
+  overflow: visible;
+  background: transparent;
+  color: transparent;
+  pointer-events: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.wgpu-terminal[data-terminal-role="viewport"] [data-terminal-role="text-view"] .text-row {
+  display: flex;
+  height: var(--cell-height);
+}
+
+.wgpu-terminal[data-terminal-role="viewport"] [data-terminal-role="text-view"] .text-cell {
+  flex: 0 0 var(--cell-width);
+  width: var(--cell-width);
+  height: var(--cell-height);
+  overflow: hidden;
+  font: inherit;
+  white-space: pre;
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+}
+
+.wgpu-terminal[data-terminal-role="viewport"] [data-terminal-role="text-view"] .text-cell[data-width="2"] {
+  flex-basis: calc(2 * var(--cell-width));
+  width: calc(2 * var(--cell-width));
+}
+
+.wgpu-terminal[data-terminal-role="viewport"] [data-terminal-role="text-view"] ::selection {
+  background: transparent;
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+}
+
+.wgpu-terminal[data-terminal-role="viewport"] [data-terminal-role="screen"] {
+  position: absolute;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+  z-index: 1;
+}
+
+.wgpu-terminal[data-terminal-role="viewport"] [data-terminal-role="input"] {
+  position: absolute;
+  opacity: 0;
+  left: 0;
+  top: 0;
+  width: 1px;
+  height: var(--cell-height);
+  z-index: 3;
+  pointer-events: none;
+  padding: 0;
+  border: 0;
+  margin: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  resize: none;
+}
+
+@media (hover: none) and (pointer: coarse) {
+  .wgpu-terminal[data-terminal-role="viewport"].selection-mode [data-terminal-role="text-view"] {
+    pointer-events: auto;
+    user-select: text;
+    -webkit-user-select: text;
+    touch-action: pan-y;
+    -webkit-touch-callout: default;
+  }
+
+  .wgpu-terminal[data-terminal-role="viewport"] [data-terminal-role="input"] {
+    position: absolute;
+    left: 0;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: auto;
+    height: auto;
+    z-index: 3;
+    opacity: 0;
+    pointer-events: none;
+    touch-action: pan-y;
+    caret-color: transparent;
+    color: transparent;
+    background: transparent;
+    appearance: none;
+    -webkit-appearance: none;
+  }
+}
+
+.wgpu-terminal[data-terminal-role="viewport"] [data-terminal-role="composition"] {
+  position: absolute;
+  z-index: 4;
+  display: none;
+  white-space: nowrap;
+  overflow: hidden;
+  direction: rtl;
+  background: var(--color-background);
+  color: var(--color-foreground);
+  font-size: 15px;
+  line-height: 1.2;
+}
+
+.wgpu-terminal[data-terminal-role="viewport"] [data-terminal-role="composition"].active {
+  display: block;
+}
+

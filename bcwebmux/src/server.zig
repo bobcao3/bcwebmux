@@ -195,9 +195,11 @@ fn serveAsset(app: *const App, request: *std.http.Server.Request) !void {
         };
         if (file) |disk_file| return serveDiskAsset(app, request, disk_file, content_type);
     }
-    const data = app.assets.get(path) orelse return request.respond("not found", .{ .status = .not_found });
-    const headers = assetHeaders(content_type);
-    return request.respond(data, .{ .extra_headers = &headers });
+    const asset = app.assets.get(path) orelse return request.respond("not found", .{ .status = .not_found });
+    const headers = assetHeaders(content_type, &asset.etag);
+    if (ifNoneMatch(request, &asset.etag))
+        return request.respond("", .{ .status = .not_modified, .extra_headers = &headers });
+    return request.respond(asset.data, .{ .extra_headers = &headers });
 }
 
 fn serveDiskAsset(app: *const App, request: *std.http.Server.Request, file: std.Io.File, content_type: []const u8) !void {
@@ -205,8 +207,11 @@ fn serveDiskAsset(app: *const App, request: *std.http.Server.Request, file: std.
     const stat = try file.stat(app.io);
     if (stat.size > 16 * 1024 * 1024) return error.AssetTooLarge;
     const size: usize = @intCast(stat.size);
+    const etag = try diskAssetEtag(file, app.io, stat.size);
     var response_buffer: [16 * 1024]u8 = undefined;
-    const headers = assetHeaders(content_type);
+    const headers = assetHeaders(content_type, &etag);
+    if (ifNoneMatch(request, &etag))
+        return request.respond("", .{ .status = .not_modified, .extra_headers = &headers });
     var response = try request.respondStreaming(&response_buffer, .{
         .content_length = stat.size,
         .respond_options = .{ .extra_headers = &headers },
@@ -219,10 +224,43 @@ fn serveDiskAsset(app: *const App, request: *std.http.Server.Request, file: std.
     try response.end();
 }
 
-fn assetHeaders(content_type: []const u8) [4]std.http.Header {
+fn diskAssetEtag(file: std.Io.File, io: std.Io, size: u64) ![66]u8 {
+    var hasher = std.crypto.hash.sha2.Sha256.init(.{});
+    var buffer: [16 * 1024]u8 = undefined;
+    var offset: u64 = 0;
+    while (offset < size) {
+        const length: usize = @intCast(@min(size - offset, @as(u64, buffer.len)));
+        const iovec = [_][]u8{buffer[0..length]};
+        const count = try file.readPositional(io, &iovec, offset);
+        if (count == 0) return error.UnexpectedEndOfStream;
+        hasher.update(buffer[0..count]);
+        offset += count;
+    }
+    var digest: [32]u8 = undefined;
+    hasher.final(&digest);
+    return vfs.digestEtag(digest);
+}
+
+fn ifNoneMatch(request: *std.http.Server.Request, etag: []const u8) bool {
+    var headers = request.iterateHeaders();
+    while (headers.next()) |header| {
+        if (!std.ascii.eqlIgnoreCase(header.name, "If-None-Match")) continue;
+        var validators = std.mem.splitScalar(u8, header.value, ',');
+        while (validators.next()) |validator| {
+            const value = std.mem.trim(u8, validator, " \t");
+            if (std.mem.eql(u8, value, "*")) return true;
+            const candidate = if (std.mem.startsWith(u8, value, "W/")) value[2..] else value;
+            if (std.mem.eql(u8, candidate, etag)) return true;
+        }
+    }
+    return false;
+}
+
+fn assetHeaders(content_type: []const u8, etag: []const u8) [5]std.http.Header {
     return .{
         .{ .name = "Content-Type", .value = content_type },
-        .{ .name = "Cache-Control", .value = "no-store" },
+        .{ .name = "Cache-Control", .value = "public, no-cache, must-revalidate" },
+        .{ .name = "ETag", .value = etag },
         .{ .name = "Content-Security-Policy", .value = "default-src 'self'; connect-src 'self' ws: wss:; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com" },
         .{ .name = "X-Content-Type-Options", .value = "nosniff" },
     };

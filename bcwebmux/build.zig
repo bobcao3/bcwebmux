@@ -55,7 +55,7 @@ pub fn build(b: *std.Build) void {
     const wasm = b.addExecutable(.{
         .name = "terminal",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/wasm.zig"),
+            .root_source_file = b.path("../common/terminal/main.zig"),
             .target = wasm_target,
             .optimize = wasm_optimize,
             .imports = &.{ .{
@@ -68,19 +68,25 @@ pub fn build(b: *std.Build) void {
         }),
     });
     wasm.root_module.addCSourceFile(.{
-        .file = b.path("src/font_engine.c"),
+        .file = b.path("../common/terminal/font_engine.c"),
         .flags = &.{"-std=c23"},
     });
-    wasm.root_module.addIncludePath(b.path("src"));
+    wasm.root_module.addIncludePath(b.path("../common/terminal"));
     wasm.root_module.addIncludePath(kb.path(""));
     wasm.root_module.addIncludePath(stb.path(""));
     wasm.entry = .disabled;
     wasm.rdynamic = true;
     wasm.export_memory = true;
 
+    const terminal_wasm_install = b.addInstallFile(wasm.getEmittedBin(), "wgpu-terminal/terminal.wasm");
+    const terminal_wasm_step = b.step("terminal-wasm", "Build the embeddable terminal WASM package asset");
+    terminal_wasm_step.dependOn(&terminal_wasm_install.step);
+
     const web_assets = b.addWriteFiles();
     _ = web_assets.addCopyDirectory(b.path("web"), "", .{ .exclude_extensions = &.{".woff2"} });
-    _ = web_assets.addCopyFile(b.path("node_modules/fzstd/esm/index.mjs"), "fzstd.js");
+    _ = web_assets.addCopyDirectory(b.path("../wgpuTerminal/src"), "wgpuTerminal/src", .{});
+    _ = web_assets.addCopyDirectory(b.path("../wgpuTerminal/css"), "wgpuTerminal/css", .{});
+    _ = web_assets.addCopyFile(b.path("../node_modules/fzstd/esm/index.mjs"), "fzstd.js");
     for ([_][]const u8{ "Regular", "Bold", "Italic", "BoldItalic" }) |style| {
         const basename = b.fmt("JetBrainsMonoNerdFontMono-{s}", .{style});
         _ = web_assets.addCopyFile(
@@ -93,7 +99,7 @@ pub fn build(b: *std.Build) void {
         );
     }
     _ = web_assets.addCopyFile(
-        b.path("node_modules/@fontsource/noto-emoji/files/noto-emoji-emoji-400-normal.woff2"),
+        b.path("../node_modules/@fontsource/noto-emoji/files/noto-emoji-emoji-400-normal.woff2"),
         "fonts/NotoEmoji-Regular.woff2",
     );
     _ = web_assets.addCopyFile(wasm.getEmittedBin(), "terminal.wasm");
@@ -184,9 +190,11 @@ pub fn build(b: *std.Build) void {
         }),
     });
     const run_vfs_tests = b.addRunArtifact(vfs_tests);
+    const protocol_contract_cmd = b.addSystemCommand(&.{ "node", "test/protocol-contract.mjs" });
     const test_step = b.step("test", "Run unit and browser end-to-end tests");
     test_step.dependOn(&run_protocol_tests.step);
     test_step.dependOn(&run_vfs_tests.step);
+    test_step.dependOn(&protocol_contract_cmd.step);
     test_step.dependOn(&e2e_cmd.step);
 }
 

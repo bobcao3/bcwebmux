@@ -30,6 +30,5 @@
         "src",
         "web",
         "test",
-        "README.md",
     },
 }

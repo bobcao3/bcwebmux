@@ -1,9 +1,30 @@
 # bcwebmux
 
 Requires Zig 0.16, GNU tar, zstd, libzstd development headers/library, woff2_compress, Node.js/npm, Linux PTY support, a WebGPU-capable browser, and Chromium for tests. WebGPU requires HTTPS except on loopback.
-Zig fetches the pinned Nerd Fonts v3.5.0 archive and converts the four selected JetBrainsMono Nerd Font Mono faces to WOFF2 during the build; the SIL OFL remains at `web/fonts/OFL.txt`, and the Noto Emoji license is shipped at `web/fonts/NotoEmoji-OFL.txt`. JetBrains Mono is the bundled stb font. The build also bundles the OFL Noto Emoji monochrome face as a Canvas fallback. Fira Code 400/700 is loaded as WOFF2 from Google Fonts and is available only with KB + Canvas. The CSP allowlist is limited to fonts.googleapis.com for styles and fonts.gstatic.com for font data.
+This repository has three folders and two packages: `common/` is non-package terminal/WASM source and vendor-build input; `wgpuTerminal/` is `@bcwebmux/wgpu-terminal`; and `bcwebmux/` is the full app/server/assets package.
+Zig fetches the pinned Nerd Fonts v3.5.0 archive and converts the four selected JetBrainsMono Nerd Font Mono faces to WOFF2 during the build; the SIL OFL remains at `bcwebmux/web/fonts/OFL.txt`, and the Noto Emoji license is shipped at `bcwebmux/web/fonts/NotoEmoji-OFL.txt`. JetBrains Mono is the bundled stb font. The build also bundles the OFL Noto Emoji monochrome face as a Canvas fallback. Fira Code 400/700 is loaded as WOFF2 from Google Fonts and is available only with KB + Canvas. The CSP allowlist is limited to fonts.googleapis.com for styles and fonts.gstatic.com for font data.
+
+## Embeddable terminal
+
+The browser terminal core lives under `wgpuTerminal`. Its WebSocket transport and protocol are app-local under `bcwebmux/web`. A browser ESM integration can use `@bcwebmux/wgpu-terminal` directly:
+
+The host page should load `/wgpuTerminal/css/terminal.css` and give the terminal container explicit dimensions.
+
+```js
+import { Terminal } from "/wgpuTerminal/src/index.js";
+
+const terminal = new Terminal({
+  wasmUrl: "/terminal.wasm",
+  renderer: "kb-stb",
+  grainStrength: 4,
+});
+await terminal.open(document.querySelector("#terminal"));
+```
+
+`Terminal.write` writes PTY output into the terminal; `onData` receives user input headed toward a backend. The app-local WebSocket transport in `bcwebmux/web` carries that input and PTY output using the app-local protocol. The existing `/` page remains the default full-featured shell, and `bcwebmux-server` remains its bundle-specific shell+PTY server.
 
 ```sh
+cd bcwebmux
 zig build server -Doptimize=ReleaseSmall
 ```
 
@@ -23,11 +44,12 @@ Remote exposure requires `--host` and the exact browser `--origin`, and should b
 
 ```sh
 npm install
+cd bcwebmux
 zig build e2e -Doptimize=ReleaseSmall
 zig build test -Doptimize=ReleaseSmall
 ```
 
-Rendered terminal/telemetry/bottom-bar regressions use PSNR comparisons against `test/golden` lossless WebP fixtures; intentional visual changes update them with `UPDATE_GOLDEN=1 zig build e2e` followed by a normal test run.
+Rendered terminal/telemetry/bottom-bar regressions use PSNR comparisons against `bcwebmux/test/golden` lossless WebP fixtures; intentional visual changes update them with `UPDATE_GOLDEN=1 zig build e2e` followed by a normal test run.
 
 `zig build e2e` requires a physical Vulkan GPU exposed to Chromium and intentionally rejects SwiftShader and llvmpipe. The browser test uses a 1024×720 window at fractional DPR 1.25 and verifies that the WebGPU backing texture matches the native device-pixel content box. It validates truecolor cells, normal and Nerd-font glyph pixels, IME/Backspace/Enter, softkeys, mouse, and scrollback using GPU texture readbacks plus a CDP compositor screenshot—not CPU cell or text inspection.
 

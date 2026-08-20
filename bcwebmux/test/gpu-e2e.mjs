@@ -83,11 +83,34 @@ try {
   const stylePath = path.join(webRoot, "style.css");
   const originalStyle = await readFile(stylePath, "utf8");
   const marker = `bcwebmux-hot-reload-${Date.now()}-${Math.random()}`;
+  const cacheControl = "public, no-cache, must-revalidate";
+  const validEtag = /^"[0-9a-f]{64}"$/;
   try {
+    const originalResponse = await fetch(`http://127.0.0.1:${serverPort}/style.css?hot-reload=1`);
+    assert.equal(originalResponse.status, 200);
+    assert.equal(originalResponse.headers.get("cache-control"), cacheControl);
+    const originalEtag = originalResponse.headers.get("etag") || "";
+    assert.match(originalEtag, validEtag);
+    assert.equal(await originalResponse.text(), originalStyle);
     await writeFile(stylePath, `${originalStyle}\n/* ${marker} */\n`);
-    const response = await fetch(`http://127.0.0.1:${serverPort}/style.css?hot-reload=1`);
-    assert.ok(response.ok, `overlay style request failed: ${response.status}`);
-    assert.match(await response.text(), new RegExp(marker));
+    const modifiedResponse = await fetch(`http://127.0.0.1:${serverPort}/style.css?hot-reload=1`, {
+      headers: { "if-none-match": originalEtag },
+    });
+    assert.equal(modifiedResponse.status, 200);
+    assert.equal(modifiedResponse.headers.get("cache-control"), cacheControl);
+    const modifiedEtag = modifiedResponse.headers.get("etag") || "";
+    assert.match(modifiedEtag, validEtag);
+    assert.notEqual(modifiedEtag, originalEtag);
+    const modifiedStyle = await modifiedResponse.text();
+    assert.notEqual(modifiedStyle, originalStyle);
+    assert.match(modifiedStyle, new RegExp(marker));
+    const cachedResponse = await fetch(`http://127.0.0.1:${serverPort}/style.css?hot-reload=1`, {
+      headers: { "if-none-match": `"stale", W/${modifiedEtag}` },
+    });
+    assert.equal(cachedResponse.status, 304);
+    assert.equal(cachedResponse.headers.get("cache-control"), cacheControl);
+    assert.equal(cachedResponse.headers.get("etag"), modifiedEtag);
+    assert.equal(await cachedResponse.text(), "");
   } finally {
     await writeFile(stylePath, originalStyle);
   }
@@ -119,7 +142,11 @@ try {
     bundledLicense,
     bundledEmojiFont,
   ] = bundledResponses;
-  for (const response of bundledResponses) assert.ok(response.ok, `bundled request failed: ${response.status}`);
+  for (const response of bundledResponses) {
+    assert.ok(response.ok, `bundled request failed: ${response.status}`);
+    assert.equal(response.headers.get("cache-control"), cacheControl);
+    assert.match(response.headers.get("etag") || "", validEtag);
+  }
   assert.match(bundledIndex.headers.get("content-type") || "", /^text\/html(?:;|$)/);
   assert.match(bundledClient.headers.get("content-type") || "", /^(?:text\/javascript|application\/javascript)(?:;|$)/);
   assert.match(bundledFzstd.headers.get("content-type") || "", /^(?:text\/javascript|application\/javascript)(?:;|$)/);
@@ -135,11 +162,18 @@ try {
   assert.match(bundledIndexText, /bcwebmux/);
   assert.match(bundledIndexText, /https:\/\/fonts\.googleapis\.com\/css2\?family=Fira\+Code:wght@400;700/);
   assert.equal(await bundledClient.text(), await readFile(path.join(webRoot, "client.js"), "utf8"));
-  assert.equal(await bundledFzstd.text(), await readFile(path.join("node_modules", "fzstd", "esm", "index.mjs"), "utf8"));
+  assert.equal(await bundledFzstd.text(), await readFile(path.join("..", "node_modules", "fzstd", "esm", "index.mjs"), "utf8"));
   assert.deepEqual(
     Buffer.from(await bundledWasm.arrayBuffer()),
     await readFile(path.join(webRoot, "terminal.wasm")),
   );
+  const cachedBundledClient = await fetch(`http://127.0.0.1:${bundledPort}/client.js`, {
+    headers: { "if-none-match": bundledClient.headers.get("etag") || "" },
+  });
+  assert.equal(cachedBundledClient.status, 304);
+  assert.equal(cachedBundledClient.headers.get("cache-control"), bundledClient.headers.get("cache-control"));
+  assert.equal(cachedBundledClient.headers.get("etag"), bundledClient.headers.get("etag"));
+  assert.equal(await cachedBundledClient.text(), "");
   await terminate(bundledServer);
   bundledServer = null;
 

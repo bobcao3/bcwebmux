@@ -3,9 +3,26 @@
 
 const std = @import("std");
 
+pub const Etag = [66]u8;
+
+pub const Asset = struct {
+    data: []const u8,
+    etag: Etag,
+};
+
+pub fn contentEtag(data: []const u8) Etag {
+    var digest: [32]u8 = undefined;
+    std.crypto.hash.sha2.Sha256.hash(data, &digest, .{});
+    return digestEtag(digest);
+}
+
+pub fn digestEtag(digest: [32]u8) Etag {
+    return .{'"'} ++ std.fmt.bytesToHex(digest, .lower) ++ .{'"'};
+}
+
 pub const Vfs = struct {
     archive: []const u8,
-    files: std.StringHashMapUnmanaged([]const u8),
+    files: std.StringHashMapUnmanaged(Asset),
 
     pub fn init(allocator: std.mem.Allocator, compressed: []const u8) !Vfs {
         var input: std.Io.Reader = .fixed(compressed);
@@ -24,7 +41,7 @@ pub const Vfs = struct {
             .file_name_buffer = &name_buffer,
             .link_name_buffer = &link_buffer,
         });
-        var files: std.StringHashMapUnmanaged([]const u8) = .empty;
+        var files: std.StringHashMapUnmanaged(Asset) = .empty;
         errdefer files.deinit(allocator);
         while (try iterator.next()) |file| {
             if (file.kind != .file) continue;
@@ -36,13 +53,17 @@ pub const Vfs = struct {
             if (end > archive.len) return error.InvalidTar;
             if (files.contains(name)) return error.DuplicateAsset;
             const owned_name = try allocator.dupe(u8, name);
-            try files.put(allocator, owned_name, archive[reader.seek..end]);
+            const data = archive[reader.seek..end];
+            try files.put(allocator, owned_name, .{
+                .data = data,
+                .etag = contentEtag(data),
+            });
         }
         if (files.count() == 0) return error.EmptyVfs;
         return .{ .archive = archive, .files = files };
     }
 
-    pub fn get(self: *const Vfs, path: []const u8) ?[]const u8 {
+    pub fn get(self: *const Vfs, path: []const u8) ?Asset {
         return self.files.get(path);
     }
 
