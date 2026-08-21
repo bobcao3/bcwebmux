@@ -20,6 +20,7 @@ render_state: ghostty.RenderState = .empty,
 staging: [staging_capacity]u8 = undefined,
 snapshot_staging: ?[]u8 = null,
 busy: bool = false,
+replay_mode: bool = false,
 deinit_pending: bool = false,
 cell_width_px: u32 = 8,
 cell_height_px: u32 = 16,
@@ -51,6 +52,7 @@ pub fn bootstrap(self: *Self) void {
     self.render_state = .empty;
     self.snapshot_staging = null;
     self.busy = false;
+    self.replay_mode = false;
     self.deinit_pending = false;
     self.cell_width_px = 8;
     self.cell_height_px = 16;
@@ -112,6 +114,7 @@ pub fn term_set_text_view_enabled(self: *Self, enabled_raw: u32) i32 {
 
 pub fn term_init(self: *Self, cols: u16, rows: u16) i32 {
     if (self.busy or self.terminal != null or cols == 0 or rows == 0) return 0;
+    self.replay_mode = false;
     self.deinit_pending = false;
     self.terminal = ghostty.Terminal.init(io, alloc, .{
         .cols = cols,
@@ -136,6 +139,12 @@ pub fn term_init(self: *Self, cols: u16, rows: u16) i32 {
     self.selection_gesture = .init;
     self.freeSelectionSnapshot();
     self.last_mouse_cell = null;
+    return 1;
+}
+
+pub fn term_set_replay_mode(self: *Self, enabled_raw: u32) i32 {
+    if (self.busy or enabled_raw > 1) return 0;
+    self.replay_mode = enabled_raw != 0;
     return 1;
 }
 
@@ -269,8 +278,19 @@ pub fn term_feed(self: *Self, len: u32) i32 {
 }
 
 pub fn term_resize(self: *Self, cols: u16, rows: u16, cell_width: u16, cell_height: u16, glyph_cell_width: u16, glyph_cell_height: u16, glyph_font_size_px: u16, atlas_columns: u16) i32 {
-    if (self.busy or cols == 0 or rows == 0 or atlas_columns == 0) return 0;
-    const value = if (self.stream) |*s| s else return 0;
+    if (self.term_set_render_metrics(
+        cell_width,
+        cell_height,
+        glyph_cell_width,
+        glyph_cell_height,
+        glyph_font_size_px,
+        atlas_columns,
+    ) == 0) return 0;
+    return self.term_resize_canonical(cols, rows, cell_width, cell_height);
+}
+
+pub fn term_set_render_metrics(self: *Self, cell_width: u16, cell_height: u16, glyph_cell_width: u16, glyph_cell_height: u16, glyph_font_size_px: u16, atlas_columns: u16) i32 {
+    if (self.busy or atlas_columns == 0) return 0;
     self.busy = true;
     defer self.finishBusy();
     self.cell_width_px = @max(1, cell_width);
@@ -281,10 +301,18 @@ pub fn term_resize(self: *Self, cols: u16, rows: u16, cell_width: u16, cell_heig
         @max(1, glyph_font_size_px),
         atlas_columns,
     );
+    return 1;
+}
+
+pub fn term_resize_canonical(self: *Self, cols: u16, rows: u16, cell_width: u16, cell_height: u16) i32 {
+    if (self.busy or cols == 0 or rows == 0) return 0;
+    const value = if (self.stream) |*s| s else return 0;
+    self.busy = true;
+    defer self.finishBusy();
     value.handler.resize(.{
         .cols = cols,
         .rows = rows,
-        .cell_size_px = .{ .width = self.cell_width_px, .height = self.cell_height_px },
+        .cell_size_px = .{ .width = @max(1, @as(u32, cell_width)), .height = @max(1, @as(u32, cell_height)) },
     }) catch return 0;
     self.last_mouse_cell = null;
     return 1;
@@ -634,11 +662,18 @@ fn scrollBottom(value: *ghostty.Terminal) void {
     value.scrollViewport(.{ .row = @intCast(bar.total -| bar.len) });
 }
 
-fn effectWritePty(_: *Handler, data: [:0]const u8) void {
+fn owner(handler: *Handler) *Self {
+    const terminal_ptr: *?ghostty.Terminal = @ptrCast(handler.terminal);
+    return @alignCast(@fieldParentPtr("terminal", terminal_ptr));
+}
+
+fn effectWritePty(handler: *Handler, data: [:0]const u8) void {
+    if (owner(handler).replay_mode) return;
     if (data.len != 0) _ = terminal_reply(data.ptr, data.len);
 }
 
-fn effectBell(_: *Handler) void {
+fn effectBell(handler: *Handler) void {
+    if (owner(handler).replay_mode) return;
     ring_bell();
 }
 
@@ -647,7 +682,8 @@ fn effectTitle(handler: *Handler) void {
     set_title(title.ptr, title.len);
 }
 
-fn effectDesktopNotification(_: *Handler, notification: ghostty.TerminalStream.Action.ShowDesktopNotification) void {
+fn effectDesktopNotification(handler: *Handler, notification: ghostty.TerminalStream.Action.ShowDesktopNotification) void {
+    if (owner(handler).replay_mode) return;
     desktop_notification(
         notification.title.ptr,
         notification.title.len,
@@ -656,7 +692,8 @@ fn effectDesktopNotification(_: *Handler, notification: ghostty.TerminalStream.A
     );
 }
 
-fn effectClipboardWrite(_: *Handler, write: ClipboardWrite) ClipboardWriteResult {
+fn effectClipboardWrite(handler: *Handler, write: ClipboardWrite) ClipboardWriteResult {
+    if (owner(handler).replay_mode) return .unsupported;
     if (write.location != .standard) return .unsupported;
 
     var data: []const u8 = &.{};

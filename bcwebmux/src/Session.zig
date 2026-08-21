@@ -23,6 +23,48 @@ pub const Geometry = struct {
     cell_height_px: u16 = 16,
 };
 
+pub const max_attachment_slots = 8;
+pub const max_input_dedup_entries = 64;
+
+pub const AttachmentKey = struct {
+    connection_id: u64,
+    attachment_id: u64,
+    epoch: u64,
+};
+
+pub const AttachmentState = struct {
+    active: bool = false,
+    live: bool = false,
+    barrier_event_seq: u64 = 0,
+    barrier_output_offset: u64 = 0,
+    key: AttachmentKey = .{ .connection_id = 0, .attachment_id = 0, .epoch = 0 },
+    client_id: Id = .{0} ** 16,
+    activity_order: u64 = 0,
+    last_input_seq: u64 = 0,
+    last_input_hash: [32]u8 = .{0} ** 32,
+    acknowledged_event_seq: u64 = 0,
+    acknowledged_output_offset: u64 = 0,
+};
+
+pub const InputDedupEntry = struct {
+    active: bool = false,
+    client_id: Id = .{0} ** 16,
+    input_seq: u64 = 0,
+    sha256: [32]u8 = .{0} ** 32,
+};
+
+pub const PendingResize = struct {
+    active: bool = false,
+    operation_id: u64 = 0,
+    geometry: Geometry = .{ .cols = 80, .rows = 24 },
+};
+
+pub const LeaseState = struct {
+    epoch: u64,
+    controller_attachment_id: ?u64,
+    geometry: Geometry,
+};
+
 pub const Event = struct {
     kind: EventKind,
     seq: u64,
@@ -60,6 +102,26 @@ pub const Journal = struct {
     pub fn clear(self: *Journal) void {
         self.bytes.clearRetainingCapacity();
         self.events.clearRetainingCapacity();
+    }
+
+    pub fn discardThrough(self: *Journal, event_seq: u64) void {
+        var retained_count: usize = 0;
+        var byte_offset: usize = 0;
+        for (self.events.items) |event| {
+            if (event.seq <= event_seq) continue;
+            var retained = event;
+            if (event.kind == .output) {
+                const start: usize = @intCast(event.byte_start);
+                const length: usize = @intCast(event.byte_len);
+                std.mem.copyForwards(u8, self.bytes.items[byte_offset..][0..length], self.bytes.items[start..][0..length]);
+                retained.byte_start = @intCast(byte_offset);
+                byte_offset += length;
+            }
+            self.events.items[retained_count] = retained;
+            retained_count += 1;
+        }
+        self.bytes.items.len = byte_offset;
+        self.events.items.len = retained_count;
     }
 
     pub fn canAppend(self: *const Journal, byte_count: usize) bool {
@@ -136,6 +198,9 @@ pub const Metadata = struct {
     output_offset: u64,
     checkpoint_event_seq: u64,
     checkpoint_bytes: usize,
+    attachment_count: u8,
+    controller_attachment_id: ?u64,
+    lease_epoch: u64,
 
     pub fn nameSlice(self: *const Metadata) []const u8 {
         return self.name[0..self.name_len];
@@ -158,6 +223,7 @@ title: [max_title_bytes]u8 = undefined,
 title_len: u16 = 0,
 state: State = .creating,
 geometry: Geometry,
+initial_geometry: Geometry,
 created_at_ms: i64,
 last_activity_ms: i64,
 exit_status: ?i32 = null,
@@ -172,6 +238,19 @@ journal: Journal,
 connection: worker.Connection,
 mirror_terminal: ghostty.Terminal,
 mirror_stream: ghostty.TerminalStream,
+mirror_reply_failed: bool = false,
+attachments: [max_attachment_slots]AttachmentState = [_]AttachmentState{.{}} ** max_attachment_slots,
+input_dedup: [max_input_dedup_entries]InputDedupEntry = [_]InputDedupEntry{.{}} ** max_input_dedup_entries,
+input_dedup_cursor: u8 = 0,
+pending_resizes: [max_attachment_slots]PendingResize = [_]PendingResize{.{}} ** max_attachment_slots,
+pending_resize_count: u8 = 0,
+next_resize_operation: u64 = 1,
+attachment_count: u8 = 0,
+next_attachment_epoch: u64 = 1,
+activity_order: u64 = 0,
+controller_key: ?AttachmentKey = null,
+lease_epoch: u64 = 0,
+reference_count: std.atomic.Value(usize) = .init(0),
 mutex: std.Io.Mutex = .init,
 actor_done: std.atomic.Value(bool) = .init(false),
 
@@ -209,6 +288,7 @@ pub fn create(
         .generation = generation,
         .name_len = @intCast(name.len),
         .geometry = geometry,
+        .initial_geometry = geometry,
         .created_at_ms = now,
         .last_activity_ms = now,
         .checkpoint_at_monotonic_ms = monotonicMs(io),
@@ -244,13 +324,23 @@ pub fn run(self: *Self) void {
     var packet: [worker.packet_capacity]u8 = undefined;
     var failed = false;
     while (true) {
-        const message = self.connection.receive(&packet) catch {
+        const message = self.connection.receive(&packet) catch |err| {
+            std.log.err("session worker receive failed: {t}", .{err});
             self.markFailed();
             break;
         };
         switch (message.kind) {
             .output => if (!failed) {
-                self.acceptOutput(message.payload) catch {
+                self.acceptOutput(message.payload) catch |err| {
+                    std.log.err("session output failed: {t}", .{err});
+                    failed = true;
+                    self.markFailed();
+                    self.connection.terminate(self.io);
+                };
+            },
+            .resize_applied => if (!failed) {
+                self.acceptResizeApplied(message.payload) catch |err| {
+                    std.log.err("session resize failed: {t}", .{err});
                     failed = true;
                     self.markFailed();
                     self.connection.terminate(self.io);
@@ -294,6 +384,9 @@ pub fn snapshotMetadata(self: *Self) Metadata {
         .output_offset = self.output_offset,
         .checkpoint_event_seq = self.checkpoint_event_seq,
         .checkpoint_bytes = if (self.current_checkpoint) |value| value.bytes.len else 0,
+        .attachment_count = self.attachment_count,
+        .controller_attachment_id = if (self.controller_key) |key| key.attachment_id else null,
+        .lease_epoch = self.lease_epoch,
     };
     @memcpy(result.name[0..self.name_len], self.name[0..self.name_len]);
     @memcpy(result.title[0..self.title_len], self.title[0..self.title_len]);
@@ -344,13 +437,86 @@ pub fn applyInput(self: *Self, bytes: []const u8) !void {
 }
 
 pub fn applyResize(self: *Self, geometry: Geometry) !void {
-    if (!manifest.validGeometry(self.limits, geometry.cols, geometry.rows)) return error.InvalidGeometry;
+    if (!manifest.validGeometry(self.limits, geometry.cols, geometry.rows) or
+        !manifest.validCellGeometry(geometry.cell_width_px, geometry.cell_height_px)) return error.InvalidGeometry;
     self.mutex.lockUncancelable(self.io);
     defer self.mutex.unlock(self.io);
+    _ = try self.applyResizeLocked(geometry);
+}
+
+pub fn applyResizeLocked(self: *Self, geometry: Geometry) !u64 {
     if (self.state != .running) return error.SessionNotRunning;
+    if (self.pending_resize_count >= max_attachment_slots) return error.ResizePending;
+
+    var pending: ?*PendingResize = null;
+    for (&self.pending_resizes) |*value| {
+        if (!value.active) {
+            pending = value;
+            break;
+        }
+    }
+    const slot = pending orelse return error.ResizePending;
+    var operation_id = self.next_resize_operation;
+    if (operation_id == 0) operation_id = 1;
+    self.next_resize_operation = operation_id +% 1;
+    if (self.next_resize_operation == 0) self.next_resize_operation = 1;
+    slot.* = .{ .active = true, .operation_id = operation_id, .geometry = geometry };
+    self.pending_resize_count += 1;
+    self.connection.resize(
+        self.io,
+        operation_id,
+        geometry.cols,
+        geometry.rows,
+        geometry.cell_width_px,
+        geometry.cell_height_px,
+    ) catch |err| {
+        slot.* = .{};
+        self.pending_resize_count -= 1;
+        return err;
+    };
+    return operation_id;
+}
+
+fn acceptResizeApplied(self: *Self, payload: []const u8) !void {
+    if (payload.len != 17) return error.InvalidResizeAck;
+    const operation_id = std.mem.readInt(u64, payload[0..8], .little);
+    const geometry = Geometry{
+        .cols = std.mem.readInt(u16, payload[8..10], .little),
+        .rows = std.mem.readInt(u16, payload[10..12], .little),
+        .cell_width_px = std.mem.readInt(u16, payload[12..14], .little),
+        .cell_height_px = std.mem.readInt(u16, payload[14..16], .little),
+    };
+    const status = payload[16];
+
+    self.mutex.lockUncancelable(self.io);
+    defer self.mutex.unlock(self.io);
+    var matched: ?*PendingResize = null;
+    for (&self.pending_resizes) |*pending| {
+        if (pending.active and pending.operation_id == operation_id) {
+            matched = pending;
+            break;
+        }
+    }
+    const pending = matched orelse return error.InvalidResizeAck;
+    if (pending.geometry.cols != geometry.cols or
+        pending.geometry.rows != geometry.rows or
+        pending.geometry.cell_width_px != geometry.cell_width_px or
+        pending.geometry.cell_height_px != geometry.cell_height_px) return error.InvalidResizeAck;
+    pending.* = .{};
+    self.pending_resize_count -= 1;
+    const promote_after_resize = self.pending_resize_count == 0 and
+        self.controller_key == null and
+        self.attachment_count != 0;
+    if (status != 0) {
+        if (promote_after_resize) {
+            self.promoteControllerLocked();
+            self.bumpRevision();
+        }
+        return;
+    }
+
     try self.ensureJournalCapacity(0);
     const now = nowMs(self.io);
-    try self.connection.resize(self.io, geometry.cols, geometry.rows);
     try self.mirror_stream.handler.resize(.{
         .cols = geometry.cols,
         .rows = geometry.rows,
@@ -361,6 +527,7 @@ pub fn applyResize(self: *Self, geometry: Geometry) !void {
     self.next_event_seq += 1;
     self.bumpRevision();
     self.last_activity_ms = now;
+    if (promote_after_resize) self.promoteControllerLocked();
 }
 
 fn acceptOutput(self: *Self, bytes: []const u8) !void {
@@ -374,6 +541,7 @@ fn acceptOutput(self: *Self, bytes: []const u8) !void {
     self.bytes_since_checkpoint += bytes.len;
     self.last_activity_ms = now;
     self.mirror_stream.nextSlice(bytes);
+    if (self.mirror_reply_failed) return error.MirrorReplyFailed;
     if (self.mirror_stream.handler.semantic_failure) return error.MirrorSemanticFailure;
     if (self.bytes_since_checkpoint >= self.limits.checkpoint_output_bytes or
         (monotonicMs(self.io) - self.checkpoint_at_monotonic_ms) >= self.limits.checkpoint_interval_ms)
@@ -404,7 +572,20 @@ fn recordFailedExit(self: *Self, status: i32) void {
 fn ensureJournalCapacity(self: *Self, byte_count: usize) !void {
     if (self.journal.canAppend(byte_count)) return;
     try self.createCheckpoint(nowMs(self.io));
+    if (!self.journal.canAppend(byte_count)) {
+        self.dropAttachmentsForRetentionLocked();
+        self.journal.clear();
+    }
     if (!self.journal.canAppend(byte_count)) return error.JournalFull;
+}
+
+fn dropAttachmentsForRetentionLocked(self: *Self) void {
+    for (&self.attachments) |*slot| slot.active = false;
+    self.attachment_count = 0;
+    self.controller_key = null;
+    self.lease_epoch +%= 1;
+    if (self.lease_epoch == 0) self.lease_epoch = 1;
+    self.bumpRevision();
 }
 
 fn createCheckpoint(self: *Self, now: i64) !void {
@@ -437,7 +618,20 @@ fn createCheckpoint(self: *Self, now: i64) !void {
     self.checkpoint_event_seq = self.next_event_seq -| 1;
     self.checkpoint_at_monotonic_ms = monotonicMs(self.io);
     self.bytes_since_checkpoint = 0;
-    self.journal.clear();
+    if (self.attachment_count == 0) {
+        self.journal.clear();
+    } else {
+        var minimum_acknowledged_event_seq: u64 = std.math.maxInt(u64);
+        for (self.attachments) |slot| {
+            if (slot.active) {
+                minimum_acknowledged_event_seq = @min(
+                    minimum_acknowledged_event_seq,
+                    slot.acknowledged_event_seq,
+                );
+            }
+        }
+        self.journal.discardThrough(minimum_acknowledged_event_seq);
+    }
 }
 
 fn markFailed(self: *Self) void {
@@ -450,8 +644,29 @@ fn markFailed(self: *Self) void {
     self.last_activity_ms = nowMs(self.io);
 }
 
-fn bumpRevision(self: *Self) void {
+pub fn bumpRevision(self: *Self) void {
     _ = self.registry_revision.fetchAdd(1, .monotonic);
+}
+
+pub fn invalidateControllerLocked(self: *Self) void {
+    self.controller_key = null;
+    self.lease_epoch +%= 1;
+    if (self.lease_epoch == 0) self.lease_epoch = 1;
+}
+
+pub fn promoteControllerLocked(self: *Self) void {
+    var promoted: ?AttachmentKey = null;
+    var greatest_activity_order: u64 = 0;
+    for (self.attachments) |slot| {
+        if (!slot.active or !slot.live) continue;
+        if (promoted == null or slot.activity_order >= greatest_activity_order) {
+            promoted = slot.key;
+            greatest_activity_order = slot.activity_order;
+        }
+    }
+    self.controller_key = promoted;
+    self.lease_epoch +%= 1;
+    if (self.lease_epoch == 0) self.lease_epoch = 1;
 }
 
 fn freeCheckpoint(allocator: std.mem.Allocator, value: *?Checkpoint) void {
@@ -504,7 +719,9 @@ fn effectVersion(_: *Handler) []const u8 {
 fn effectWritePty(handler: *Handler, bytes: [:0]const u8) void {
     if (bytes.len == 0) return;
     const self: *Self = @fieldParentPtr("mirror_terminal", handler.terminal);
-    self.connection.send(self.io, .input, bytes) catch {};
+    self.connection.send(self.io, .input, bytes) catch {
+        self.mirror_reply_failed = true;
+    };
 }
 
 fn effectTitle(handler: *Handler) void {
@@ -526,4 +743,27 @@ test "journal preserves ordered output and resize" {
     try std.testing.expectEqualStrings("abc", journal.output(journal.events.items[0]));
     try std.testing.expectEqual(std.hash.crc.Crc32Iscsi.hash("abc"), journal.events.items[0].crc32c);
     try std.testing.expectEqual(EventKind.resize, journal.events.items[1].kind);
+}
+
+test "journal compacts acknowledged prefix" {
+    var journal = try Journal.init(std.testing.allocator, 1024);
+    defer journal.deinit(std.testing.allocator);
+    try journal.appendOutput("abc", 1, 0, 10);
+    try journal.appendResize(.{ .cols = 90, .rows = 30 }, 2, 3, 11);
+    try journal.appendOutput("def", 3, 3, 12);
+    try journal.appendOutput("ghi", 4, 6, 13);
+
+    journal.discardThrough(2);
+    try std.testing.expectEqual(@as(usize, 2), journal.events.items.len);
+    try std.testing.expectEqual(@as(u64, 3), journal.events.items[0].seq);
+    try std.testing.expectEqual(@as(u64, 4), journal.events.items[1].seq);
+    try std.testing.expectEqualStrings("def", journal.output(journal.events.items[0]));
+    try std.testing.expectEqualStrings("ghi", journal.output(journal.events.items[1]));
+    try std.testing.expectEqual(@as(u32, 0), journal.events.items[0].byte_start);
+    try std.testing.expectEqual(@as(u32, 3), journal.events.items[1].byte_start);
+    try std.testing.expectEqualStrings("defghi", journal.bytes.items);
+
+    journal.discardThrough(4);
+    try std.testing.expectEqual(@as(usize, 0), journal.events.items.len);
+    try std.testing.expectEqual(@as(usize, 0), journal.bytes.items.len);
 }

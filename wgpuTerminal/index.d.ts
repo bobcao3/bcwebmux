@@ -87,6 +87,7 @@ export interface TerminalDebugElements {
 export interface TerminalOptions {
   wasmUrl?: string | URL;
   renderer?: TerminalRenderer;
+  canonicalGeometry?: boolean;
   font?: Partial<TerminalFont>;
   theme?: TerminalTheme;
   grainStrength?: number;
@@ -162,6 +163,9 @@ export declare class TerminalCore implements IDisposable {
   setTheme(theme: TerminalTheme): void;
   setFont(font: Partial<TerminalFont>): void;
   setRenderer(renderer: TerminalRenderer): void;
+  setRenderMetrics(layout: { cellWidth: number; cellHeight: number; fontSize: number }, atlasColumns: number): number;
+  resizeCanonical(options: { cols: number; rows: number; cellWidthPx?: number; cellHeightPx?: number }): number;
+  setReplayMode(enabled: boolean): number;
   getSelection(): string | null;
   clearSelection(): boolean;
   reset(): boolean;

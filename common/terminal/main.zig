@@ -50,6 +50,10 @@ export fn term_init(cols: u16, rows: u16) i32 {
     return terminal.term_init(cols, rows);
 }
 
+export fn term_set_replay_mode(enabled_raw: u32) i32 {
+    return terminal.term_set_replay_mode(enabled_raw);
+}
+
 export fn term_theme_ptr() u32 {
     return terminal.term_theme_ptr();
 }
@@ -80,6 +84,14 @@ export fn term_feed(len: u32) i32 {
 
 export fn term_resize(cols: u16, rows: u16, cell_width: u16, cell_height: u16, glyph_cell_width: u16, glyph_cell_height: u16, glyph_font_size_px: u16, atlas_columns: u16) i32 {
     return terminal.term_resize(cols, rows, cell_width, cell_height, glyph_cell_width, glyph_cell_height, glyph_font_size_px, atlas_columns);
+}
+
+export fn term_set_render_metrics(cell_width: u16, cell_height: u16, glyph_cell_width: u16, glyph_cell_height: u16, glyph_font_size_px: u16, atlas_columns: u16) i32 {
+    return terminal.term_set_render_metrics(cell_width, cell_height, glyph_cell_width, glyph_cell_height, glyph_font_size_px, atlas_columns);
+}
+
+export fn term_resize_canonical(cols: u16, rows: u16, cell_width: u16, cell_height: u16) i32 {
+    return terminal.term_resize_canonical(cols, rows, cell_width, cell_height);
 }
 
 export fn term_scroll_row(row: u32) i32 {

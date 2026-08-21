@@ -212,10 +212,24 @@ pub fn build(b: *std.Build) void {
     session_api_smoke_cmd.addArgs(&.{
         b.getInstallPath(.bin, "bcwebmux-server"),
     });
+    const session_ws_smoke_cmd = b.addSystemCommand(&.{ "node", "test/session-ws-smoke.mjs" });
+    session_ws_smoke_cmd.step.dependOn(b.getInstallStep());
+    session_ws_smoke_cmd.addArgs(&.{
+        b.getInstallPath(.bin, "bcwebmux-server"),
+    });
+    const session_browser_smoke_cmd = b.addSystemCommand(&.{ "node", "test/session-browser-smoke.mjs" });
+    session_browser_smoke_cmd.step.dependOn(b.getInstallStep());
+    session_browser_smoke_cmd.addArgs(&.{
+        b.getInstallPath(.bin, "bcwebmux-server"),
+        b.getInstallPath(.prefix, "web"),
+    });
     e2e_cmd.step.dependOn(&mouse_selection_cmd.step);
+    session_browser_smoke_cmd.step.dependOn(&e2e_cmd.step);
+    session_browser_smoke_cmd.step.dependOn(&terminal_core_smoke_cmd.step);
     const e2e_step = b.step("e2e", "Run the physical-GPU browser-to-PTY end-to-end test");
     e2e_step.dependOn(&e2e_cmd.step);
     e2e_step.dependOn(&terminal_core_smoke_cmd.step);
+    e2e_step.dependOn(&session_browser_smoke_cmd.step);
 
     const protocol_tests = b.addTest(.{
         .root_module = b.createModule(.{
@@ -267,6 +281,8 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&e2e_cmd.step);
     test_step.dependOn(&terminal_core_smoke_cmd.step);
     test_step.dependOn(&session_api_smoke_cmd.step);
+    test_step.dependOn(&session_ws_smoke_cmd.step);
+    test_step.dependOn(&session_browser_smoke_cmd.step);
 }
 
 fn compressWoff2(b: *std.Build, input: std.Build.LazyPath, basename: []const u8) std.Build.LazyPath {

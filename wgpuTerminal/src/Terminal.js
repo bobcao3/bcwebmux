@@ -54,6 +54,7 @@ export class Terminal {
       inputDebug: Boolean(options.inputDebug),
       debugElements: options.debugElements,
       clipboardWrite: options.clipboardWrite,
+      canonicalGeometry: Boolean(options.canonicalGeometry),
     };
     this._opened = false;
     this._disposed = false;
@@ -284,8 +285,11 @@ export class Terminal {
 
   _resizeActiveCore(layout, atlasColumns) {
     const core = this._renderingCore ?? this._core;
-    if (core?.wasm && core.resize(layout, atlasColumns) !== 1) {
-      throw new Error("terminal core resize failed");
+    if (core?.wasm) {
+      const result = this.options.canonicalGeometry
+        ? core.setRenderMetrics(layout, atlasColumns)
+        : core.resize(layout, atlasColumns);
+      if (result !== 1) throw new Error("terminal core resize failed");
     }
     return 1;
   }

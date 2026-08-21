@@ -2,25 +2,22 @@
 // Copyright (c) 2026 Cheng Cao
 
 const std = @import("std");
-const protocol = @import("protocol.zig");
 const vfs = @import("vfs.zig");
 const SessionRegistry = @import("SessionRegistry.zig");
+const SessionSocket = @import("SessionSocket.zig");
 const session_api = @import("session_api.zig");
 const session_manifest = @import("session_manifest.zig");
 const session_worker = @import("session_worker.zig");
 const embedded_assets = @import("web_assets").data;
 const c = @cImport({
     @cInclude("stdlib.h");
-    @cInclude("zstd.h");
 });
 
 const App = struct {
     io: std.Io,
     assets: vfs.Vfs,
     asset_dir: ?std.Io.Dir,
-    shell: [:0]const u8,
     origin: []const u8,
-    executable: []const u8,
     registry: *SessionRegistry,
 };
 
@@ -73,9 +70,7 @@ pub fn main(init: std.process.Init) !void {
         .io = init.io,
         .assets = assets,
         .asset_dir = asset_dir,
-        .shell = shell,
         .origin = origin,
-        .executable = args[0],
         .registry = &registry,
     };
     const address = try std.Io.net.IpAddress.parse(config.host, config.port);
@@ -146,7 +141,7 @@ fn handleConnection(app: *App, stream: std.Io.net.Stream) void {
         std.log.warn("failed to enable TCP_NODELAY: {t}", .{err});
     };
     var send_buffer: [64 * 1024]u8 = undefined;
-    var recv_buffer: [64 * 1024]u8 = undefined;
+    var recv_buffer: [128 * 1024]u8 = undefined;
     var reader = stream.reader(app.io, &recv_buffer);
     var writer = stream.writer(app.io, &send_buffer);
     var server: std.http.Server = .init(&reader.interface, &writer.interface);
@@ -155,25 +150,35 @@ fn handleConnection(app: *App, stream: std.Io.net.Stream) void {
         var request = server.receiveHead() catch return;
         switch (request.upgradeRequested()) {
             .websocket => |key_opt| {
-                if (!std.mem.eql(u8, request.head.target, "/ws")) return;
+                if (!std.mem.eql(u8, request.head.target, "/ws")) {
+                    std.log.warn("invalid websocket target", .{});
+                    return;
+                }
                 if (!validWebSocketOrigin(&request, app.origin)) {
+                    std.log.warn("invalid websocket origin", .{});
                     request.respond("forbidden", .{ .status = .forbidden }) catch return;
                     return;
                 }
                 if (!validWebSocketProtocol(&request)) {
+                    std.log.warn("invalid websocket subprotocol", .{});
                     request.respond("bad request", .{ .status = .bad_request }) catch return;
                     return;
                 }
                 const key = key_opt orelse return;
                 const protocol_headers = [_]std.http.Header{
-                    .{ .name = "Sec-WebSocket-Protocol", .value = "bcw.zstd.v1" },
+                    .{ .name = "Sec-WebSocket-Protocol", .value = session_manifest.protocol },
                 };
                 var websocket = request.respondWebSocket(.{
                     .key = key,
                     .extra_headers = &protocol_headers,
                 }) catch return;
-                serveTerminal(app, &websocket) catch |err| {
-                    std.log.info("terminal session ended: {t}", .{err});
+                websocket.flush() catch return;
+                var socket = SessionSocket.init(std.heap.smp_allocator, app.io, app.registry, &websocket) catch |err| {
+                    std.log.info("session socket ended: {t}", .{err});
+                    return;
+                };
+                socket.serve() catch |err| {
+                    std.log.info("session socket ended: {t}", .{err});
                 };
                 return;
             },
@@ -202,7 +207,7 @@ fn validWebSocketProtocol(request: *std.http.Server.Request) bool {
         if (!std.ascii.eqlIgnoreCase(header.name, "Sec-WebSocket-Protocol")) continue;
         var tokens = std.mem.splitScalar(u8, header.value, ',');
         while (tokens.next()) |token| {
-            if (std.mem.eql(u8, std.mem.trim(u8, token, " \t"), "bcw.zstd.v1"))
+            if (std.mem.eql(u8, std.mem.trim(u8, token, " \t"), session_manifest.protocol))
                 return true;
         }
     }
@@ -314,148 +319,4 @@ const mime_types = std.StaticStringMap([]const u8).initComptime(.{
 
 fn contentType(path: []const u8) []const u8 {
     return mime_types.get(std.fs.path.extension(path)) orelse "application/octet-stream";
-}
-
-const PtySession = struct {
-    connection: session_worker.Connection,
-    io: std.Io,
-    mutex: std.Io.Mutex = .init,
-    stopped: std.atomic.Value(bool) = .init(false),
-
-    fn send(self: *PtySession, io: std.Io, websocket: *std.http.Server.WebSocket, data: []const u8, opcode: std.http.Server.WebSocket.Opcode) !void {
-        try self.mutex.lock(io);
-        defer self.mutex.unlock(io);
-        try websocket.writeMessage(data, opcode);
-    }
-
-    fn stop(self: *PtySession) void {
-        if (self.stopped.swap(true, .acq_rel)) return;
-        self.connection.terminate(self.io);
-    }
-
-    fn reap(self: *PtySession, io: std.Io) void {
-        self.stop();
-        self.connection.close();
-        _ = self.connection.child.wait(io) catch {};
-    }
-
-    fn resize(self: *PtySession, io: std.Io, cols: u16, rows: u16) void {
-        if (cols == 0 or rows == 0 or self.stopped.load(.acquire)) return;
-        self.connection.resize(io, cols, rows) catch {};
-    }
-};
-
-const ZstdOutputStream = struct {
-    context: *c.ZSTD_CCtx,
-    output_buffer: [64 * 1024]u8 = undefined,
-
-    fn init() !ZstdOutputStream {
-        const context = c.ZSTD_createCCtx() orelse return error.ZstdInitializationFailed;
-        errdefer _ = c.ZSTD_freeCCtx(context);
-        if (c.ZSTD_isError(c.ZSTD_CCtx_setParameter(context, c.ZSTD_c_compressionLevel, 1)) != 0)
-            return error.ZstdInitializationFailed;
-        if (c.ZSTD_isError(c.ZSTD_CCtx_setParameter(context, c.ZSTD_c_windowLog, 17)) != 0)
-            return error.ZstdInitializationFailed;
-        if (c.ZSTD_isError(c.ZSTD_CCtx_setParameter(context, c.ZSTD_c_checksumFlag, 0)) != 0)
-            return error.ZstdInitializationFailed;
-        return .{ .context = context };
-    }
-
-    fn deinit(self: *ZstdOutputStream) void {
-        _ = c.ZSTD_freeCCtx(self.context);
-    }
-
-    fn send(self: *ZstdOutputStream, io: std.Io, session: *PtySession, websocket: *std.http.Server.WebSocket, data: []const u8) !void {
-        var input = c.ZSTD_inBuffer{
-            .src = @ptrCast(data.ptr),
-            .size = data.len,
-            .pos = 0,
-        };
-        while (input.pos < input.size) {
-            var output = c.ZSTD_outBuffer{
-                .dst = @ptrCast(self.output_buffer[0..].ptr),
-                .size = self.output_buffer.len,
-                .pos = 0,
-            };
-            const result = c.ZSTD_compressStream2(self.context, &output, &input, c.ZSTD_e_continue);
-            if (c.ZSTD_isError(result) != 0) return error.ZstdCompressionFailed;
-            if (output.pos > 0)
-                try session.send(io, websocket, self.output_buffer[0..output.pos], .binary);
-        }
-
-        var flush_input = c.ZSTD_inBuffer{
-            .src = @ptrCast(data.ptr),
-            .size = 0,
-            .pos = 0,
-        };
-        while (true) {
-            var output = c.ZSTD_outBuffer{
-                .dst = @ptrCast(self.output_buffer[0..].ptr),
-                .size = self.output_buffer.len,
-                .pos = 0,
-            };
-            const result = c.ZSTD_compressStream2(self.context, &output, &flush_input, c.ZSTD_e_flush);
-            if (c.ZSTD_isError(result) != 0) return error.ZstdCompressionFailed;
-            if (output.pos > 0)
-                try session.send(io, websocket, self.output_buffer[0..output.pos], .binary);
-            if (result == 0) break;
-        }
-    }
-};
-
-fn spawnPty(app: *const App) !PtySession {
-    return .{
-        .connection = try session_worker.spawn(app.io, app.executable, app.shell, 80, 24),
-        .io = app.io,
-    };
-}
-
-fn serveTerminal(app: *const App, websocket: *std.http.Server.WebSocket) !void {
-    var session = try spawnPty(app);
-    defer session.reap(app.io);
-    var compressor = try ZstdOutputStream.init();
-    defer compressor.deinit();
-    var receiver = try app.io.concurrent(receiveClient, .{ websocket, &session, app.io });
-    defer receiver.cancel(app.io);
-
-    var buffer: [session_worker.packet_capacity]u8 = undefined;
-    while (!session.stopped.load(.acquire)) {
-        const message = session.connection.receive(&buffer) catch break;
-        switch (message.kind) {
-            .output => try compressor.send(app.io, &session, websocket, message.payload),
-            .exited => break,
-            else => {},
-        }
-    }
-}
-
-fn receiveClient(websocket: *std.http.Server.WebSocket, session: *PtySession, io: std.Io) void {
-    defer session.stop();
-    while (true) {
-        const message = websocket.readSmallMessage() catch return;
-        switch (message.opcode) {
-            .ping => session.send(io, websocket, message.data, .pong) catch return,
-            .pong => {},
-            .binary => {
-                if (message.data.len == @sizeOf(protocol.Resize)) {
-                    var resize: protocol.Resize = undefined;
-                    @memcpy(std.mem.asBytes(&resize), message.data);
-                    if (resize.magic == protocol.resize_magic and resize.reserved == 0) {
-                        session.resize(io, resize.cols, resize.rows);
-                        continue;
-                    }
-                }
-                writePty(session, message.data);
-            },
-            .text => {
-                if (message.data.len <= 64 and std.mem.startsWith(u8, message.data, "BCWP:"))
-                    session.send(io, websocket, message.data, .text) catch return;
-            },
-            else => {},
-        }
-    }
-}
-
-fn writePty(session: *PtySession, data: []const u8) void {
-    session.connection.send(session.io, .input, data) catch {};
 }

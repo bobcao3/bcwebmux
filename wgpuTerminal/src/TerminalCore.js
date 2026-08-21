@@ -126,8 +126,12 @@ export class TerminalCore {
   _createWasmImports() {
     const emitBytes = (emitter, ptr, len, reply) => {
       const host = this._host;
-      const hostEmitter = host?._core === this ? host._dataEmitter : null;
-      if (!this._wasm || (emitter.size === 0 && (hostEmitter?.size ?? 0) === 0)) return 0;
+      const hostEmitter = host?._core === this && !reply ? host._dataEmitter : null;
+      if (!this._wasm) return 0;
+      if (host?._core === this && !reply && !host._pendingInputAt) {
+        host._pendingInputAt = performance.now();
+      }
+      if (emitter.size === 0 && (hostEmitter?.size ?? 0) === 0) return 0;
       const view = new Uint8Array(this._wasm.memory.buffer, ptr, len);
       if (emitter.size > 0) emitter.emit(view);
       if (host?._core === this && hostEmitter?.size > 0) {
@@ -141,7 +145,6 @@ export class TerminalCore {
             text: decoder.decode(sample),
           });
         }
-        if (!host._pendingInputAt) host._pendingInputAt = performance.now();
         hostEmitter.emit(view);
       }
       this._state.txBytes += len;
@@ -296,6 +299,45 @@ export class TerminalCore {
       this._state.cols = layout.cols;
       this._state.rows = layout.rows;
     }
+    return result;
+  }
+
+  setRenderMetrics(layout, atlasColumns) {
+    if (!this._wasm) throw new Error("terminal core is not open");
+    return this._wasm.term_set_render_metrics(
+      layout.cellWidth,
+      layout.cellHeight,
+      layout.cellWidth,
+      layout.cellHeight,
+      layout.fontSize,
+      atlasColumns,
+    );
+  }
+
+  resizeCanonical(geometry) {
+    if (!this._wasm) throw new Error("terminal core is not open");
+    const cols = Number(geometry?.cols);
+    const rows = Number(geometry?.rows);
+    if (!Number.isInteger(cols) || !Number.isInteger(rows) || cols <= 0 || rows <= 0) {
+      throw new TypeError("terminal core dimensions must be positive integers");
+    }
+    const result = this._wasm.term_resize_canonical(
+      cols,
+      rows,
+      geometry?.cellWidthPx ?? 8,
+      geometry?.cellHeightPx ?? 16,
+    );
+    if (result === 1) {
+      this._state.cols = cols;
+      this._state.rows = rows;
+    }
+    return result;
+  }
+
+  setReplayMode(enabled) {
+    if (!this._wasm) throw new Error("terminal core is not open");
+    const result = this._wasm.term_set_replay_mode(enabled ? 1 : 0);
+    if (result !== 1) throw new Error(`WASM replay mode configuration failed: ${result}`);
     return result;
   }
 

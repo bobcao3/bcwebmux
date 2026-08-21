@@ -22,7 +22,9 @@ export async function createCore(host, options = {}) {
   host._cores.add(core);
   try {
     await core.open({ cols: layout.cols, rows: layout.rows, host });
-    if (core.resize(layout, host._renderer.atlasColumns) !== 1) {
+    if ((host.options.canonicalGeometry
+      ? core.setRenderMetrics(layout, host._renderer.atlasColumns)
+      : core.resize(layout, host._renderer.atlasColumns)) !== 1) {
       throw new Error("terminal core resize failed");
     }
     return core;
@@ -58,7 +60,9 @@ export function attachCore(host, core) {
     core.setRenderer(host.options.renderer);
     core.setFont(host.options.font);
     core.invalidateForAttach();
-    if (core.resize(layout, atlasColumns) !== 1) throw new Error("terminal core resize failed");
+    if ((host.options.canonicalGeometry
+      ? core.setRenderMetrics(layout, atlasColumns)
+      : core.resize(layout, atlasColumns)) !== 1) throw new Error("terminal core resize failed");
     if (core.renderFrame() !== 1) throw new Error("terminal core render failed");
     host._core = core;
     host._wasm = core.wasm;
@@ -73,7 +77,9 @@ export function attachCore(host, core) {
       previousCore.setRenderer(host.options.renderer);
       previousCore.setFont(host.options.font);
       previousCore.invalidateForAttach();
-      if (previousCore.resize(layout, atlasColumns) !== 1) throw new Error("previous core resize failed");
+      if ((host.options.canonicalGeometry
+        ? previousCore.setRenderMetrics(layout, atlasColumns)
+        : previousCore.resize(layout, atlasColumns)) !== 1) throw new Error("previous core resize failed");
       if (previousCore.renderFrame() !== 1) throw new Error("previous core render failed");
     } catch {}
     host._renderingCore = null;

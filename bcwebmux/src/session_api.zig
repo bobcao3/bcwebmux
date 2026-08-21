@@ -12,6 +12,8 @@ const CreateBody = struct {
     geometry: ?struct {
         cols: u16,
         rows: u16,
+        cellWidthPx: u16 = 8,
+        cellHeightPx: u16 = 16,
     } = null,
 };
 
@@ -167,9 +169,14 @@ fn respondCreate(registry: *Registry, request: *std.http.Server.Request) !void {
         return respondError(request, .bad_request, "invalid_json", "invalid create request");
     defer parsed.deinit();
     const geometry = if (parsed.value.geometry) |value|
-        Session.Geometry{ .cols = value.cols, .rows = value.rows }
+        Session.Geometry{
+            .cols = value.cols,
+            .rows = value.rows,
+            .cell_width_px = value.cellWidthPx,
+            .cell_height_px = value.cellHeightPx,
+        }
     else
-        Session.Geometry{ .cols = 80, .rows = 24 };
+        Session.Geometry{ .cols = 80, .rows = 24, .cell_width_px = 8, .cell_height_px = 16 };
     const name = parsed.value.name orelse "Shell";
     const request_hash = sha256(body);
     const result = registry.create(.{
@@ -248,6 +255,8 @@ fn respondDelete(registry: *Registry, request: *std.http.Server.Request, id: Ses
 fn writeMetadata(json: *std.json.Stringify, metadata: *const Session.Metadata, revision: u64) !void {
     var id_buffer: [36]u8 = undefined;
     var generation_buffer: [36]u8 = undefined;
+    var attachment_id_buffer: [16]u8 = undefined;
+    var lease_epoch_buffer: [32]u8 = undefined;
     try json.beginObject();
     try json.objectField("id");
     try json.write(Registry.formatId(metadata.id, &id_buffer));
@@ -268,9 +277,20 @@ fn writeMetadata(json: *std.json.Stringify, metadata: *const Session.Metadata, r
     try writeField(json, "cellWidthPx", metadata.geometry.cell_width_px);
     try writeField(json, "cellHeightPx", metadata.geometry.cell_height_px);
     try json.endObject();
-    try writeField(json, "attachments", 0);
+    try writeField(json, "attachments", metadata.attachment_count);
     try json.objectField("controller");
-    try json.write(null);
+    if (metadata.controller_attachment_id) |attachment_id| {
+        const attachment_id_text = try std.fmt.bufPrint(&attachment_id_buffer, "{x:0>16}", .{attachment_id});
+        const lease_epoch_text = try std.fmt.bufPrint(&lease_epoch_buffer, "{d}", .{metadata.lease_epoch});
+        try json.beginObject();
+        try json.objectField("attachmentId");
+        try json.write(attachment_id_text);
+        try json.objectField("leaseEpoch");
+        try json.write(lease_epoch_text);
+        try json.endObject();
+    } else {
+        try json.write(null);
+    }
     try json.objectField("exitStatus");
     if (metadata.exit_status) |status| try json.write(status) else try json.write(null);
     try writeField(json, "eventSeq", metadata.event_seq);

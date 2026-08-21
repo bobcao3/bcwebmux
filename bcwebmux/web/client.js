@@ -2,7 +2,8 @@
 // Copyright (c) 2026 Cheng Cao
 
 import { Terminal } from "/wgpuTerminal/src/index.js";
-import { BcwWebSocketAddon } from "./BcwWebSocketAddon.js";
+import { SessionApi } from "./SessionApi.js";
+import { SessionTransport } from "./SessionTransport.js";
 import { initializeSettings } from "./settings.js";
 
 const terminalElement = document.querySelector("#terminal");
@@ -41,6 +42,47 @@ const textRenderer = requestedRenderer === "kb-canvas" ? "kb-canvas" : settings.
 let softkeysVisibilityOverride = null;
 let softkeysVisible = false;
 let pendingLinkUri = null;
+
+async function openInitialSession() {
+  await terminal.open(terminalElement);
+  const connectPromise = transport.connect();
+  const [info, sessionList] = await Promise.all([sessionApi.info(), sessionApi.list()]);
+  await connectPromise;
+  if (info.protocol !== "bcw.sessions") throw new Error("unsupported session protocol");
+  serverInfo = info;
+
+  const storageKey = `bcwebmux.last-session:${serverInfo.serverInstance}:${serverInfo.principal}`;
+  let storedSessionId = null;
+  try {
+    storedSessionId = localStorage.getItem(storageKey);
+  } catch {}
+  let selected = sessionList.sessions.find((session) => String(session.id) === storedSessionId);
+  if (!selected) selected = sessionList.sessions.find((session) => session.state === "running");
+  if (!selected) {
+    selected = await sessionApi.create({
+      profile: "shell",
+      name: "Shell",
+      geometry: {
+        cols: terminal.cols,
+        rows: terminal.rows,
+        cellWidthPx: Math.round(terminal.state.physicalCellWidth) || 8,
+        cellHeightPx: Math.round(terminal.state.physicalCellHeight) || 16,
+      },
+    });
+  }
+
+  activeAttachment = await transport.attach(selected, terminal.core);
+  transport.setActive(activeAttachment);
+  if (selected.state === "running") {
+    for (let elapsed = 0; elapsed < 3000 && !activeAttachment.controller; elapsed += 10) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    if (!activeAttachment.controller) throw new Error("session controller timeout");
+  }
+  try {
+    localStorage.setItem(storageKey, String(selected.id));
+  } catch {}
+}
 
 function setConnectionStatus(connected, label) {
   status.classList.toggle("connected", connected);
@@ -213,6 +255,7 @@ softkeys.addEventListener("click", (event) => {
 const terminal = new Terminal({
   wasmUrl: "/terminal.wasm",
   renderer: textRenderer,
+  canonicalGeometry: true,
   font: settings.font,
   theme: settings.profile,
   grainStrength: settings.grainStrength,
@@ -234,8 +277,18 @@ const terminal = new Terminal({
     copy: inputDebugCopy,
   },
 });
-const transport = new BcwWebSocketAddon();
-terminal.loadAddon(transport);
+const sessionApi = new SessionApi();
+const transport = new SessionTransport();
+transport.activate(terminal);
+let activeAttachment = null;
+let serverInfo = null;
+transport.onSessionChanged(async () => {
+  if (!activeAttachment) return;
+  try {
+    const sessionId = activeAttachment.metadata?.id ?? activeAttachment.sessionId ?? activeAttachment.id;
+    activeAttachment.metadata = await sessionApi.get(sessionId);
+  } catch {}
+});
 terminal.onError((error) => setConnectionStatus(false, error?.message || "terminal error"));
 terminal.onTitleChange((title) => { document.title = title || "bcwebmux"; });
 terminal.onBell(() => {
@@ -301,6 +354,11 @@ function combinedState() {
   Object.assign(state, transport.state, {
     selectionMode: terminal.selectionMode,
     softkeysVisible,
+    activeSessionId: activeAttachment?.metadata?.id ?? activeAttachment?.sessionId ?? activeAttachment?.id ?? null,
+    sessionState: activeAttachment?.metadata?.state ?? null,
+    controller: activeAttachment?.controller ?? null,
+    connected: transport.state.connected && !!activeAttachment?.live &&
+      (activeAttachment?.metadata?.state !== "running" || !!activeAttachment?.controller),
   });
   return state;
 }
@@ -331,21 +389,15 @@ function updateTelemetry() {
   perf.setAttribute("aria-label", description);
 }
 
-setConnectionStatus(false, "connecting");
-try {
-  await terminal.open(terminalElement);
-  transport.connect();
-} catch (error) {
-  setConnectionStatus(false, error?.message || "terminal error");
-  throw error;
-}
-applyPerfMode(settings.perfMode);
-updateTelemetry();
-setInterval(updateTelemetry, 250);
-maybeShowNotificationPrompt();
-
 window.bcwebmux = {
-  get connected() { return transport.state.connected; },
+  get connected() {
+    return transport.state.connected && !!activeAttachment?.live &&
+      (activeAttachment?.metadata?.state !== "running" || !!activeAttachment?.controller);
+  },
+  get activeSessionId() {
+    return activeAttachment?.metadata?.id ?? activeAttachment?.sessionId ?? activeAttachment?.id ?? null;
+  },
+  get attachmentState() { return activeAttachment?.state ?? null; },
   get selectionMode() { return terminal.selectionMode; },
   enterSelectionMode() { return terminal.enterSelectionMode(); },
   exitSelectionMode() { return terminal.exitSelectionMode(); },
@@ -359,3 +411,36 @@ window.bcwebmux = {
 if (query.has("gpu-test")) {
   window.bcwebmux.readPixels = () => terminal.readPixels();
 }
+if (query.has("session-test")) {
+  Object.defineProperties(window.bcwebmux, {
+    sessionText: {
+      value() {
+        const core = terminal.core;
+        core.setSelectionRange({ row: 0, col: 0 }, { row: core.rows - 1, col: core.cols });
+        try {
+          return core.getSelection() || "";
+        } finally {
+          core.clearSelection();
+        }
+      },
+    },
+    coreCount: {
+      get() { return terminal.coreCount; },
+    },
+    clientInstanceId: {
+      get() { return transport.clientInstanceId; },
+    },
+  });
+}
+
+setConnectionStatus(false, "connecting");
+try {
+  await openInitialSession();
+} catch (error) {
+  setConnectionStatus(false, error?.message || "terminal error");
+  throw error;
+}
+applyPerfMode(settings.perfMode);
+updateTelemetry();
+setInterval(updateTelemetry, 250);
+maybeShowNotificationPrompt();

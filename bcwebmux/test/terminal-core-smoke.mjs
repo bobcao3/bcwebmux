@@ -133,6 +133,7 @@ try {
   assert.equal(result.replies, "\x1b[0n");
   assert.equal(result.disposeReplies, 1);
   assert.equal(result.userData, "u");
+  assert.equal(result.hostData, "u");
   const exceptions = pageCdp.events.filter((event) => event.method === "Runtime.exceptionThrown");
   assert.deepEqual(exceptions, [], JSON.stringify(exceptions));
 } finally {

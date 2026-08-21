@@ -40,4 +40,6 @@ terminal.restoreSnapshot(snapshot, other);
 
 `write()` is backend output into the terminal; `onData` is user input. `TerminalCore.onReply` separates parser replies. Callback byte views are borrowed synchronously and must be copied if retained.
 
+For server-authoritative session transports, set `canonicalGeometry: true`, send only `TerminalCore.onData`, apply accepted server dimensions with `resizeCanonical`, use `setReplayMode` during historical tail application, and never forward `onReply`.
+
 Defaults and types are in `index.d.ts`; low-level sources are in `common/terminal`.

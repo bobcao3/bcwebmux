@@ -116,14 +116,23 @@ async function run() {
     throw new Error(`core A state leaked: ${JSON.stringify(textA)}`);
   }
 
+  terminal.attachCore(coreB);
   let replies = "";
   let userData = "";
+  let hostData = "";
+  const hostDataListener = terminal.onData((view) => { hostData += new TextDecoder().decode(view); });
   const replyListener = coreB.onReply((view) => { replies += new TextDecoder().decode(view); });
   const dataListener = coreB.onData((view) => { userData += new TextDecoder().decode(view); });
+  coreB.setReplayMode(true);
+  coreB.write("\x1b[5n");
+  if (replies !== "") throw new Error(`replay reply was not suppressed: ${JSON.stringify(replies)}`);
+  coreB.setReplayMode(false);
   coreB.write("\x1b[5n");
   coreB.input("u");
   if (replies !== "\x1b[0n") throw new Error(`parser reply separation failed: ${JSON.stringify(replies)}`);
   if (userData !== "u") throw new Error(`user input separation failed: ${JSON.stringify(userData)}`);
+  if (hostData !== "u") throw new Error(`host input separation failed: ${JSON.stringify(hostData)}`);
+  hostDataListener.dispose();
   replyListener.dispose();
   dataListener.dispose();
 
@@ -187,6 +196,7 @@ async function run() {
     utf8Text,
     replies,
     userData,
+    hostData,
     disposeReplies,
   };
   window.terminalCoreSmokeTerminal = terminal;

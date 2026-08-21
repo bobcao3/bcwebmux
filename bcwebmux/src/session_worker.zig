@@ -18,12 +18,19 @@ const c = @cImport({
 });
 
 pub const packet_capacity = 64 * 1024 + 1;
+var worker_terminate_signal: std.atomic.Value(bool) = .init(false);
+
+fn workerTerminateSignalHandler(_: std.posix.SIG) callconv(.c) void {
+    worker_terminate_signal.store(true, .release);
+}
+
 pub const Kind = enum(u8) {
     input = 1,
     resize = 2,
     terminate = 3,
     output = 4,
     exited = 5,
+    resize_applied = 6,
 };
 
 pub const Message = struct {
@@ -38,6 +45,7 @@ fn decodeKind(value: u8) ?Kind {
         3 => .terminate,
         4 => .output,
         5 => .exited,
+        6 => .resize_applied,
         else => null,
     };
 }
@@ -59,8 +67,8 @@ pub const Connection = struct {
         };
         var message: c.struct_msghdr = std.mem.zeroes(c.struct_msghdr);
         message.msg_iov = &iovecs;
-        message.msg_iovlen = iovecs.len;
-        const sent = c.sendmsg(self.fd, &message, c.MSG_NOSIGNAL);
+        message.msg_iovlen = if (payload.len == 0) 1 else 2;
+        const sent = c.sendmsg(self.fd, &message, c.MSG_NOSIGNAL | c.MSG_DONTWAIT);
         const length = payload.len + 1;
         if (sent != @as(isize, @intCast(length))) return error.WorkerWriteFailed;
     }
@@ -76,15 +84,21 @@ pub const Connection = struct {
         };
     }
 
-    pub fn resize(self: *Connection, io: std.Io, cols: u16, rows: u16) !void {
-        var payload: [4]u8 = undefined;
-        std.mem.writeInt(u16, payload[0..2], cols, .little);
-        std.mem.writeInt(u16, payload[2..4], rows, .little);
+    pub fn resize(self: *Connection, io: std.Io, operation_id: u64, cols: u16, rows: u16, cell_width_px: u16, cell_height_px: u16) !void {
+        var payload: [16]u8 = undefined;
+        std.mem.writeInt(u64, payload[0..8], operation_id, .little);
+        std.mem.writeInt(u16, payload[8..10], cols, .little);
+        std.mem.writeInt(u16, payload[10..12], rows, .little);
+        std.mem.writeInt(u16, payload[12..14], cell_width_px, .little);
+        std.mem.writeInt(u16, payload[14..16], cell_height_px, .little);
         try self.send(io, .resize, &payload);
     }
 
     pub fn terminate(self: *Connection, io: std.Io) void {
-        self.send(io, .terminate, &.{}) catch {};
+        self.send(io, .terminate, &.{}) catch |err| std.log.err("session worker terminate send failed: {t}", .{err});
+        if (self.child.id) |pid| {
+            _ = c.kill(pid, c.SIGUSR1);
+        }
     }
 
     pub fn close(self: *Connection) void {
@@ -122,6 +136,13 @@ pub fn spawn(io: std.Io, executable: []const u8, shell: []const u8, cols: u16, r
 }
 
 pub fn run(shell: [:0]const u8, cols: u16, rows: u16, limits: manifest.Limits) !void {
+    worker_terminate_signal.store(false, .release);
+    const signal_action: std.posix.Sigaction = .{
+        .handler = .{ .handler = workerTerminateSignalHandler },
+        .mask = std.posix.sigemptyset(),
+        .flags = 0,
+    };
+    std.posix.sigaction(.USR1, &signal_action, null);
     const channel = std.posix.STDIN_FILENO;
     var master: c_int = -1;
     var size: c.struct_winsize = std.mem.zeroes(c.struct_winsize);
@@ -152,6 +173,13 @@ pub fn run(shell: [:0]const u8, cols: u16, rows: u16, limits: manifest.Limits) !
     var termination_started_ms: ?u64 = null;
     var packet: [packet_capacity]u8 = undefined;
     while (true) {
+        if (worker_terminate_signal.swap(false, .acq_rel) and !terminating) {
+            terminating = true;
+            _ = c.kill(-pid, c.SIGHUP);
+            _ = c.kill(-pid, c.SIGTERM);
+            termination_started_ms = monotonicMs();
+        }
+        var drained_for_resize = false;
         var descriptors = [_]c.struct_pollfd{
             .{ .fd = if (termination_started_ms == null) channel else -1, .events = c.POLLIN, .revents = 0 },
             .{ .fd = master, .events = c.POLLIN, .revents = 0 },
@@ -174,12 +202,20 @@ pub fn run(shell: [:0]const u8, cols: u16, rows: u16, limits: manifest.Limits) !
                 const kind = decodeKind(data[0]) orelse continue;
                 switch (kind) {
                     .input => writeAll(master, data[1..]),
-                    .resize => if (data.len == 5) {
+                    .resize => if (data.len == 17) {
+                        var resize_payload: [16]u8 = undefined;
+                        std.mem.copyForwards(u8, &resize_payload, data[1..17]);
+                        if (!drainAvailableOutput(channel, master, &packet)) return;
+                        drained_for_resize = true;
                         var next_size: c.struct_winsize = std.mem.zeroes(c.struct_winsize);
-                        next_size.ws_col = std.mem.readInt(u16, data[1..3], .little);
-                        next_size.ws_row = std.mem.readInt(u16, data[3..5], .little);
-                        if (next_size.ws_col != 0 and next_size.ws_row != 0)
-                            _ = c.ioctl(master, c.TIOCSWINSZ, &next_size);
+                        next_size.ws_col = std.mem.readInt(u16, resize_payload[8..10], .little);
+                        next_size.ws_row = std.mem.readInt(u16, resize_payload[10..12], .little);
+                        const status: u8 = if (next_size.ws_col != 0 and next_size.ws_row != 0 and c.ioctl(master, c.TIOCSWINSZ, &next_size) == 0) 0 else 1;
+                        var acknowledgement: [18]u8 = undefined;
+                        acknowledgement[0] = @intFromEnum(Kind.resize_applied);
+                        std.mem.copyForwards(u8, acknowledgement[1..17], &resize_payload);
+                        acknowledgement[17] = status;
+                        if (!sendPacket(channel, &acknowledgement)) return;
                     },
                     .terminate => if (!terminating) {
                         terminating = true;
@@ -187,12 +223,13 @@ pub fn run(shell: [:0]const u8, cols: u16, rows: u16, limits: manifest.Limits) !
                         _ = c.kill(-pid, c.SIGTERM);
                         termination_started_ms = monotonicMs();
                     },
+                    .resize_applied => {},
                     else => {},
                 }
             }
         }
 
-        if ((descriptors[1].revents & (c.POLLIN | c.POLLHUP | c.POLLERR)) != 0) {
+        if (!drained_for_resize and (descriptors[1].revents & (c.POLLIN | c.POLLHUP | c.POLLERR)) != 0) {
             const count = c.read(master, packet[1..].ptr, packet.len - 1);
             if (count > 0) {
                 packet[0] = @intFromEnum(Kind.output);
@@ -234,9 +271,22 @@ fn sendPacket(fd: c_int, packet: []const u8) bool {
 fn writeAll(fd: c_int, bytes: []const u8) void {
     var remaining = bytes;
     while (remaining.len != 0) {
+        if (worker_terminate_signal.load(.acquire)) return;
         const count = c.write(fd, remaining.ptr, remaining.len);
         if (count <= 0) return;
         remaining = remaining[@intCast(count)..];
+    }
+}
+
+fn drainAvailableOutput(channel: c_int, master: c_int, packet: *[packet_capacity]u8) bool {
+    const flags = c.fcntl(master, c.F_GETFL);
+    if (flags < 0 or c.fcntl(master, c.F_SETFL, flags | c.O_NONBLOCK) < 0) return false;
+    defer _ = c.fcntl(master, c.F_SETFL, flags);
+    while (true) {
+        const count = c.read(master, packet[1..].ptr, packet.len - 1);
+        if (count <= 0) return true;
+        packet[0] = @intFromEnum(Kind.output);
+        if (!sendPacket(channel, packet[0 .. @as(usize, @intCast(count)) + 1])) return false;
     }
 }
 

@@ -4,6 +4,7 @@
 const std = @import("std");
 const Session = @import("Session.zig");
 const manifest = @import("session_manifest.zig");
+const session_realtime = @import("session_realtime.zig");
 
 const Self = @This();
 const idempotency_capacity = 256;
@@ -54,7 +55,7 @@ pub fn init(
     shell: []const u8,
     limits: manifest.Limits,
 ) !Self {
-    if (limits.max_exited_sessions < limits.max_live_sessions or limits.max_exited_sessions > 64) return error.InvalidLimits;
+    if (limits.max_exited_sessions < limits.max_live_sessions or limits.max_exited_sessions > 64 or limits.max_attachments_per_session > Session.max_attachment_slots) return error.InvalidLimits;
     var server_instance: Session.Id = undefined;
     try randomId(io, &server_instance);
     var self: Self = .{
@@ -89,7 +90,8 @@ pub fn create(
     self.pruneExpired();
     if (!std.mem.eql(u8, options.profile, manifest.command_profile)) return error.UnknownCommandProfile;
     if (!validName(options.name, self.limits.max_name_bytes)) return error.InvalidSessionName;
-    if (!manifest.validGeometry(self.limits, options.geometry.cols, options.geometry.rows)) return error.InvalidGeometry;
+    if (!manifest.validGeometry(self.limits, options.geometry.cols, options.geometry.rows) or
+        !manifest.validCellGeometry(options.geometry.cell_width_px, options.geometry.cell_height_px)) return error.InvalidGeometry;
     const key_hash = hashIdempotencyKey(idempotency_key);
 
     self.mutex.lockUncancelable(self.io);
@@ -172,14 +174,24 @@ pub fn create(
 
 pub fn list(self: *Self, output: []Session.Metadata) usize {
     self.pruneExpired();
-    self.mutex.lockUncancelable(self.io);
-    defer self.mutex.unlock(self.io);
+    var pinned: [64]*Session = undefined;
     var count: usize = 0;
+    const limit = @min(output.len, pinned.len);
+
+    self.mutex.lockUncancelable(self.io);
     var iterator = self.sessions.valueIterator();
     while (iterator.next()) |entry| {
-        if (count == output.len) break;
-        output[count] = entry.*.snapshotMetadata();
+        if (count == limit) break;
+        const session = entry.*;
+        _ = session.reference_count.fetchAdd(1, .acq_rel);
+        pinned[count] = session;
         count += 1;
+    }
+    self.mutex.unlock(self.io);
+
+    for (pinned[0..count], 0..) |session, index| {
+        output[index] = session.snapshotMetadata();
+        unpinSession(session);
     }
     std.mem.sort(Session.Metadata, output[0..count], {}, newerFirst);
     return count;
@@ -187,17 +199,15 @@ pub fn list(self: *Self, output: []Session.Metadata) usize {
 
 pub fn get(self: *Self, id: Session.Id) ?Session.Metadata {
     self.pruneExpired();
-    self.mutex.lockUncancelable(self.io);
-    defer self.mutex.unlock(self.io);
-    const session = self.sessions.get(id) orelse return null;
+    const session = self.pinSession(id) catch return null;
+    defer unpinSession(session);
     return session.snapshotMetadata();
 }
 
 pub fn rename(self: *Self, id: Session.Id, name: []const u8) !Session.Metadata {
     if (!validName(name, self.limits.max_name_bytes)) return error.InvalidSessionName;
-    self.mutex.lockUncancelable(self.io);
-    defer self.mutex.unlock(self.io);
-    const session = self.sessions.get(id) orelse return error.SessionNotFound;
+    const session = try self.pinSession(id);
+    defer unpinSession(session);
     if (!session.rename(name)) return error.InvalidSessionState;
     _ = self.revision.fetchAdd(1, .monotonic);
     return session.snapshotMetadata();
@@ -255,14 +265,128 @@ pub fn delete(self: *Self, id: Session.Id) !void {
         self.mutex.unlock(self.io);
         return error.SessionBusy;
     }
+    if (session.reference_count.load(.acquire) != 0 or metadata.attachment_count != 0) {
+        self.mutex.unlock(self.io);
+        return error.SessionBusy;
+    }
     _ = self.sessions.remove(id);
     _ = self.revision.fetchAdd(1, .monotonic);
     self.mutex.unlock(self.io);
     session.destroy();
 }
 
+pub fn realtimeAttach(
+    self: *Self,
+    connection_id: u64,
+    client_id: Session.Id,
+    id: Session.Id,
+    attachment_id: u64,
+    generation: Session.Id,
+    event_seq: u64,
+    output_offset: u64,
+) !session_realtime.Replay {
+    const session = try self.pinSession(id);
+    defer unpinSession(session);
+    return session_realtime.beginAttach(
+        session,
+        self.allocator,
+        connection_id,
+        attachment_id,
+        client_id,
+        generation,
+        event_seq,
+        output_offset,
+    );
+}
+
+pub fn realtimeRead(
+    self: *Self,
+    id: Session.Id,
+    key: Session.AttachmentKey,
+    event_seq: u64,
+    output_offset: u64,
+    max_bytes: usize,
+) !session_realtime.Batch {
+    const session = try self.pinSession(id);
+    defer unpinSession(session);
+    return session_realtime.readAfter(session, self.allocator, key, event_seq, output_offset, max_bytes);
+}
+
+pub fn realtimeAck(
+    self: *Self,
+    id: Session.Id,
+    key: Session.AttachmentKey,
+    event_seq: u64,
+    output_offset: u64,
+) !void {
+    const session = try self.pinSession(id);
+    defer unpinSession(session);
+    return session_realtime.acknowledge(session, key, event_seq, output_offset);
+}
+
+pub fn realtimeDetach(self: *Self, id: Session.Id, key: Session.AttachmentKey) !Session.LeaseState {
+    const session = try self.pinSession(id);
+    defer unpinSession(session);
+    return session_realtime.detach(session, key);
+}
+
+pub fn realtimeClaim(self: *Self, id: Session.Id, key: Session.AttachmentKey) !Session.LeaseState {
+    const session = try self.pinSession(id);
+    defer unpinSession(session);
+    return session_realtime.claimControl(session, key);
+}
+
+pub fn realtimeLease(self: *Self, id: Session.Id, key: Session.AttachmentKey) !Session.LeaseState {
+    const session = try self.pinSession(id);
+    defer unpinSession(session);
+    return session_realtime.leaseState(session, key);
+}
+
+pub fn realtimeInput(
+    self: *Self,
+    id: Session.Id,
+    key: Session.AttachmentKey,
+    lease_epoch: u64,
+    based_event_seq: u64,
+    input_seq: u64,
+    bytes: []const u8,
+) !session_realtime.InputResult {
+    const session = try self.pinSession(id);
+    defer unpinSession(session);
+    return session_realtime.applyInput(session, key, lease_epoch, based_event_seq, input_seq, bytes);
+}
+
+pub fn realtimeResize(
+    self: *Self,
+    id: Session.Id,
+    key: Session.AttachmentKey,
+    lease_epoch: u64,
+    based_event_seq: u64,
+    geometry: Session.Geometry,
+) !u64 {
+    const session = try self.pinSession(id);
+    defer unpinSession(session);
+    return session_realtime.applyResize(session, key, lease_epoch, based_event_seq, geometry);
+}
+
 pub fn currentRevision(self: *Self) u64 {
     return self.revision.load(.monotonic);
+}
+
+fn pinSession(self: *Self, id: Session.Id) !*Session {
+    self.mutex.lockUncancelable(self.io);
+    const session = self.sessions.get(id) orelse {
+        self.mutex.unlock(self.io);
+        return error.SessionNotFound;
+    };
+    _ = session.reference_count.fetchAdd(1, .acq_rel);
+    self.mutex.unlock(self.io);
+    return session;
+}
+
+fn unpinSession(session: *Session) void {
+    const previous = session.reference_count.fetchSub(1, .acq_rel);
+    std.debug.assert(previous > 0);
 }
 
 fn pruneExpired(self: *Self) void {
@@ -276,7 +400,9 @@ fn pruneExpired(self: *Self) void {
         if (id_count == ids.len) break;
         const session = entry.value_ptr.*;
         if (!session.actor_done.load(.acquire)) continue;
+        if (session.reference_count.load(.acquire) != 0) continue;
         const metadata = session.snapshotMetadata();
+        if (metadata.attachment_count != 0) continue;
         if (metadata.state != .exited and metadata.state != .failed) continue;
         if (self.limits.exited_retention_ms > 0 and
             (now < metadata.last_activity_ms or
