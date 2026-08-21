@@ -109,6 +109,8 @@ try {
   const firstId = await evaluate("window.bcwebmux.activeSessionId");
   await evaluate(`window.bcwebmux.write("A=L4-; printf '\\\\033]0;ALPHA\\\\007'; echo \${A}ALPHA; (sleep 4; printf '\\\\033]0;INACTIVE-ALPHA\\\\007'; echo \${A}INACTIVE)&\\n")`);
   await waitBrowser("window.bcwebmux.sessionText().includes('L4-ALPHA')", 5000, "first session output missing");
+  assert.equal((await sessionMetadata(firstId)).name, "");
+  await waitBrowser(`(() => { const session = window.bcwebmux.sessions.find(session => session.id === ${JSON.stringify(firstId)}); const title = session?.title?.trim(); const row = document.querySelector('.session-row[data-session-id="${firstId}"]'); return Boolean(title) && row?.querySelector('.session-name')?.textContent.trim() === title && document.querySelector('#terminal-identity-primary')?.textContent.trim() === title && document.querySelector('#terminal-identity-secondary')?.hidden === true; })()`, 5000, "ALPHA identity was not rendered");
   await screenshot("session-drawer-wide.png");
 
   await evaluate("document.querySelector('#session-new').click()");
@@ -116,6 +118,8 @@ try {
   const secondId = await evaluate("window.bcwebmux.activeSessionId");
   await evaluate(`window.bcwebmux.write("B=L4-; printf '\\\\033]0;BETA\\\\007'; echo \${B}BETA\\n")`);
   await waitBrowser("window.bcwebmux.sessionText().includes('L4-BETA')", 5000, "second session output missing");
+  assert.equal((await sessionMetadata(secondId)).name, "");
+  await waitBrowser(`(() => { const session = window.bcwebmux.sessions.find(session => session.id === ${JSON.stringify(secondId)}); const title = session?.title?.trim(); const row = document.querySelector('.session-row[data-session-id="${secondId}"]'); return Boolean(title) && row?.querySelector('.session-name')?.textContent.trim() === title && document.querySelector('#terminal-identity-primary')?.textContent.trim() === title && document.querySelector('#terminal-identity-secondary')?.hidden === true; })()`, 5000, "BETA identity was not rendered");
   try {
     await waitBrowser(`document.querySelector('.session-row[data-session-id="${firstId}"] .session-unread.is-unread')`, 10000, "inactive session output did not mark the session unread");
   } catch (error) {
@@ -149,10 +153,11 @@ try {
 
   await evaluate(`(() => { const row = document.querySelector('.session-row[data-session-id="${secondId}"]'); const rename = row.querySelector('.session-rename'); rename.focus(); rename.click(); const input = document.querySelector('#session-rename-input'); input.value = 'Renamed beta'; document.querySelector('#session-rename-save').click(); })()`);
   await waitBrowser(`window.bcwebmux.sessions.some(session => session.id === ${JSON.stringify(secondId)} && session.name === 'Renamed beta')`, 5000, "session rename did not complete");
+  await waitBrowser(`(() => { const session = window.bcwebmux.sessions.find(session => session.id === window.bcwebmux.activeSessionId); const title = session?.title?.trim(); const row = document.querySelector('.session-row[data-session-id="${secondId}"]'); return Boolean(title) && row?.querySelector('.session-name')?.textContent.trim() === 'Renamed beta' && document.querySelector('#terminal-identity-primary')?.textContent.trim() === 'Renamed beta' && document.querySelector('#terminal-identity-secondary')?.hidden === false && document.querySelector('#terminal-identity-secondary')?.textContent.trim() === title; })()`, 5000, "renamed identity was not rendered");
   assert.equal(await evaluate(`document.activeElement === document.querySelector('.session-row[data-session-id="${secondId}"] .session-rename')`), true);
-  await evaluate(`document.querySelector('.session-row[data-session-id="${firstId}"] .session-viewer').focus()`);
+  await evaluate(`document.querySelector('.session-row[data-session-id="${firstId}"] .session-rename').focus()`);
   await new Promise(resolve => setTimeout(resolve, 3500));
-  assert.equal(await evaluate(`document.activeElement === document.querySelector('.session-row[data-session-id="${firstId}"] .session-viewer')`), true);
+  assert.equal(await evaluate(`document.activeElement === document.querySelector('.session-row[data-session-id="${firstId}"] .session-rename')`), true);
 
   const tabNavigation = await evaluate(`(() => {
     const tabs = [...document.querySelectorAll('.session-tab')];
@@ -196,14 +201,39 @@ try {
   assert.equal(tabNavigation.selectedCount, 1);
 
   const controls = await evaluate(`(() => {
-    const selectors = ['#session-toggle', '#session-new', '#session-control', '.session-viewer', '.session-rename', '.session-lifecycle'];
+    const selectors = ['#session-toggle', '#session-new', '.session-rename', '.session-lifecycle'];
+    const tabs = document.querySelector('#session-tabs');
+    const newSession = document.querySelector('#session-new');
+    const active = document.querySelector('.session-row[data-session-id="${secondId}"]');
+    const activeTab = active?.querySelector('.session-tab');
+    const activeLifecycle = active?.querySelector('.session-lifecycle');
+    const transparent = value => value === 'transparent' || value === 'rgba(0, 0, 0, 0)';
     return {
       sizes: selectors.map(selector => { const rect = document.querySelector(selector).getBoundingClientRect(); return [rect.width, rect.height]; }),
       nested: document.querySelectorAll('button button, button a, [role=tab] button').length,
+      activeBox: active?.classList.contains('is-active') && getComputedStyle(active).backgroundColor !== 'transparent' && getComputedStyle(active).backgroundColor !== 'rgba(0, 0, 0, 0)' && transparent(getComputedStyle(activeTab).backgroundColor) && transparent(getComputedStyle(activeLifecycle).backgroundColor),
+      inlineRename: [...document.querySelectorAll('.session-rename')].every(rename => rename.parentElement?.matches('.session-name-line') && rename.previousElementSibling?.matches('.session-name')),
+      obsolete: document.querySelector('#session-control, .session-viewer, #session-drawer > footer') === null,
+      newPlacement: newSession?.parentElement === document.querySelector('#session-list') && newSession?.previousElementSibling === tabs,
+      newHasSvg: Boolean(newSession?.querySelector('svg')),
     };
   })()`);
+  assert.equal(controls.obsolete, true);
+  assert.equal(controls.newPlacement, true);
+  assert.equal(controls.newHasSvg, true);
   assert.equal(controls.nested, 0);
+  assert.equal(controls.activeBox, true);
+  assert.equal(controls.inlineRename, true);
   for (const [width, height] of controls.sizes) assert.ok(width >= 44 && height >= 44, `undersized session control ${width}x${height}`);
+
+  await evaluate(`(() => { const tab = document.querySelector('.session-row[data-session-id="${secondId}"] .session-tab'); const rect = tab.getBoundingClientRect(); tab.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerId: 41, pointerType: 'touch', button: 0, buttons: 1, isPrimary: true, clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2 })); })()`);
+  await new Promise(resolve => setTimeout(resolve, 650));
+  await waitBrowser(`(() => { const menu = document.querySelector('#session-context-menu'); const tab = document.querySelector('.session-row[data-session-id="${secondId}"] .session-tab'); return Boolean(menu && !menu.hidden && menu.getClientRects().length && getComputedStyle(menu).visibility !== 'hidden' && getComputedStyle(menu).display !== 'none' && tab?.getAttribute('aria-expanded') === 'true' && [...menu.querySelectorAll('[role="menuitem"]')].some(item => item.textContent.trim().toUpperCase() === 'RENAME')); })()`, 2000, "long press did not open session context menu");
+  await evaluate(`(() => { const tab = document.querySelector('.session-row[data-session-id="${secondId}"] .session-tab'); const rect = tab.getBoundingClientRect(); tab.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerId: 41, pointerType: 'touch', button: 0, buttons: 0, isPrimary: true, clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2 })); })()`);
+  await evaluate("document.querySelector('.session-context-rename').click()");
+  await waitBrowser("document.querySelector('#session-rename-dialog').open", 1000, "context rename dialog did not open");
+  await evaluate("document.querySelector('#session-rename-cancel').click()");
+  await waitBrowser("!document.querySelector('#session-rename-dialog').open", 1000, "context rename dialog did not close");
 
   await metrics(720);
   await waitBrowser("window.bcwebmux.drawerState.narrow && !window.bcwebmux.drawerState.open", 3000, "720px drawer did not default closed");

@@ -113,6 +113,7 @@ export class GpuTerminal {
       scrollTotal: 0,
       scrollOffset: 0,
       scrollLength: 0,
+      viewportMode: "active",
       textRowsPtr: 0,
       textCellsPtr: 0,
       textBytesPtr: 0,
@@ -187,7 +188,7 @@ export class GpuTerminal {
     if (!(memory instanceof ArrayBuffer)) throw new Error("invalid renderer memory");
     validateRange(memory.byteLength, submissionPtr, 112, "header");
     const submission = new DataView(memory, submissionPtr, 112);
-    if (submission.getUint32(0, true) !== 0x5355424d || submission.getUint32(4, true) !== 2 || submission.getUint32(8, true) !== 112 || submission.getUint32(12, true) !== 0) {
+    if (submission.getUint32(0, true) !== 0x5355424d || submission.getUint32(4, true) !== 3 || submission.getUint32(8, true) !== 112 || submission.getUint32(12, true) !== 0) {
       throw new Error("invalid renderer submission");
     }
     const framePtr = submission.getUint32(16, true);
@@ -214,7 +215,7 @@ export class GpuTerminal {
     const textBytesPtr = submission.getUint32(100, true);
     const textBytesLen = submission.getUint32(104, true);
     const textChanged = submission.getUint32(108, true);
-    if (frameLen !== 64) throw new Error("invalid renderer frame length");
+    if (frameLen !== 68) throw new Error("invalid renderer frame length");
     validateRange(memory.byteLength, framePtr, frameLen, "frame");
     const frame = new DataView(memory, framePtr, frameLen);
     validateRange(memory.byteLength, cellsPtr, cellsCount * this.cellSize, "cells");
@@ -230,7 +231,7 @@ export class GpuTerminal {
     const bitmapUploadPixels = new Uint8Array(memory, bitmapUploadPixelsPtr, bitmapUploadPixelsLen);
     validateRange(memory.byteLength, canvasTextPtr, canvasTextLen, "Canvas text");
     validateRange(memory.byteLength, textBytesPtr, textBytesLen, "text bytes");
-    if (frame.getUint32(0, true) !== 0x46574342 || frame.getUint32(4, true) !== 2) {
+    if (frame.getUint32(0, true) !== 0x46574342 || frame.getUint32(4, true) !== 3) {
       throw new Error("invalid renderer frame");
     }
     const cols = frame.getUint32(8, true);
@@ -252,7 +253,10 @@ export class GpuTerminal {
       validateRecords(memory.byteLength, textRowsPtr, rows, 32, "text rows");
       validateRecords(memory.byteLength, textCellsPtr, cellsCount, 4, "text cells");
     }
-    const atlasSlots = frame.getUint32(60, true);
+    const viewportModeValue = frame.getUint32(60, true);
+    if (viewportModeValue > 2) throw new Error("invalid renderer viewport mode");
+    const viewportMode = ["active", "top", "pinned"][viewportModeValue];
+    const atlasSlots = frame.getUint32(64, true);
     if (atlasSlots > this.maxGlyphs) throw new Error(`terminal glyph atlas exceeds ${this.maxGlyphs} glyphs`);
     for (let index = 0; index < bitmapUploadsCount; index += 1) {
       const base = index * 16;
@@ -343,6 +347,7 @@ export class GpuTerminal {
     }
     this.submissionMetadata.cols = cols;
     this.submissionMetadata.rows = rows;
+    this.submissionMetadata.viewportMode = viewportMode;
     this.submissionMetadata.scrollTotal = scrollTotal;
     this.submissionMetadata.scrollOffset = scrollOffset;
     this.submissionMetadata.scrollLength = scrollLength;

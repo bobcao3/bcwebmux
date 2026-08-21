@@ -80,6 +80,7 @@ export class Terminal {
     this._fontChangeGeneration = 0;
     this._activeTextRenderer = this.options.renderer;
     this._selectionMode = false;
+    this._selectionFallbackFrame = null;
     this._restoreInputFocus = false;
     this._softModifiers = 0;
     this._pendingRxAt = 0;
@@ -88,6 +89,10 @@ export class Terminal {
       selectionMode: false,
       cols: 0,
       rows: 0,
+      viewportMode: "active",
+      scrollTotal: 0,
+      scrollOffset: 0,
+      scrollLength: 0,
       rxLatencyMs: null,
       inputLatencyMs: null,
     };
@@ -184,8 +189,8 @@ export class Terminal {
     this._viewportController = new ViewportController({
       terminalElement: this._terminalElement,
       viewport: this._view.viewport,
-      scroll: this._view.scroll,
-      spacer: this._view.spacer,
+      scrollbar: this._view.scrollbar,
+      scrollbarThumb: this._view.scrollbarThumb,
       screen: this._view.screen,
       getWasm: () => this._wasm,
       getRenderer: () => this._renderer,
@@ -263,14 +268,38 @@ export class Terminal {
       getWasm: () => this._wasm,
     });
     this._pointerController = new PointerController({
-      scroll: this._view.scroll,
+      surface: this._view.surface,
       screen: this._view.screen,
       getWasm: () => this._wasm,
       getRenderer: () => this._renderer,
       getSelectionMode: () => this._selectionMode,
+      enterSelectionMode: (clientX, clientY) => {
+        if (!this.enterSelectionMode()) return false;
+        const rect = this._view.surface.getBoundingClientRect();
+        const x = Math.max(0, clientX - rect.left) * this._renderer.pixelScaleX;
+        const y = Math.max(0, clientY - rect.top) * this._renderer.pixelScaleY;
+        if (this._wasm.term_selection_word(x, y) === 1) this._scheduler.schedule(true);
+        cancelAnimationFrame(this._selectionFallbackFrame);
+        let attempts = 0;
+        const selectFromMirror = () => {
+          this._selectionFallbackFrame = null;
+          if (!this._selectionMode || this._textView.hasSelection()) return;
+          if (this._textView.selectWordAtPoint(clientX, clientY, { nearest: true })) return;
+          attempts += 1;
+          if (attempts < 4) this._selectionFallbackFrame = requestAnimationFrame(selectFromMirror);
+        };
+        this._selectionFallbackFrame = requestAnimationFrame(selectFromMirror);
+        return true;
+      },
       textView: this._textView,
       focusController: this._focusController,
       scheduleFrame: (immediate) => this._scheduler.schedule(immediate),
+      scrollWheel: (event, context) => this._viewportController.scrollWheel(event, context),
+      beginTouchScroll: (y) => this._viewportController.beginTouchScroll(y),
+      updateTouchScroll: (y, context) => this._viewportController.updateTouchScroll(y, context),
+      endTouchScroll: (y, context) => this._viewportController.endTouchScroll(y, context),
+      cancelTouchScroll: () => this._viewportController.cancelTouchScroll(),
+      cancelScrollGesture: () => this._viewportController.cancelScrollGesture(),
       onLink: (event) => this._linkEmitter.emit(event),
     });
 
@@ -355,6 +384,7 @@ export class Terminal {
   _coreDisposed(core) {
     this._cores.delete(core);
     if (this._core === core) {
+      this._viewportController?.cancelScrollGesture();
       this._core = null;
       this._wasm = null;
     }
@@ -417,6 +447,10 @@ export class Terminal {
     }
     this._state.cols = metadata.cols;
     this._state.rows = metadata.rows;
+    this._state.viewportMode = metadata.viewportMode;
+    this._state.scrollTotal = metadata.scrollTotal;
+    this._state.scrollOffset = metadata.scrollOffset;
+    this._state.scrollLength = metadata.scrollLength;
     if (this._renderingCore) this._renderingCore.frameSubmitted();
     else this._core?.frameSubmitted();
   }
@@ -516,7 +550,10 @@ export class Terminal {
   _input(text, paste) {
     const core = this._core;
     if (!core) throw new Error("terminal is not open");
-    if (text) this.clearSelection();
+    if (text) {
+      this._viewportController.cancelMomentum();
+      this.clearSelection();
+    }
     core._input(text, paste);
   }
 
@@ -551,7 +588,10 @@ export class Terminal {
   }
 
   _sendEncodedKey(code, key, action, mods, consumed) {
-    if (action !== 0 && !isModifierCode(code)) this.clearSelection();
+    if (action !== 0 && !isModifierCode(code)) {
+      this._viewportController.cancelMomentum();
+      this.clearSelection();
+    }
     const codepoint = key.codePointAt(0);
     const printable = codepoint !== undefined && key.length === (codepoint > 0xffff ? 2 : 1);
     const text = printable ? key : "";
@@ -649,6 +689,8 @@ export class Terminal {
 
   exitSelectionMode({ flush = true, restoreFocus = true } = {}) {
     if (!this._selectionMode) return false;
+    cancelAnimationFrame(this._selectionFallbackFrame);
+    this._selectionFallbackFrame = null;
     const shouldRestoreFocus = restoreFocus && this._restoreInputFocus;
     this._restoreInputFocus = false;
     this._textView.clearBrowserSelection(true);
@@ -725,6 +767,8 @@ export class Terminal {
     this._coarsePointer?.removeEventListener("change", this._coarsePointerListener);
     this._coarsePointerListener = null;
     for (const dispose of this._windowListeners.splice(0)) dispose();
+    cancelAnimationFrame(this._selectionFallbackFrame);
+    this._selectionFallbackFrame = null;
     this._pointerController?.dispose();
     this._inputController?.dispose();
     this._viewportController?.dispose();

@@ -29,21 +29,23 @@
         <h1>[ SESSIONS ]</h1>
         <output id="session-drawer-status"></output>
       </header>
-      <div id="session-tabs" role="tablist" aria-orientation="vertical" aria-label="Terminal sessions"></div>
-      <footer>
-        <button id="session-control" type="button">TAKE CONTROL</button>
-        <button id="session-new" type="button">NEW SESSION</button>
-      </footer>
+      <div id="session-list">
+        <div id="session-tabs" role="tablist" aria-orientation="vertical" aria-label="Terminal sessions"></div>
+        <button id="session-new" type="button" aria-label="New session" title="New session">
+          <svg aria-hidden="true" viewBox="0 0 24 24" width="24" height="24" focusable="false">
+            <path fill="currentColor" d="M11 5h2v6h6v2h-6v6h-2v-6H5v-2h6V5Z"/>
+          </svg>
+        </button>
+      </div>
     </aside>
     <div id="workspace">
       <main id="terminal">
     <section id="terminal-viewport" role="application" aria-label="Terminal">
-      <div id="scroll">
-        <div id="spacer"><div id="text-view" aria-hidden="true"></div></div>
-      </div>
+      <div id="surface"><div id="text-view" aria-hidden="true"></div></div>
       <textarea id="input" aria-label="Terminal input" aria-multiline="false" autocapitalize="off" autocomplete="off" autocorrect="off" spellcheck="false" inputmode="text" enterkeyhint="enter" rows="1"></textarea>
       <canvas id="screen" role="img" aria-label="Terminal screen"></canvas>
       <div id="composition" aria-hidden="true"></div>
+      <div id="scrollbar" role="scrollbar" aria-label="Terminal scrollback" aria-orientation="vertical" tabindex="0" hidden><div id="scrollbar-thumb" aria-hidden="true"></div></div>
       <output id="perf">—</output>
     </section>
     <footer id="terminal-chrome">
@@ -78,6 +80,10 @@
             <path fill="currentColor" d="M4 5h16a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2Zm0 2v10h16V7H4Zm2 2h2v2H6V9Zm4 0h2v2h-2V9Zm4 0h2v2h-2V9Zm4 0h2v2h-2V9ZM6 13h10v2H6v-2Zm12 0h2v2h-2v-2Z"/>
           </svg>
         </button>
+        <div id="terminal-identity" role="status">
+          <span id="terminal-identity-primary">bcwebmux</span>
+          <span id="terminal-identity-secondary" hidden></span>
+        </div>
         <span id="status" role="status" aria-label="disconnected" title="disconnected"></span>
         <button id="settings-button" type="button" aria-label="Open settings" title="Settings">
           <svg aria-hidden="true" viewBox="0 0 24 24" width="1em" height="1em" focusable="false">
@@ -119,7 +125,7 @@
       <header>
         <h1 id="session-rename-title">[ RENAME SESSION ]</h1>
       </header>
-      <label>NAME <input id="session-rename-input" name="name" autocomplete="off" maxlength="80" required></label>
+      <label>NAME <input id="session-rename-input" name="name" autocomplete="off" maxlength="80" placeholder="Terminal title used when empty"></label>
       <button id="session-rename-cancel" value="cancel" type="submit">CANCEL</button>
       <button id="session-rename-save" value="default" type="submit">SAVE</button>
     </form>

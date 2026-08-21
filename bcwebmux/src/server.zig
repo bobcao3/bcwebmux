@@ -53,6 +53,9 @@ pub fn main(init: std.process.Init) !void {
         );
         return;
     }
+    if (@import("builtin").mode == .Debug) {
+        std.debug.print("warning: server was built in Debug mode; Ghostty can be very slow in Debug mode\n", .{});
+    }
     const config = try parseArgs(args);
     const shell = config.shell orelse defaultShell();
     var origin_buffer: [512]u8 = undefined;
@@ -255,7 +258,6 @@ fn serveDiskAsset(app: *const App, request: *std.http.Server.Request, file: std.
         .content_length = stat.size,
         .respond_options = .{ .extra_headers = &headers },
     });
-    if (request.head.method == .HEAD) return response.end();
     var read_buffer: [16 * 1024]u8 = undefined;
     var file_reader = std.Io.File.Reader.initSize(file, app.io, &read_buffer, stat.size);
     const sent = try response.writer.sendFileAll(&file_reader, .limited(size));

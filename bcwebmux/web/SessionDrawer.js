@@ -2,6 +2,9 @@
 // Copyright (c) 2026 Cheng Cao
 
 const STORAGE_VERSION = "v1"
+const LONG_PRESS_MS = 550
+const LONG_PRESS_MOVE_PX = 10
+function lifecycleAction(metadata) { return metadata?.state === "creating" || metadata?.state === "running" || metadata?.state === "terminating" ? "terminate" : "delete" }
 
 function storageFor(value) {
   if (value !== undefined) return value
@@ -22,11 +25,11 @@ function makeDialog(doc, kind) {
   title.id = `${dialog.id}-title`
   title.textContent = destructive ? "Confirm session removal" : "Rename session"
   message.id = `${dialog.id}-message`
-  message.textContent = destructive ? "This action cannot be undone." : "Choose a name for this session."
+  message.textContent = destructive ? "This action cannot be undone." : "Set a name, or leave it empty to use the terminal title."
   form.addEventListener("submit", event => event.preventDefault())
   if (input) {
     input.type = "text"
-    input.maxLength = 120
+    input.maxLength = 80
     input.autocomplete = "off"
     input.setAttribute("aria-label", "Session name")
     form.append(input)
@@ -56,6 +59,9 @@ export class SessionDrawer {
   #disposed = false
   #focusBeforeOpen = null
   #confirm = null
+  #longPress = null
+  #suppressedClick = null
+  #contextSessionId = null
   #dom = []
   #subscriptions = []
   #tabs = new Map()
@@ -71,7 +77,6 @@ export class SessionDrawer {
       tabs: source.tabs ?? source.tablist ?? source.sessionTabs,
       newButton: source.newButton ?? source.createButton,
       toggleButton: source.toggleButton ?? source.hamburger,
-      controlButton: source.controlButton ?? source.sessionControl,
       workspace: source.workspace ?? source.terminal,
       backdrop: source.backdrop,
       liveRegion: source.liveRegion ?? source.status,
@@ -100,15 +105,17 @@ export class SessionDrawer {
     this.#refs.tabs.setAttribute("role", "tablist")
     this.#refs.tabs.setAttribute("aria-orientation", "vertical")
     if (this.#refs.drawer.id) this.#refs.tabs.setAttribute("aria-label", "Sessions")
+    this.#ensureContextMenu(doc)
     this.#ensureDialogs(doc)
     this.#add(this.#refs.newButton, "click", () => this.#create())
     this.#add(this.#refs.toggleButton, "click", () => this.toggle())
-    if (!this.#refs.controlButton?.form) this.#add(this.#refs.controlButton, "click", () => {
-        const id = this.#controller.activeSessionId
-        if (id == null) return
-        Promise.resolve(this.#controller.claim(id)).catch(error => this.#announce(error?.message || String(error)))
-      })
     this.#add(this.#refs.backdrop, "click", () => this.close())
+    this.#add(this.#refs.tabs, "pointerdown", event => this.#startLongPress(event))
+    this.#add(this.#refs.tabs, "pointermove", event => this.#moveLongPress(event))
+    this.#add(this.#refs.tabs, "pointerup", () => this.#cancelLongPress())
+    this.#add(this.#refs.tabs, "pointercancel", () => this.#cancelLongPress())
+    this.#add(this.#refs.tabs, "contextmenu", event => this.#openPointerContextMenu(event))
+    this.#add(this.#refs.tabs, "scroll", () => this.#closeContextMenu())
     this.#add(this.#refs.tabs, "keydown", event => this.#tabKey(event))
     this.#add(this.#refs.renameForm, "submit", event => {
       event.preventDefault()
@@ -126,9 +133,30 @@ export class SessionDrawer {
       this.#add(this.#refs.confirmSubmit, "click", () => this.#confirmAction())
     }
     this.#add(this.#refs.confirmCancel, "click", () => this.#closeDialog(this.#refs.confirmDialog))
+    this.#add(this.#refs.contextRename, "click", () => {
+      const id = this.#contextSessionId
+      if (!id) return
+      this.#closeContextMenu()
+      this.#tabs.get(id)?.focus()
+      this.#showRename(id)
+    })
+    this.#add(this.#refs.contextLifecycle, "click", () => {
+      const id = this.#contextSessionId
+      if (!id) return
+      const action = lifecycleAction(this.#controller.get(id))
+      this.#closeContextMenu()
+      this.#tabs.get(id)?.focus()
+      this.#showConfirm(id, action)
+    })
+    this.#add(this.#refs.contextMenu, "keydown", event => this.#contextMenuKey(event))
+    this.#add(doc, "pointerdown", event => {
+      if (!this.#refs.contextMenu.hidden && !this.#refs.contextMenu.contains(event.target)) this.#closeContextMenu()
+    })
+    this.#add(globalThis, "resize", () => this.#closeContextMenu())
     this.#add(this.#refs.renameDialog, "cancel", event => { event.preventDefault(); this.#closeDialog(this.#refs.renameDialog) })
     this.#add(this.#refs.confirmDialog, "cancel", event => { event.preventDefault(); this.#closeDialog(this.#refs.confirmDialog) })
     this.#add(globalThis, "keydown", event => {
+      if (event.key === "Escape" && !this.#refs.contextMenu.hidden) { event.preventDefault(); this.#closeContextMenu(true); return }
       if (event.key === "Escape" && this.#narrow && this.#open && !this.#refs.renameDialog?.open && !this.#refs.confirmDialog?.open) {
         event.preventDefault()
         this.close()
@@ -189,33 +217,22 @@ export class SessionDrawer {
     const tabs = this.#refs.tabs
     const focusedElement = tabs.ownerDocument.activeElement
     const focusedRowId = focusedElement?.closest?.(".session-row")?.dataset?.sessionId
-    const focusedControl = ["session-tab", "session-viewer", "session-rename", "session-lifecycle"].find(className => focusedElement?.closest?.(`.${className}`))
+    const focusedControl = ["session-tab", "session-rename", "session-lifecycle"].find(className => focusedElement?.closest?.(`.${className}`))
     const activeId = this.#controller.activeSessionId == null ? "" : String(this.#controller.activeSessionId)
     this.#tabs.clear()
     tabs.replaceChildren()
     const sessions = this.#controller.sessions ?? []
     const focusId = focusedControl === "session-tab" && sessions.some(metadata => String(metadata.id) === focusedRowId) ? focusedRowId : (sessions.some(metadata => String(metadata.id) === activeId) ? activeId : (sessions[0] ? String(sessions[0].id) : ""))
     for (const metadata of sessions) {
-      const id = String(metadata.id), row = tabs.ownerDocument.createElement("div"), tab = tabs.ownerDocument.createElement("button"), name = tabs.ownerDocument.createElement("span"), detail = tabs.ownerDocument.createElement("span"), unread = tabs.ownerDocument.createElement("span"), viewer = tabs.ownerDocument.createElement("button"), rename = tabs.ownerDocument.createElement("button"), remove = tabs.ownerDocument.createElement("button")
-      const label = String(metadata.title || metadata.name || `Session ${id.slice(0, 8)}`), attached = Boolean(this.#controller.isAttached?.(id)), controller = Boolean(this.#controller.isController?.(id)), disconnected = id === activeId && !attached, terminate = metadata.state === "running" || metadata.state === "terminating" || metadata.state === "creating"
-      row.className = "session-row"; row.dataset.sessionId = id; row.dataset.state = String(metadata.state || "unknown"); if (viewer) row.style.gridTemplateColumns = "1fr auto auto auto"
-      tab.type = "button"; tab.className = "session-tab"; tab.role = "tab"; tab.dataset.sessionId = id; tab.id = `session-tab-${id.replace(/[^a-zA-Z0-9_-]/g, "-")}`; tab.tabIndex = id === focusId ? 0 : -1; tab.setAttribute("aria-selected", String(id === activeId)); tab.setAttribute("aria-label", label)
+      const id = String(metadata.id), row = tabs.ownerDocument.createElement("div"), tab = tabs.ownerDocument.createElement("button"), copy = tabs.ownerDocument.createElement("div"), nameLine = tabs.ownerDocument.createElement("div"), name = tabs.ownerDocument.createElement("span"), detail = tabs.ownerDocument.createElement("span"), unread = tabs.ownerDocument.createElement("span"), rename = tabs.ownerDocument.createElement("button"), remove = tabs.ownerDocument.createElement("button")
+      const label = String(metadata.name || metadata.title || "Untitled terminal"), attached = Boolean(this.#controller.isAttached?.(id)), disconnected = id === activeId && !attached, action = lifecycleAction(metadata), terminate = action === "terminate"
+      row.className = id === activeId ? "session-row is-active" : "session-row"; row.dataset.sessionId = id; row.dataset.state = String(metadata.state || "unknown")
+      tab.type = "button"; tab.className = "session-tab"; tab.role = "tab"; tab.dataset.sessionId = id; tab.id = `session-tab-${id.replace(/[^a-zA-Z0-9_-]/g, "-")}`; tab.tabIndex = id === focusId ? 0 : -1; tab.setAttribute("aria-selected", String(id === activeId)); tab.setAttribute("aria-label", label); tab.setAttribute("aria-haspopup", "menu")
       if (this.#refs.workspace?.id) tab.setAttribute("aria-controls", this.#refs.workspace.id)
-      name.className = "session-name"; name.textContent = label; detail.className = "session-detail"; detail.textContent = `${metadata.state || "unknown"}${disconnected ? " · disconnected" : ""}${attached ? controller ? " · controller" : " · viewer" : ""}`; unread.className = metadata.unread ? "session-unread is-unread" : "session-unread"; unread.textContent = ""; unread.setAttribute("aria-label", metadata.unread ? "Unread activity" : "No unread activity"); tab.append(name, detail, unread)
-      viewer.type = "button"; viewer.className = "session-viewer"; viewer.style.minWidth = "44px"; viewer.style.minHeight = "44px"; viewer.textContent = disconnected ? "…" : controller ? "●" : attached ? "↯" : "›"; viewer.setAttribute("aria-label", disconnected ? `Reconnect ${label}` : controller ? `Controlling ${label}` : attached ? `Take control of ${label}` : `View ${label}`); viewer.disabled = controller
-      rename.type = "button"; rename.className = "session-rename"; rename.style.minWidth = "44px"; rename.style.minHeight = "44px"; rename.textContent = "✎"; rename.setAttribute("aria-label", `Rename ${label}`)
+      copy.className = "session-copy"; nameLine.className = "session-name-line"; name.className = "session-name"; name.textContent = label; detail.className = "session-detail"; detail.id = `${tab.id}-detail`; detail.textContent = `${metadata.state || "unknown"}${disconnected ? " · disconnected" : ""}`; unread.className = metadata.unread ? "session-unread is-unread" : "session-unread"; unread.textContent = ""; unread.setAttribute("aria-label", metadata.unread ? "Unread activity" : "No unread activity"); tab.setAttribute("aria-describedby", detail.id)
+      rename.type = "button"; rename.className = "session-rename"; rename.style.minWidth = "44px"; rename.style.minHeight = "44px"; rename.textContent = "✎"; rename.setAttribute("aria-label", `Rename ${label}`); rename.setAttribute("title", `Rename ${label}`)
       remove.type = "button"; remove.className = "session-lifecycle"; remove.style.minWidth = "44px"; remove.style.minHeight = "44px"; remove.textContent = terminate ? "■" : "×"; remove.setAttribute("aria-label", `${terminate ? "Terminate" : "Remove"} ${label}`); remove.disabled = metadata.state === "creating" || metadata.state === "terminating"
-      row.append(tab, viewer, rename, remove); tabs.append(row); this.#tabs.set(id, tab); tab.addEventListener("click", () => this.#select(id)); viewer.addEventListener("click", event => { event.stopPropagation(); this.#view(id, !disconnected && attached && !controller) }); rename.addEventListener("click", event => { event.stopPropagation(); this.#showRename(id) }); remove.addEventListener("click", event => { event.stopPropagation(); this.#showConfirm(id, terminate ? "terminate" : "delete") })
-    }
-    if (this.#refs.controlButton) {
-      const active = sessions.find(metadata => String(metadata.id) === activeId)
-      const attached = active && Boolean(this.#controller.isAttached?.(activeId))
-      const controller = attached && Boolean(this.#controller.isController?.(activeId))
-      const controlLabel = controller ? "CONTROLLER" : attached ? "TAKE CONTROL" : "RECONNECT"
-      this.#refs.controlButton.textContent = controlLabel
-      this.#refs.controlButton.setAttribute("aria-label", controlLabel)
-      this.#refs.controlButton.dataset.controller = String(controller)
-      this.#refs.controlButton.disabled = !active || controller
+      nameLine.append(name, rename); copy.append(nameLine, detail, unread); row.append(tab, copy, remove); tabs.append(row); this.#tabs.set(id, tab); tab.addEventListener("click", event => { const suppressed = this.#suppressedClick; if (suppressed?.id === id && suppressed.until > Date.now()) { event.preventDefault(); event.stopPropagation(); this.#suppressedClick = null; return } this.#suppressedClick = null; this.#closeContextMenu(); this.#select(id) }); rename.addEventListener("click", event => { event.stopPropagation(); this.#showRename(id) }); remove.addEventListener("click", event => { event.stopPropagation(); this.#showConfirm(id, action) })
     }
     if (this.#refs.workspace && activeId) {
       const tab = this.#tabs.get(activeId)
@@ -254,6 +271,7 @@ export class SessionDrawer {
 
   #apply(open, persist) {
     this.#open = Boolean(open)
+    if (!this.#open) this.#closeContextMenu()
     if (persist) {
       this.#preference = this.#open
       if (this.#storage && this.#storageKey) {
@@ -313,18 +331,18 @@ export class SessionDrawer {
     Promise.resolve(this.#controller.switchTo(id)).catch(error => this.#announce(error?.message || String(error)))
   }
 
-  #view(id, takeControl) {
-    if (this.#narrow && this.#open) { this.#apply(false, false); this.#restoreFocus() }
-    const operation = takeControl ? this.#controller.claim(id) : this.#controller.switchTo(id)
-    Promise.resolve(operation).catch(error => this.#announce(error?.message || String(error)))
-  }
-
   #tabKey(event) {
     const tabs = [...this.#tabs.values()]
     const currentTab = event.target.closest(".session-tab")
     if (!currentTab || !this.#refs.tabs.contains(currentTab)) return
     const current = tabs.indexOf(currentTab)
     if (current < 0) return
+    if (event.key === "ContextMenu" || (event.key === "F10" && event.shiftKey)) {
+      event.preventDefault()
+      const rect = currentTab.getBoundingClientRect()
+      this.#showContextMenu(currentTab.dataset.sessionId, rect.left + 16, rect.top + 16)
+      return
+    }
     let next = current
     if (event.key === "ArrowUp") next = (current + tabs.length - 1) % tabs.length
     else if (event.key === "ArrowDown") next = (current + 1) % tabs.length
@@ -337,10 +355,114 @@ export class SessionDrawer {
     tabs[next]?.focus()
   }
 
+  #startLongPress(event) {
+    this.#cancelLongPress()
+    if (event.pointerType === "mouse" || !event.isPrimary || event.button !== 0) return
+    const row = event.target.closest(".session-row")
+    if (!row || !this.#refs.tabs.contains(row) || event.target.closest(".session-rename, .session-lifecycle")) return
+    const id = String(row.dataset.sessionId)
+    const press = { pointerId: event.pointerId, id, x: event.clientX, y: event.clientY, timeout: null }
+    press.timeout = globalThis.setTimeout(() => {
+      if (this.#longPress !== press) return
+      this.#longPress = null
+      this.#suppressedClick = { id, until: Date.now() + 1000 }
+      this.#showContextMenu(id, press.x, press.y)
+    }, LONG_PRESS_MS)
+    this.#longPress = press
+  }
+
+  #moveLongPress(event) {
+    const press = this.#longPress
+    if (!press || press.pointerId !== event.pointerId) return
+    if (Math.abs(event.clientX - press.x) > LONG_PRESS_MOVE_PX || Math.abs(event.clientY - press.y) > LONG_PRESS_MOVE_PX) this.#cancelLongPress()
+  }
+
+  #cancelLongPress() {
+    if (!this.#longPress) return
+    globalThis.clearTimeout(this.#longPress.timeout)
+    this.#longPress = null
+  }
+
+  #openPointerContextMenu(event) {
+    const row = event.target.closest(".session-row")
+    if (!row || !this.#refs.tabs.contains(row)) return
+    event.preventDefault()
+    this.#cancelLongPress()
+    const id = String(row.dataset.sessionId)
+    if (event.pointerType !== "mouse") this.#suppressedClick = { id, until: Date.now() + 1000 }
+    this.#showContextMenu(id, event.clientX, event.clientY)
+  }
+
+  #showContextMenu(id, x, y) {
+    const metadata = this.#controller.get(id)
+    const menu = this.#refs.contextMenu
+    if (!metadata || !menu) return
+    this.#closeContextMenu()
+    const sessionId = String(id)
+    const action = lifecycleAction(metadata)
+    const label = String(metadata.name || metadata.title || id)
+    this.#contextSessionId = sessionId
+    this.#refs.contextRename.textContent = "RENAME"
+    this.#refs.contextRename.setAttribute("aria-label", `Rename ${label}`)
+    this.#refs.contextLifecycle.textContent = action === "terminate" ? "TERMINATE" : "REMOVE"
+    this.#refs.contextLifecycle.setAttribute("aria-label", `${action === "terminate" ? "Terminate" : "Remove"} ${label}`)
+    this.#refs.contextLifecycle.disabled = metadata.state === "creating" || metadata.state === "terminating"
+    menu.hidden = false
+    this.#tabs.get(sessionId)?.setAttribute("aria-expanded", "true")
+    menu.style.position = "fixed"
+    menu.style.left = "0px"
+    menu.style.top = "0px"
+    const rect = menu.getBoundingClientRect()
+    const viewportWidth = menu.ownerDocument.defaultView?.innerWidth ?? globalThis.innerWidth
+    const viewportHeight = menu.ownerDocument.defaultView?.innerHeight ?? globalThis.innerHeight
+    const left = Math.max(8, Math.min(x, viewportWidth - rect.width - 8))
+    const top = Math.max(8, Math.min(y + rect.height > viewportHeight ? y - rect.height : y, viewportHeight - rect.height - 8))
+    menu.style.left = `${left}px`
+    menu.style.top = `${top}px`
+    this.#refs.contextRename.focus({ preventScroll: true })
+  }
+
+  #closeContextMenu(restoreFocus = false) {
+    const menu = this.#refs.contextMenu
+    if (!menu) return
+    const id = this.#contextSessionId
+    this.#tabs.get(id)?.removeAttribute("aria-expanded")
+    menu.hidden = true
+    menu.style.removeProperty("left")
+    menu.style.removeProperty("top")
+    this.#contextSessionId = null
+    if (restoreFocus) this.#tabs.get(id)?.focus({ preventScroll: true })
+  }
+
+  #contextMenuKey(event) {
+    const menu = this.#refs.contextMenu
+    const buttons = [...menu.querySelectorAll('button[role="menuitem"]:not(:disabled)')]
+    if (!buttons.length) return
+    if (event.key === "Escape") {
+      event.preventDefault()
+      event.stopPropagation()
+      this.#closeContextMenu(true)
+      return
+    }
+    if (event.key === "Tab") {
+      this.#closeContextMenu()
+      return
+    }
+    let next
+    const current = buttons.indexOf(event.target.closest('button[role="menuitem"]'))
+    if (event.key === "ArrowDown") next = (current + 1 + buttons.length) % buttons.length
+    else if (event.key === "ArrowUp") next = (current - 1 + buttons.length) % buttons.length
+    else if (event.key === "Home") next = 0
+    else if (event.key === "End") next = buttons.length - 1
+    else return
+    event.preventDefault()
+    buttons[next]?.focus({ preventScroll: true })
+  }
+
   #showRename(id) {
     const metadata = this.#controller.get(id)
     if (!metadata) return
-    this.#refs.renameInput.value = String(metadata.name || metadata.title || "")
+    this.#refs.renameInput.value = String(metadata.name ?? "")
     this.#refs.renameDialog.dataset.sessionId = id
     this.#refs.renameDialog.hidden = false
     try { this.#refs.renameDialog.showModal?.() } catch {}
@@ -351,9 +473,8 @@ export class SessionDrawer {
     const id = this.#refs.renameDialog.dataset.sessionId
     if (!id) return
     const value = this.#refs.renameInput.value.trim()
-    if (!value) return this.#announce("A session name is required")
     this.#closeDialog(this.#refs.renameDialog)
-    try { await this.#controller.rename(id, value); this.#announce("Session renamed") }
+    try { await this.#controller.rename(id, value); this.#announce(value ? "Session renamed" : "Session name cleared") }
     catch (error) { this.#announce(error?.message || String(error)) }
   }
 
@@ -363,7 +484,7 @@ export class SessionDrawer {
     this.#confirm = { id, action }
     this.#refs.confirmDialog.dataset.sessionId = id
     this.#refs.confirmDialog.dataset.action = action
-    this.#refs.confirmMessage.textContent = `${action === "terminate" ? "Terminate" : "Remove"} ${String(metadata.title || metadata.name || id)}? This action cannot be undone.`
+    this.#refs.confirmMessage.textContent = `${action === "terminate" ? "Terminate" : "Remove"} ${String(metadata.name || metadata.title || id)}? This action cannot be undone.`
     this.#refs.confirmSubmit.textContent = action === "terminate" ? "TERMINATE" : "REMOVE"
     this.#refs.confirmDialog.hidden = false
     try { this.#refs.confirmDialog.showModal?.() } catch {}
@@ -390,6 +511,26 @@ export class SessionDrawer {
     if (this.#narrow) this.close()
     try { await this.#controller.create(); this.#announce("Session created") }
     catch (error) { this.#announce(error?.message || String(error)) }
+  }
+
+  #ensureContextMenu(doc) {
+    const menu = doc.createElement("div")
+    const rename = doc.createElement("button")
+    const lifecycle = doc.createElement("button")
+    menu.id = "session-context-menu"
+    menu.setAttribute("role", "menu")
+    menu.setAttribute("aria-label", "Session actions")
+    menu.hidden = true
+    rename.type = "button"
+    rename.setAttribute("role", "menuitem")
+    rename.className = "session-context-rename"
+    lifecycle.type = "button"
+    lifecycle.setAttribute("role", "menuitem")
+    lifecycle.className = "session-context-lifecycle"
+    menu.append(rename, lifecycle)
+    doc.body.append(menu)
+    this.#ownedDialogs.push(menu)
+    Object.assign(this.#refs, { contextMenu: menu, contextRename: rename, contextLifecycle: lifecycle })
   }
 
   #ensureDialogs(doc) {
@@ -431,6 +572,8 @@ export class SessionDrawer {
   dispose() {
     if (this.#disposed) return
     this.#disposed = true
+    this.#cancelLongPress()
+    this.#closeContextMenu()
     this.#renderQueued = false
     for (const item of this.#dom.splice(0)) item.target.removeEventListener?.(item.type, item.listener)
     for (const subscription of this.#subscriptions.splice(0)) subscription?.dispose?.()

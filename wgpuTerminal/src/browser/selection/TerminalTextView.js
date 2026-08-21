@@ -4,7 +4,12 @@
 const ROW_SIZE = 32;
 const CELL_SIZE = 4;
 const ROW_WRAP = 1;
+const COARSE_SELECTION_HIT_SLOP = 22;
 const decoder = new TextDecoder("utf-8", { fatal: true });
+const GHOSTTY_WORD_BOUNDARIES = new Set([
+  0x00, 0x20, 0x09, 0x22, 0x27, 0x2502, 0x60, 0x7c, 0x3a, 0x3b, 0x2c,
+  0x5b, 0x5d, 0x7b, 0x7d, 0x28, 0x29, 0x3c, 0x3e, 0x24,
+]);
 
 export class TerminalTextView {
   constructor(element, callbacks) {
@@ -177,6 +182,95 @@ export class TerminalTextView {
         pointer > memory.byteLength || length > memory.byteLength - pointer) {
       throw new Error(`invalid ${label}`);
     }
+  }
+
+  selectWordAtPoint(clientX, clientY, options = {}) {
+    const target = document.elementFromPoint(clientX, clientY);
+    let cell = target?.closest?.(".text-cell");
+    let row = cell?.closest?.(".text-row");
+    if (!cell || !row || cell.parentElement !== row || row.parentElement !== this.element) {
+      cell = null;
+      row = null;
+    }
+    if (cell && options.nearest === true && !(cell.textContent || "").trim()) {
+      cell = null;
+      row = null;
+    }
+    if (!cell && options.nearest === true) {
+      const style = getComputedStyle(this.element);
+      const cellWidth = Number.parseFloat(style.getPropertyValue("--cell-width"));
+      const cellHeight = Number.parseFloat(style.getPropertyValue("--cell-height"));
+      const viewRect = this.element.getBoundingClientRect();
+      if (Number.isFinite(cellWidth) && cellWidth > 0 &&
+          Number.isFinite(cellHeight) && cellHeight > 0) {
+        let nearestDistance = Infinity;
+        for (const candidateRow of this.element.children) {
+          if (!candidateRow.classList.contains("text-row") ||
+              candidateRow.parentElement !== this.element) continue;
+          const rowIndex = Number(candidateRow.dataset.row);
+          if (!Number.isInteger(rowIndex)) continue;
+          const top = viewRect.top + rowIndex * cellHeight;
+          const bottom = top + cellHeight;
+          const dy = clientY < top ? top - clientY : clientY > bottom ? clientY - bottom : 0;
+          if (dy > COARSE_SELECTION_HIT_SLOP) continue;
+          for (const candidateCell of candidateRow.children) {
+            if (!candidateCell.classList.contains("text-cell") ||
+                !(candidateCell.textContent || "").trim()) continue;
+            const start = Number(candidateCell.dataset.start);
+            const end = Number(candidateCell.dataset.end);
+            if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) continue;
+            const left = viewRect.left + start * cellWidth;
+            const right = viewRect.left + end * cellWidth;
+            const dx = clientX < left ? left - clientX : clientX > right ? clientX - right : 0;
+            const distance = dx * dx + dy * dy;
+            if (distance <= COARSE_SELECTION_HIT_SLOP ** 2 && distance < nearestDistance) {
+              nearestDistance = distance;
+              cell = candidateCell;
+              row = candidateRow;
+            }
+          }
+        }
+      }
+    }
+    if (!cell || !row) return false;
+    if (cell.parentElement !== row || row.parentElement !== this.element) {
+      return false;
+    }
+    const cellText = cell.textContent || "";
+    if (!cellText) return false;
+
+    let cellIndex = -1;
+    for (let index = 0; index < row.children.length; index += 1) {
+      if (row.children[index] === cell) {
+        cellIndex = index;
+        break;
+      }
+    }
+    if (cellIndex < 0) return false;
+    const isBoundary = (candidate) =>
+      GHOSTTY_WORD_BOUNDARIES.has((candidate.textContent || "").codePointAt(0));
+    const boundary = isBoundary(cell);
+    let firstIndex = cellIndex;
+    let lastIndex = cellIndex;
+    while (firstIndex > 0 && isBoundary(row.children[firstIndex - 1]) === boundary) {
+      firstIndex -= 1;
+    }
+    while (lastIndex + 1 < row.children.length &&
+           isBoundary(row.children[lastIndex + 1]) === boundary) {
+      lastIndex += 1;
+    }
+    const firstText = row.children[firstIndex].firstChild;
+    const lastText = row.children[lastIndex].firstChild;
+    if (!firstText || !lastText) return false;
+
+    const range = document.createRange();
+    range.setStart(firstText, 0);
+    range.setEnd(lastText, lastText.length);
+    const selection = document.getSelection();
+    if (!selection) return false;
+    selection.removeAllRanges();
+    selection.addRange(range);
+    return true;
   }
 
   queueSelectionSync() {

@@ -13,6 +13,7 @@ const Handler = ghostty.TerminalStream.Handler;
 const staging_capacity = 64 * 1024;
 const continuation_capacity = 1024 * 1024;
 const snapshot_capacity = 16 * 1024 * 1024;
+const default_selection_word_boundaries = [_]u21{ 0, ' ', '\t', '\'', '"', '│', '`', '|', ':', ';', ',', '(', ')', '[', ']', '{', '}', '<', '>', '$' };
 
 terminal: ?ghostty.Terminal = null,
 stream: ?ghostty.TerminalStream = null,
@@ -267,14 +268,10 @@ pub fn term_reserve(self: *Self, len: u32) u32 {
 
 pub fn term_feed(self: *Self, len: u32) i32 {
     if (self.busy or len > self.staging.len) return 0;
-    const terminal_value = if (self.terminal) |*t| t else return 0;
     const value = if (self.stream) |*s| s else return 0;
-    const bar = terminal_value.screens.active.pages.scrollbar();
-    const follow_output = bar.offset >= bar.total -| bar.len;
     self.busy = true;
     defer self.finishBusy();
     value.nextSlice(self.staging[0..len]);
-    if (follow_output) terminal_value.scrollViewport(.bottom);
     return 1;
 }
 
@@ -307,10 +304,11 @@ pub fn term_set_render_metrics(self: *Self, cell_width: u16, cell_height: u16, g
 
 pub fn term_resize_canonical(self: *Self, cols: u16, rows: u16, cell_width: u16, cell_height: u16) i32 {
     if (self.busy or cols == 0 or rows == 0) return 0;
-    const value = if (self.stream) |*s| s else return 0;
+    const stream_value = if (self.stream) |*s| s else return 0;
+    if (self.terminal == null) return 0;
     self.busy = true;
     defer self.finishBusy();
-    value.handler.resize(.{
+    stream_value.handler.resize(.{
         .cols = cols,
         .rows = rows,
         .cell_size_px = .{ .width = @max(1, @as(u32, cell_width)), .height = @max(1, @as(u32, cell_height)) },
@@ -324,7 +322,84 @@ pub fn term_scroll_row(self: *Self, row: u32) i32 {
     const value = if (self.terminal) |*t| t else return 0;
     const bar = value.screens.active.pages.scrollbar();
     const max_row = bar.total -| bar.len;
-    value.scrollViewport(.{ .row = @intCast(@min(row, max_row)) });
+    const clamped = @min(row, max_row);
+    value.scrollViewport(if (clamped == max_row) .bottom else .{ .row = @intCast(clamped) });
+    return 1;
+}
+
+pub fn term_scroll_delta(self: *Self, rows: i32) i32 {
+    if (self.busy) return 0;
+    const value = if (self.terminal) |*t| t else return 0;
+    value.scrollViewport(.{ .delta = @intCast(rows) });
+    return 1;
+}
+
+// Return values: viewport=1, mouse-report=2, alternate-scroll=3.
+pub fn term_scroll_input(self: *Self, rows: i32, mods_raw: u16, x: f32, y: f32) i32 {
+    if (self.busy) return 0;
+    const value = if (self.terminal) |*t| t else return 0;
+    if (rows == 0) return 1;
+
+    self.busy = true;
+    defer self.finishBusy();
+
+    const direction: i32 = if (rows > 0) 1 else -1;
+    var remaining: u32 = if (rows > 0)
+        @intCast(rows)
+    else
+        @as(u32, @intCast(-(rows + 1))) + 1;
+
+    if (value.screens.active_key == .alternate and
+        value.flags.mouse_event == .none and
+        value.modes.get(.mouse_alternate_scroll))
+    {
+        self.selection_gesture.reset(value);
+        value.screens.active.clearSelection();
+        const sequence = if (value.modes.get(.cursor_keys))
+            (if (direction > 0) "\x1bOB" else "\x1bOA")
+        else
+            (if (direction > 0) "\x1b[B" else "\x1b[A");
+        while (remaining != 0) : (remaining -= 1) {
+            if (user_write(sequence.ptr, sequence.len) != 1) return 0;
+        }
+        return 3;
+    }
+
+    if (value.flags.mouse_event != .none) {
+        self.selection_gesture.reset(value);
+        value.screens.active.clearSelection();
+        var options = ghostty.input.MouseEncodeOptions.fromTerminal(value, .{
+            .screen = .{
+                .width = value.cols * self.cell_width_px,
+                .height = value.rows * self.cell_height_px,
+            },
+            .cell = .{ .width = self.cell_width_px, .height = self.cell_height_px },
+            .padding = .{},
+        });
+        options.last_cell = &self.last_mouse_cell;
+        while (remaining != 0) : (remaining -= 1) {
+            var encoded: [128]u8 = undefined;
+            var writer: std.Io.Writer = .fixed(&encoded);
+            ghostty.input.encodeMouse(&writer, .{
+                .action = .press,
+                .button = if (direction < 0) .four else .five,
+                .mods = @bitCast(mods_raw & 0x3f),
+                .pos = .{ .x = x, .y = y },
+            }, options) catch return 0;
+            const data = writer.buffered();
+            if (user_write(data.ptr, data.len) != 1) return 0;
+        }
+        return 2;
+    }
+
+    value.scrollViewport(.{ .delta = @intCast(rows) });
+    return 1;
+}
+
+pub fn term_scroll_bottom(self: *Self) i32 {
+    if (self.busy) return 0;
+    const value = if (self.terminal) |*t| t else return 0;
+    value.scrollViewport(.bottom);
     return 1;
 }
 
@@ -333,12 +408,14 @@ pub fn term_text(self: *Self, len: u32, paste_mode: u32) i32 {
     const value = if (self.terminal) |*t| t else return 0;
     self.busy = true;
     defer self.finishBusy();
-    scrollBottom(value);
     const data = self.staging[0..len];
     if (paste_mode == 0) {
         if (data.len == 0) return 1;
+        scrollBottom(value);
         return user_write(data.ptr, data.len);
     }
+    if (data.len == 0) return 1;
+    scrollBottom(value);
     const slices = ghostty.input.encodePaste(data, .fromTerminal(value));
     for (slices) |slice| {
         if (slice.len == 0) continue;
@@ -359,7 +436,6 @@ pub fn term_key(self: *Self, action_raw: u8, mods_raw: u16, consumed_raw: u16, c
     const consumed: ghostty.input.KeyMods = @bitCast(consumed_raw & 0x3f);
     self.busy = true;
     defer self.finishBusy();
-    scrollBottom(value);
     var encoded: [256]u8 = undefined;
     var writer: std.Io.Writer = .fixed(&encoded);
     ghostty.input.encodeKey(&writer, .{
@@ -372,6 +448,7 @@ pub fn term_key(self: *Self, action_raw: u8, mods_raw: u16, consumed_raw: u16, c
     }, .fromTerminal(value)) catch return 0;
     const data = writer.buffered();
     if (data.len == 0) return 1;
+    scrollBottom(value);
     return user_write(data.ptr, data.len);
 }
 
@@ -499,6 +576,22 @@ pub fn term_selection(self: *Self, action_raw: u8, x: f32, y: f32) i32 {
         },
         else => unreachable,
     }
+    return 1;
+}
+
+pub fn term_selection_word(self: *Self, x: f32, y: f32) i32 {
+    if (self.busy) return 0;
+    const value = if (self.terminal) |*t| t else return 0;
+    const pin = self.selectionPin(value, x, y) orelse return 0;
+    const screen = value.screens.active;
+    self.busy = true;
+    defer self.finishBusy();
+    self.selection_gesture.reset(value);
+    const selection = screen.selectWord(pin, &default_selection_word_boundaries) orelse {
+        screen.clearSelection();
+        return 0;
+    };
+    screen.select(selection) catch return 0;
     return 1;
 }
 
@@ -659,8 +752,7 @@ fn cursorViewportEqual(a: anytype, b: anytype) bool {
 }
 
 fn scrollBottom(value: *ghostty.Terminal) void {
-    const bar = value.screens.active.pages.scrollbar();
-    value.scrollViewport(.{ .row = @intCast(bar.total -| bar.len) });
+    value.scrollViewport(.bottom);
 }
 
 fn owner(handler: *Handler) *Self {

@@ -177,7 +177,7 @@ fn respondCreate(registry: *Registry, request: *std.http.Server.Request) !void {
         }
     else
         Session.Geometry{ .cols = 80, .rows = 24, .cell_width_px = 8, .cell_height_px = 16 };
-    const name = parsed.value.name orelse "Shell";
+    const name = parsed.value.name orelse "";
     const request_hash = sha256(body);
     const result = registry.create(.{
         .profile = parsed.value.profile,

@@ -5,16 +5,17 @@ export const TERMINAL_VIEW_ROLE_ATTRIBUTE = "data-terminal-role";
 export const TERMINAL_VIEW_CLASS = "wgpu-terminal";
 export const TERMINAL_VIEW_ROLES = Object.freeze({
   viewport: "viewport",
-  scroll: "scroll",
-  spacer: "spacer",
+  surface: "surface",
   textView: "text-view",
   input: "input",
   screen: "screen",
   composition: "composition",
+  scrollbar: "scrollbar",
+  scrollbarThumb: "scrollbar-thumb",
 });
 
-const ELEMENT_NAMES = Object.freeze(["viewport", "scroll", "spacer", "textView", "input", "screen", "composition"]);
-const CHILD_NAMES = Object.freeze(["scroll", "input", "screen", "composition"]);
+const ELEMENT_NAMES = Object.freeze(["viewport", "surface", "textView", "input", "screen", "composition", "scrollbar", "scrollbarThumb"]);
+const CHILD_NAMES = Object.freeze(["surface", "input", "screen", "composition", "scrollbar"]);
 function isNode(value, tagName = null) {
   return value !== null && typeof value === "object" && value.nodeType === 1 &&
     (!tagName || String(value.tagName).toLowerCase() === tagName);
@@ -29,13 +30,13 @@ function assertElements(elements) {
   if (!elements || typeof elements !== "object" || Array.isArray(elements)) {
     throw new TypeError("terminal elements are required");
   }
-  const tags = { viewport: "section", scroll: "div", spacer: "div", textView: "div",
-    input: "textarea", screen: "canvas", composition: "div" };
+  const tags = { viewport: "section", surface: "div", textView: "div",
+    input: "textarea", screen: "canvas", composition: "div", scrollbar: "div", scrollbarThumb: "div" };
   for (const name of ELEMENT_NAMES) assertNode(elements[name], name, tags[name]);
-  const { viewport, scroll, spacer, textView } = elements;
+  const { viewport, surface, textView, scrollbar, scrollbarThumb } = elements;
   if (!CHILD_NAMES.every((name) => Array.from(viewport.children).includes(elements[name])) ||
-      scroll.children.length !== 1 || scroll.children[0] !== spacer ||
-      spacer.children.length !== 1 || spacer.children[0] !== textView) {
+      surface.children.length !== 1 || surface.children[0] !== textView ||
+      scrollbar.children.length !== 1 || scrollbar.children[0] !== scrollbarThumb) {
     throw new Error("terminal elements have an invalid structure");
   }
   return elements;
@@ -72,8 +73,7 @@ export class TerminalView {
       this.viewport = create("section", "viewport");
       this.viewport.setAttribute("role", "application");
       this.viewport.setAttribute("aria-label", "Terminal");
-      this.scroll = create("div", "scroll");
-      this.spacer = create("div", "spacer");
+      this.surface = create("div", "surface");
       this.textView = create("div", "textView");
       this.textView.setAttribute("aria-hidden", "true");
       this.input = create("textarea", "input");
@@ -91,9 +91,17 @@ export class TerminalView {
       this.screen.setAttribute("aria-label", "Terminal screen");
       this.composition = create("div", "composition");
       this.composition.setAttribute("aria-hidden", "true");
-      this.spacer.append(this.textView);
-      this.scroll.append(this.spacer);
-      this.viewport.append(this.scroll, this.input, this.screen, this.composition);
+      this.scrollbar = create("div", "scrollbar");
+      this.scrollbar.setAttribute("role", "scrollbar");
+      this.scrollbar.setAttribute("aria-label", "Terminal scrollback");
+      this.scrollbar.setAttribute("aria-orientation", "vertical");
+      this.scrollbar.setAttribute("tabindex", "0");
+      this.scrollbar.hidden = true;
+      this.scrollbarThumb = create("div", "scrollbarThumb");
+      this.scrollbarThumb.setAttribute("aria-hidden", "true");
+      this.surface.append(this.textView);
+      this.scrollbar.append(this.scrollbarThumb);
+      this.viewport.append(this.surface, this.input, this.screen, this.composition, this.scrollbar);
       parent.append(this.viewport);
       this.elements = Object.freeze(Object.fromEntries(ELEMENT_NAMES.map((name) => [name, this[name]])));
     }

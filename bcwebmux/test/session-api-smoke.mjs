@@ -54,7 +54,6 @@ try {
 
   const createBody = {
     profile: "shell",
-    name: "First session",
     geometry: { cols: 90, rows: 30 },
   };
   const createdResponse = await createSession("create-first", createBody);
@@ -62,6 +61,7 @@ try {
   assert.equal(createdResponse.headers.get("cache-control"), "no-store");
   assert.equal(createdResponse.headers.get("idempotency-replayed"), "false");
   const first = await createdResponse.json();
+  assert.equal(first.name, "");
   assert.match(first.id, /^[0-9a-f-]{36}$/);
   assert.match(first.generation, /^[0-9a-f-]{36}$/);
   assert.equal(first.state, "running");

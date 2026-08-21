@@ -114,6 +114,7 @@ class MockApi {
     this.listOverride = null;
     this.renameOverride = null;
     this.nextId = values.length + 1;
+    this.lastCreateOptions = null;
   }
 
   async info() { return { protocol: "bcw.sessions", serverInstance: "contract-server", principal: "contract-user" }; }
@@ -123,8 +124,9 @@ class MockApi {
   }
   async get(id) { return this.values.get(id); }
   async create(options) {
+    this.lastCreateOptions = { ...options };
     this.revision += 1;
-    const value = metadata(`session-${this.nextId++}`, this.revision, options.name ?? "Shell");
+    const value = metadata(`session-${this.nextId++}`, this.revision, options.name ?? "");
     this.values.set(value.id, value);
     return { ...value };
   }
@@ -155,6 +157,14 @@ async function harness(values, coreLimit = 4) {
   for (const name of ["b", "c", "d", "e"]) await controller.create({ name });
   assert.ok(terminal.maxLive <= 4, `transient live core count reached ${terminal.maxLive}`);
   assert.ok(controller.coreCount <= 4);
+  controller.dispose();
+}
+
+{
+  const { controller, api } = await harness([]);
+  const session = await controller.create({});
+  assert.equal(session.name, "");
+  assert.equal(api.lastCreateOptions.name, "");
   controller.dispose();
 }
 

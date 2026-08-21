@@ -471,7 +471,7 @@ fn newerFirst(_: void, a: Session.Metadata, b: Session.Metadata) bool {
 }
 
 fn validName(name: []const u8, max_bytes: usize) bool {
-    if (name.len == 0 or name.len > max_bytes or !std.unicode.utf8ValidateSlice(name)) return false;
+    if (name.len > max_bytes or !std.unicode.utf8ValidateSlice(name)) return false;
     for (name) |byte| if (byte < 0x20 or byte == 0x7f) return false;
     return true;
 }

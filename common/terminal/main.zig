@@ -98,6 +98,18 @@ export fn term_scroll_row(row: u32) i32 {
     return terminal.term_scroll_row(row);
 }
 
+export fn term_scroll_delta(rows: i32) i32 {
+    return terminal.term_scroll_delta(rows);
+}
+
+export fn term_scroll_input(rows: i32, mods_raw: u16, x: f32, y: f32) i32 {
+    return terminal.term_scroll_input(rows, mods_raw, x, y);
+}
+
+export fn term_scroll_bottom() i32 {
+    return terminal.term_scroll_bottom();
+}
+
 export fn term_text(len: u32, paste_mode: u32) i32 {
     return terminal.term_text(len, paste_mode);
 }
@@ -112,6 +124,10 @@ export fn term_mouse(action_raw: u8, button_raw: u8, mods_raw: u16, x: f32, y: f
 
 export fn term_selection(action_raw: u8, x: f32, y: f32) i32 {
     return terminal.term_selection(action_raw, x, y);
+}
+
+export fn term_selection_word(x: f32, y: f32) i32 {
+    return terminal.term_selection_word(x, y);
 }
 
 export fn term_selection_clear() i32 {

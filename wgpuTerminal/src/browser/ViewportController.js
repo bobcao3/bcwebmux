@@ -1,12 +1,14 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Cheng Cao
 
+import { RowAdjustment } from "./RowAdjustment.js";
+import { SemanticScrollbar } from "./SemanticScrollbar.js";
+import { ScrollGestureController } from "./ScrollGestureController.js";
+
 export class ViewportController {
   constructor(options) {
     this.terminalElement = options.terminalElement;
     this.viewport = options.viewport;
-    this.scroll = options.scroll;
-    this.spacer = options.spacer;
     this.screen = options.screen;
     this.getWasm = options.getWasm;
     this.getRenderer = options.getRenderer;
@@ -15,12 +17,26 @@ export class ViewportController {
     this.onResize = options.onResize || (() => {});
     this.onBeforeResize = options.onBeforeResize || (() => {});
     this.scheduleFrame = options.scheduleFrame;
-    this.suppressScroll = false;
-    this.latestScrollTotal = 0;
-    this.latestScrollLength = 0;
-    this.resizePending = false;
     this.started = false;
-    this._onScroll = this._handleScroll.bind(this);
+    this.resizeScheduled = false;
+    this.adjustment = new RowAdjustment();
+    this.scrollGesture = new ScrollGestureController({
+      getCellHeight: () => this.cssCellMetrics.height,
+      getPageSize: () => this.adjustment.pageSize,
+      onRows: (rows, context) => this._dispatchInputRows(rows, context),
+      shouldStopMomentum: (rows, route) =>
+        route === 1 &&
+        ((rows < 0 && this.adjustment.mode === "top") ||
+          (rows > 0 && this.adjustment.mode === "active")),
+    });
+    this.semanticScrollbar = new SemanticScrollbar({
+      element: options.scrollbar,
+      thumb: options.scrollbarThumb,
+      onRow: (row) => this.scrollToRow(row),
+      onDelta: (rows) => this.scrollRows(rows),
+      onWheel: (event) => this.scrollWheel(event),
+      onInteraction: () => this.cancelMomentum(),
+    });
 
     this.measuredMetrics = this.measureCells();
     this.cssCellMetrics = { ...this.measuredMetrics };
@@ -87,15 +103,9 @@ export class ViewportController {
   start() {
     if (this.started) return;
     this.started = true;
-    this.scroll.addEventListener("scroll", this._onScroll, { passive: true });
     this.resizeObserver = new ResizeObserver((entries) => {
       this.latestPixelViewport = this.nativePixelViewport(entries[0]);
-      if (this.resizePending) return;
-      this.resizePending = true;
-      requestAnimationFrame(() => {
-        this.resizePending = false;
-        if (this.started) this.resize(this.latestPixelViewport);
-      });
+      this._scheduleResize();
     });
     try {
       this.resizeObserver.observe(this.screen, { box: "device-pixel-content-box" });
@@ -108,6 +118,7 @@ export class ViewportController {
     const renderer = this.getRenderer();
     const wasm = this.getWasm();
     if (!renderer || !wasm) return null;
+    this.cancelScrollGesture();
     this.onBeforeResize();
     this.latestPixelViewport = pixelViewport;
     const layout = this.physicalLayout(pixelViewport);
@@ -117,6 +128,9 @@ export class ViewportController {
     renderer.resize(pixelViewport.width, pixelViewport.height);
     this.terminalElement.style.setProperty("--cell-width", `${this.cssCellMetrics.width}px`);
     this.terminalElement.style.setProperty("--cell-height", `${this.cssCellMetrics.height}px`);
+    this.viewport.style.setProperty("--cell-width", `${this.cssCellMetrics.width}px`);
+    this.viewport.style.setProperty("--cell-height", `${this.cssCellMetrics.height}px`);
+    this.semanticScrollbar.render(this.adjustment);
     const result = this.resizeTerminal
       ? this.resizeTerminal(layout, renderer.atlasColumns)
       : wasm.term_resize(
@@ -136,38 +150,102 @@ export class ViewportController {
   }
 
   submitFrameMetadata(metadata) {
-    this.latestScrollTotal = metadata.scrollTotal;
-    this.latestScrollLength = metadata.scrollLength;
-    this.spacer.style.height = `${Math.max(metadata.scrollTotal, metadata.scrollLength) * this.cssCellMetrics.height}px`;
-    const logicalBottom = Math.max(0, metadata.scrollTotal - metadata.scrollLength);
-    const targetScroll = metadata.scrollOffset >= logicalBottom
-      ? Math.max(0, this.scroll.scrollHeight - this.scroll.clientHeight)
-      : metadata.scrollOffset * this.cssCellMetrics.height;
-    if (Math.abs(this.scroll.scrollTop - targetScroll) > 0.5) {
-      this.suppressScroll = true;
-      this.scroll.scrollTop = targetScroll;
-      queueMicrotask(() => {
-        this.suppressScroll = false;
-      });
-    }
+    this.adjustment.applyFrame(metadata);
+    this.scrollGesture.viewportChanged(this.adjustment.mode);
+    this.semanticScrollbar.render(this.adjustment);
     this.getInputController()?.sync();
     return metadata;
   }
 
-  _handleScroll() {
-    if (this.suppressScroll) return;
+  scrollToRow(row) {
+    this.cancelMomentum();
+    if (!Number.isFinite(row) || this.adjustment.maximum === 0) return false;
+    const target = Math.max(0, Math.min(this.adjustment.maximum, Math.round(row)));
     const wasm = this.getWasm();
-    if (!wasm) return;
-    const atBottom = this.scroll.scrollTop + this.scroll.clientHeight >= this.scroll.scrollHeight - 1;
-    const row = atBottom
-      ? Math.max(0, this.latestScrollTotal - this.latestScrollLength)
-      : Math.max(0, Math.round(this.scroll.scrollTop / this.cssCellMetrics.height));
-    if (wasm.term_scroll_row(row) === 1) this.scheduleFrame(true);
+    if (!wasm) return false;
+    const result = target === this.adjustment.maximum
+      ? wasm.term_scroll_bottom()
+      : wasm.term_scroll_row(target);
+    if (result !== 1) return false;
+    this.semanticScrollbar.reveal();
+    this.scheduleFrame(true);
+    return true;
+  }
+
+  scrollRows(rows) {
+    this.cancelMomentum();
+    if (!Number.isFinite(rows) || this.adjustment.maximum === 0) return false;
+    const delta = Math.max(-0x80000000, Math.min(0x7fffffff, Math.trunc(rows)));
+    if (delta === 0) return false;
+    const wasm = this.getWasm();
+    if (!wasm || wasm.term_scroll_delta(delta) !== 1) return false;
+    this.semanticScrollbar.reveal();
+    this.scheduleFrame(true);
+    return true;
+  }
+
+  _dispatchInputRows(rows, context) {
+    if (!Number.isFinite(rows) || rows === 0) return 0;
+    const delta = Math.max(-0x80000000, Math.min(0x7fffffff, Math.trunc(rows)));
+    if (delta === 0) return 0;
+    const wasm = this.getWasm();
+    if (!wasm) return 0;
+    const route = wasm.term_scroll_input(
+      delta,
+      context?.mods ?? 0,
+      context?.x ?? 0,
+      context?.y ?? 0,
+    );
+    if (route < 1 || route > 3) return 0;
+    if (route === 1) this.semanticScrollbar.reveal();
+    this.scheduleFrame(true);
+    return route;
+  }
+
+  scrollWheel(event, context) {
+    return this.scrollGesture.wheel(event, context);
+  }
+
+  beginTouchScroll(y) {
+    this.scrollGesture.beginTouch(y);
+  }
+
+  updateTouchScroll(y, context) {
+    return this.scrollGesture.moveTouch(y, context);
+  }
+
+  endTouchScroll(y, context) {
+    return this.scrollGesture.endTouch(y, context);
+  }
+
+  cancelTouchScroll() {
+    this.scrollGesture.cancelTouch();
+  }
+
+  cancelMomentum() {
+    this.scrollGesture.cancelMomentum();
+  }
+
+  cancelScrollGesture() {
+    this.scrollGesture.cancel();
+  }
+
+  _scheduleResize() {
+    if (this.resizeScheduled) return;
+    this.resizeScheduled = true;
+    requestAnimationFrame(() => {
+      this.resizeScheduled = false;
+      if (!this.started || !this.latestPixelViewport) return;
+      this.resize(this.latestPixelViewport);
+    });
   }
 
   dispose() {
     this.started = false;
+    this.resizeScheduled = false;
     this.resizeObserver?.disconnect();
-    this.scroll.removeEventListener("scroll", this._onScroll, { passive: true });
+    this.resizeObserver = null;
+    this.scrollGesture.dispose();
+    this.semanticScrollbar.dispose();
   }
 }

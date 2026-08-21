@@ -272,6 +272,7 @@ export class TerminalCore {
   _input(text, paste) {
     if (!this._wasm) throw new Error("terminal core is not open");
     let remaining = String(text ?? "");
+    if (!remaining.length) return;
     while (remaining.length) {
       const ptr = this._wasm.term_reserve(TEXT_STAGING_CHUNK);
       if (!ptr) throw new Error("WASM staging buffer exhausted");
@@ -283,6 +284,7 @@ export class TerminalCore {
       }
       remaining = result.read < remaining.length ? remaining.slice(result.read) : "";
     }
+    this._schedule(true);
   }
 
   input(text, options) {
@@ -302,7 +304,9 @@ export class TerminalCore {
     if (codeResult.read !== code.length) return 0;
     const textResult = encoder.encodeInto(text, buffer.subarray(codeResult.written));
     if (textResult.read !== text.length) return 0;
-    return this._wasm.term_key(action, modifiers, consumed ? 1 : 0, codeResult.written, textResult.written);
+    const result = this._wasm.term_key(action, modifiers, consumed ? 1 : 0, codeResult.written, textResult.written);
+    if (result === 1) this._schedule(true);
+    return result;
   }
 
   resize(layout, atlasColumns) {

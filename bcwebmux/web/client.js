@@ -9,12 +9,16 @@ import { SessionTransport } from "./SessionTransport.js";
 import { initializeSettings } from "./settings.js";
 
 const terminalElement = document.querySelector("#terminal");
+const terminalIdentity = document.querySelector("#terminal-identity");
+const terminalIdentityPrimary = document.querySelector("#terminal-identity-primary");
+const terminalIdentitySecondary = document.querySelector("#terminal-identity-secondary");
 const terminalViewport = document.querySelector("#terminal-viewport");
 const selectionButton = document.querySelector("#selection-button");
 const softkeysToggle = document.querySelector("#softkeys-toggle");
 const perf = document.querySelector("#perf");
-const scroll = document.querySelector("#scroll");
-const spacer = document.querySelector("#spacer");
+const surface = document.querySelector("#surface");
+const scrollbar = document.querySelector("#scrollbar");
+const scrollbarThumb = document.querySelector("#scrollbar-thumb");
 const textView = document.querySelector("#text-view");
 const screen = document.querySelector("#screen");
 const input = document.querySelector("#input");
@@ -79,7 +83,6 @@ async function openGpuTestSession() {
       ? Math.round(state.physicalCellHeight) : 16;
     selected = await sessionApi.create({
       profile: "shell",
-      name: "Shell",
       geometry: {
         cols: terminal.cols,
         rows: terminal.rows,
@@ -102,6 +105,19 @@ function setConnectionStatus(connected, label) {
   status.classList.toggle("connected", connected);
   status.setAttribute("aria-label", label);
   status.setAttribute("title", label);
+}
+
+function updateTerminalIdentity(metadata, terminalTitle = metadata?.title) {
+  const name = typeof metadata?.name === "string" ? metadata.name.trim() : "";
+  const title = typeof terminalTitle === "string" ? terminalTitle.trim() : "";
+  const primary = name || title || "Terminal";
+  const secondary = name && title;
+  terminalIdentityPrimary.textContent = primary;
+  terminalIdentitySecondary.textContent = secondary ? title : "";
+  terminalIdentitySecondary.hidden = !secondary;
+  const label = secondary ? `${name} — ${title}` : primary;
+  terminalIdentity.setAttribute("aria-label", label);
+  terminalIdentity.setAttribute("title", label);
 }
 
 function showDesktopNotification(title, body) {
@@ -276,8 +292,9 @@ const terminal = new Terminal({
   terminalElement,
   elements: {
     viewport: terminalViewport,
-    scroll,
-    spacer,
+    surface,
+    scrollbar,
+    scrollbarThumb,
     textView,
     input,
     screen,
@@ -309,7 +326,6 @@ const drawer = new SessionDrawer({
     tabs: document.querySelector("#session-tabs"),
     newButton: document.querySelector("#session-new"),
     toggleButton: document.querySelector("#session-toggle"),
-    controlButton: document.querySelector("#session-control"),
     workspace: document.querySelector("#workspace"),
     backdrop: document.querySelector("#session-backdrop"),
     liveRegion: document.querySelector("#session-live-region"),
@@ -328,15 +344,20 @@ drawer.init();
 if (query.has("gpu-test")) drawer.close();
 sessionController.onChange(() => {
   activeAttachment = sessionController.activeAttachment;
+  updateTerminalIdentity(sessionController.activeSession);
   const count = sessionController.sessions.length;
   document.querySelector("#session-drawer-status").textContent =
     `${count} ${count === 1 ? "SESSION" : "SESSIONS"}`;
 });
 sessionController.onActiveChange(() => {
   activeAttachment = sessionController.activeAttachment;
+  updateTerminalIdentity(sessionController.activeSession);
 });
 terminal.onError((error) => setConnectionStatus(false, error?.message || "terminal error"));
-terminal.onTitleChange((title) => { document.title = title || "bcwebmux"; });
+terminal.onTitleChange((title) => {
+  document.title = title || "bcwebmux";
+  if (query.has("gpu-test")) updateTerminalIdentity(null, title);
+});
 terminal.onBell(() => {
   terminalElement.classList.add("flash");
   setTimeout(() => terminalElement.classList.remove("flash"), 80);
@@ -344,6 +365,7 @@ terminal.onBell(() => {
 terminal.onNotification(({ title, body }) => showDesktopNotification(title, body));
 sessionController.onTitleChange((title, metadata) => {
   document.title = title || metadata?.name || "bcwebmux";
+  updateTerminalIdentity(metadata, title);
 });
 sessionController.onNotification(({ title, body }, metadata, active) => {
   if (!active) showDesktopNotification(metadata?.name || metadata?.title || title || "bcwebmux", title ? `${title}: ${body}` : body);
@@ -397,6 +419,10 @@ function formatCompressionRatio(decoded, wire) {
   return `${(decoded / wire).toFixed(2)}x`;
 }
 
+function formatScrollValue(value) {
+  return Number.isFinite(value) ? value.toFixed(1) : "—";
+}
+
 function applyPerfMode(mode) {
   const normalized = ["off", "simple", "detailed"].includes(mode) ? mode : "detailed";
   perf.dataset.mode = normalized;
@@ -427,6 +453,8 @@ function updateTelemetry() {
   const atlasPercent = atlasCapacity ? Math.round(atlasUsed * 100 / atlasCapacity) : 0;
   const cacheHits = state.cacheHits ?? 0;
   const cacheMisses = state.cacheMisses ?? 0;
+  const viewportMode = state.viewportMode ?? "unknown";
+  const scrollMaximum = Math.max(0, (state.scrollTotal ?? 0) - (state.scrollLength ?? 0));
   const line = mode === "simple"
     ? `R: ${formatBytes(state.rxWireBytes)} · S: ${formatBytes(state.txBytes)} · WS RTT: ${formatMs(state.wsRttLatestMs)} ms · WASM: ${formatMs(state.wasmFrameMs)} ms`
     : [
@@ -436,13 +464,15 @@ function updateTelemetry() {
       `Socket → frame: ${formatMs(state.rxLatencyMs)} ms · Input → echo frame: ${formatMs(state.inputLatencyMs)} ms`,
       `WebSocket RTT latest / median / p95: ${formatMs(state.wsRttLatestMs)} / ${formatMs(state.wsRttMedianMs)} / ${formatMs(state.wsRttP95Ms)} ms`,
       `Viewport: ${state.cols} × ${state.rows} · cell: ${state.physicalCellWidth}x${state.physicalCellHeight} px · font: ${state.physicalFontSize} px · Glyph atlas: ${atlasUsed} / ${atlasCapacity} (${atlasPercent}%) · cache: ${cacheHits} hit / ${cacheMisses} miss`,
+      `Scroll: ${viewportMode} · ${formatScrollValue(state.scrollOffset)}+${formatScrollValue(state.scrollLength)}/${formatScrollValue(state.scrollTotal)}`,
+      `Rows: ${formatScrollValue(state.scrollOffset)}/${formatScrollValue(scrollMaximum)} · page ${formatScrollValue(state.scrollLength)}`,
       `Network received: ${formatBytes(state.rxBytes)} decoded · wire: ${formatBytes(state.rxWireBytes)} · compression: ${formatCompressionRatio(state.rxBytes, state.rxWireBytes)} · sent: ${formatBytes(state.txBytes)}`,
     ].join("\n");
   if (line !== lastTelemetryLine) {
     perf.value = line;
     lastTelemetryLine = line;
   }
-  const description = `WASM frame ${formatMs(state.wasmFrameMs)} ms; WASM parse ${formatMs(state.wasmParseMs)} ms; presentation opportunity ${formatMs(state.presentationOpportunityMs)} ms; queue drain ${formatMs(state.queueDrainMs)} ms; Socket → frame ${formatMs(state.rxLatencyMs)} ms; Input → echo frame ${formatMs(state.inputLatencyMs)} ms; WebSocket RTT latest / median / p95 ${formatMs(state.wsRttLatestMs)} / ${formatMs(state.wsRttMedianMs)} / ${formatMs(state.wsRttP95Ms)} ms; terminal ${state.cols} by ${state.rows}; atlas ${atlasUsed} of ${atlasCapacity} (${atlasPercent}%); down ${formatBytes(state.rxBytes)} decoded, ${formatBytes(state.rxWireBytes)} wire (${formatCompressionRatio(state.rxBytes, state.rxWireBytes)}), up ${formatBytes(state.txBytes)}; CPU submit ${formatMs(state.frameMs)} ms; canvas ${screen.width} by ${screen.height} pixels`;
+  const description = `WASM frame ${formatMs(state.wasmFrameMs)} ms; WASM parse ${formatMs(state.wasmParseMs)} ms; presentation opportunity ${formatMs(state.presentationOpportunityMs)} ms; queue drain ${formatMs(state.queueDrainMs)} ms; Socket → frame ${formatMs(state.rxLatencyMs)} ms; Input → echo frame ${formatMs(state.inputLatencyMs)} ms; WebSocket RTT latest / median / p95 ${formatMs(state.wsRttLatestMs)} / ${formatMs(state.wsRttMedianMs)} / ${formatMs(state.wsRttP95Ms)} ms; terminal ${state.cols} by ${state.rows}; viewport mode ${viewportMode}; semantic row ${formatScrollValue(state.scrollOffset)} of ${formatScrollValue(scrollMaximum)}, page ${formatScrollValue(state.scrollLength)}, total ${formatScrollValue(state.scrollTotal)}; atlas ${atlasUsed} of ${atlasCapacity} (${atlasPercent}%); down ${formatBytes(state.rxBytes)} decoded, ${formatBytes(state.rxWireBytes)} wire (${formatCompressionRatio(state.rxBytes, state.rxWireBytes)}), up ${formatBytes(state.txBytes)}; CPU submit ${formatMs(state.frameMs)} ms; canvas ${screen.width} by ${screen.height} pixels`;
   if (description !== lastTelemetryDescription) {
     perf.title = description;
     perf.setAttribute("aria-label", description);

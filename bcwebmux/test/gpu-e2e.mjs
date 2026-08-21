@@ -70,6 +70,7 @@ const rgbCommand = "printf '\\033[2J\\033[H\\033[48;2;255;0;0m \\033[48;2;0;255;
 const imePattern = "test \"$c\" = OK && printf '\\033[2J\\033[H\\033[48;2;255;255;0m \\033[0m中\\n'";
 const softCommand = "stty -icanon -echo -isig min 2 time 0; printf '\\033[2J\\033[H\\033[48;2;64;64;64m \\033[0m'; dd of=/dev/null bs=2 count=1 2>/dev/null; stty sane; printf '\\033[2J\\033[H\\033[48;2;255;0;255m \\033[0mS\\n'\r";
 const mouseCommand = "stty -icanon -echo min 6 time 0; printf '\\033[?1000h\\033[2J\\033[H\\033[48;2;255;128;0m \\033[0m'; dd of=/dev/null bs=6 count=1 2>/dev/null; stty sane; printf '\\033[?1000l\\033[2J\\033[H\\033[48;2;0;255;255m \\033[0mM\\n'\r";
+const alternateScrollCommand = "stty raw -echo; printf '\\033[?1049h\\033[?1007h\\033[2J\\033[H\\033[48;2;255;128;0m \\033[0m'; keys=$(dd bs=1 count=6 2>/dev/null); printf '\\033[?1007l\\033[?1049l'; stty sane; test \"$keys\" = \"$(printf '\\033[A\\033[A')\" && printf '\\033[2J\\033[H\\033[48;2;0;255;0m \\033[0m' || printf '\\033[2J\\033[H\\033[48;2;255;0;0m \\033[0m'\r";
 const specialKeysCommand = "stty raw -echo; printf '\\033[2J\\033[H\\033[48;2;64;64;64m \\033[0m'; keys=$(dd bs=1 count=26 2>/dev/null); stty sane; test \"$keys\" = \"$(printf '\\033[A\\033[B\\033[D\\033[C\\033[H\\033[F\\033[5~\\033[6~')\" && printf '\\033[2J\\033[H\\033[48;2;0;255;0m \\033[0m'\r";
 const cursorMoveCommand = "stty raw -echo; printf '\\033[2J\\033[H\\033[2 q\\033[48;2;255;0;0m \\033[0m\\033[4G'; dd of=/dev/null bs=1 count=3 2>/dev/null; printf '\\033[D'; sleep 1; stty sane\r";
 const historyCommand = "stty -ixon; printf '\\033[3J\\033[2J\\033[H\\033[48;2;255;0;255m \\033[0mHISTORY\\n'; seq 1 40\r";
@@ -243,7 +244,8 @@ try {
     const selectionButton = document.querySelector("#selection-button");
     const softkeysToggle = document.querySelector("#softkeys-toggle");
     const settingsClose = document.querySelector("#settings-close");
-    const scroll = document.querySelector("#scroll");
+    const surface = document.querySelector("#surface");
+    const scrollbar = document.querySelector("#scrollbar");
     const softkeys = document.querySelector("#softkeys");
     const controls = document.querySelector("#terminal-controls");
     const status = document.querySelector("#status");
@@ -255,7 +257,8 @@ try {
       if (notificationDialog.open !== false) throw new Error("notification dialog did not close");
       if (document.activeElement !== input) throw new Error("notification dialog close did not focus input");
     }
-    if (!viewport.contains(scroll)) throw new Error("viewport does not contain scroll");
+    if (!viewport.contains(surface)) throw new Error("viewport does not contain surface");
+    if (!viewport.contains(scrollbar)) throw new Error("viewport does not contain scrollbar");
     if (!viewport.contains(canvas)) throw new Error("viewport does not contain canvas");
     if (!viewport.contains(input)) throw new Error("viewport does not contain input");
     if (!chrome.contains(softkeys)) throw new Error("chrome does not contain softkeys");
@@ -375,10 +378,10 @@ try {
     if (!(inputRect.width > 0 && inputRect.height > 0)) throw new Error("hidden textarea has no rendered size");
     input.blur();
     for (const type of ["pointerdown", "pointerup"]) {
-      scroll.dispatchEvent(new PointerEvent(type, { bubbles: true, cancelable: true, pointerType: "touch", pointerId: 1 }));
+      surface.dispatchEvent(new PointerEvent(type, { bubbles: true, cancelable: true, pointerType: "touch", pointerId: 1 }));
     }
     if (document.activeElement === input) throw new Error("touch pointerdown/up prematurely focused input");
-    scroll.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+    surface.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
     if (document.activeElement !== input) throw new Error("completed tap did not focus input");
     await new Promise(resolve => requestAnimationFrame(resolve));
     if (document.activeElement !== input) throw new Error("completed tap did not keep input focused");
@@ -517,7 +520,7 @@ try {
     await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
     if (settingsDialog.open !== false) throw new Error("settings dialog did not close");
     if (document.activeElement !== input) throw new Error("settings close did not restore focus");
-    scroll.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+    surface.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
     if (document.activeElement !== input) throw new Error("completed tap did not focus input");
     for (const character of ${JSON.stringify(rgbCommand)}) {
       const code = keyCode(character);
@@ -557,8 +560,13 @@ try {
 
     window.bcwebmux.write(${JSON.stringify(mouseCommand)});
     await waitPixels(probe => near(probe.first[0], 255) && near(probe.first[1], 128) && near(probe.first[2], 0), "mouse readiness pattern did not render");
-    document.querySelector("#scroll").dispatchEvent(new WheelEvent("wheel", { deltaY: -100, clientX: 10, clientY: 10, bubbles: true, cancelable: true }));
+    document.querySelector("#surface").dispatchEvent(new WheelEvent("wheel", { deltaY: -1, deltaMode: WheelEvent.DOM_DELTA_LINE, clientX: 10, clientY: 10, bubbles: true, cancelable: true }));
     const mousePixels = await waitPixels(probe => near(probe.first[0], 0) && near(probe.first[1], 255) && near(probe.first[2], 255), "mouse-to-GPU pattern did not render");
+
+    window.bcwebmux.write(${JSON.stringify(alternateScrollCommand)});
+    await waitPixels(probe => near(probe.first[0], 255) && near(probe.first[1], 128) && near(probe.first[2], 0), "alternate-scroll readiness pattern did not render");
+    surface.dispatchEvent(new WheelEvent("wheel", { deltaY: -2, deltaMode: WheelEvent.DOM_DELTA_LINE, clientX: 10, clientY: 10, bubbles: true, cancelable: true }));
+    const alternateScrollPixels = await waitPixels(probe => near(probe.first[0], 0) && near(probe.first[1], 255) && near(probe.first[2], 0), "alternate-scroll row routing failed");
 
     window.bcwebmux.write(${JSON.stringify(specialKeysCommand)});
     await waitPixels(probe => near(probe.first[0], 64) && near(probe.first[1], 64) && near(probe.first[2], 64), "special-key readiness pattern did not render");
@@ -584,13 +592,20 @@ try {
 
     window.bcwebmux.write(${JSON.stringify(historyCommand)});
     until = deadline(2500);
-    while (scroll.scrollHeight <= scroll.clientHeight && Date.now() < until) await sleep(15);
-    if (scroll.scrollHeight <= scroll.clientHeight) throw new Error("PTY output did not create scrollback");
-    if (Math.abs(scroll.scrollTop - (scroll.scrollHeight - scroll.clientHeight)) > 1) {
-      throw new Error("scrollback did not follow output: top=" + scroll.scrollTop + " bottom=" + (scroll.scrollHeight - scroll.clientHeight));
-    }
-    scroll.scrollTop = 0;
-    scroll.dispatchEvent(new Event("scroll"));
+    while (
+      (
+        window.bcwebmux.state.scrollTotal <= window.bcwebmux.state.scrollLength ||
+        window.bcwebmux.state.viewportMode !== "active" ||
+        window.bcwebmux.state.scrollOffset + window.bcwebmux.state.scrollLength !== window.bcwebmux.state.scrollTotal
+      ) &&
+      Date.now() < until
+    ) await sleep(15);
+    if (
+      window.bcwebmux.state.scrollTotal <= window.bcwebmux.state.scrollLength ||
+      window.bcwebmux.state.viewportMode !== "active" ||
+      window.bcwebmux.state.scrollOffset + window.bcwebmux.state.scrollLength !== window.bcwebmux.state.scrollTotal
+    ) throw new Error("semantic scrollback invariant was not reached");
+    scrollbar.dispatchEvent(new KeyboardEvent("keydown", { key: "Home", bubbles: true, cancelable: true }));
     const historyPixels = await waitPixels(probe => near(probe.first[0], 255) && near(probe.first[1], 0) && near(probe.first[2], 255), "scrollback GPU pattern did not render");
     await sleep(260);
     input.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true }));
@@ -623,12 +638,29 @@ try {
     if (input.inputMode !== "text") throw new Error("Shift keydown changed input mode");
     input.dispatchEvent(new KeyboardEvent("keyup", { key: "Shift", code: "ShiftLeft", bubbles: true }));
 
+    until = deadline(1000);
+    while (
+      (
+        window.bcwebmux.state.viewportMode !== "active" ||
+        window.bcwebmux.state.scrollOffset + window.bcwebmux.state.scrollLength !== window.bcwebmux.state.scrollTotal
+      ) &&
+      Date.now() < until
+    ) await new Promise(resolve => requestAnimationFrame(resolve));
+    if (window.bcwebmux.state.viewportMode !== "active") throw new Error("Ctrl+B did not restore active viewport mode");
+    if (window.bcwebmux.state.scrollOffset + window.bcwebmux.state.scrollLength !== window.bcwebmux.state.scrollTotal) {
+      throw new Error("Ctrl+B did not restore scroll position to bottom");
+    }
+    scrollbar.dispatchEvent(new KeyboardEvent("keydown", { key: "Home", bubbles: true, cancelable: true }));
+    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    if (window.bcwebmux.state.viewportMode !== "top") throw new Error("scrolling to history did not set top viewport mode");
+
     const state = window.bcwebmux.state;
     return {
       keyboardPixels,
       imePixels,
       softPixels,
       mousePixels,
+      alternateScrollPixels,
       specialKeysPixels,
       cursorMovePixels,
       historyPixels,
@@ -682,8 +714,39 @@ try {
     },
   };
   const visualScreenshots = {};
-  for (const [name, clip] of Object.entries(clips)) {
-    visualScreenshots[name] = await pageCdp.call("Page.captureScreenshot", { format: "png", clip });
+  for (const name of ["terminal", "telemetry"]) {
+    visualScreenshots[name] = await pageCdp.call("Page.captureScreenshot", { format: "png", clip: clips[name] });
+  }
+  const titleCommandResponse = await pageCdp.call("Runtime.evaluate", {
+    expression: `window.bcwebmux.write(${JSON.stringify("printf '\\033]0;GPU TEST\\007'; sleep 10\n")})`,
+  });
+  if (titleCommandResponse.exceptionDetails) {
+    throw new Error(titleCommandResponse.exceptionDetails.exception?.description || "terminal title command evaluation failed");
+  }
+  const titleResponse = await pageCdp.call("Runtime.evaluate", {
+    expression: `((async () => {
+      const end = Date.now() + 2000;
+      while (Date.now() < end) {
+        if (document.querySelector("#terminal-identity-primary")?.textContent === "GPU TEST") return true;
+        await new Promise(resolve => requestAnimationFrame(resolve));
+      }
+      throw new Error("terminal title did not appear");
+    })())`,
+    awaitPromise: true,
+    returnByValue: true,
+  });
+  if (titleResponse.exceptionDetails) {
+    throw new Error(titleResponse.exceptionDetails.exception?.description || "terminal title did not appear");
+  }
+  visualScreenshots.bottomBar = await pageCdp.call("Page.captureScreenshot", {
+    format: "png",
+    clip: clips.bottomBar,
+  });
+  const interruptResponse = await pageCdp.call("Runtime.evaluate", {
+    expression: `window.bcwebmux.write(${JSON.stringify("\u0003")})`,
+  });
+  if (interruptResponse.exceptionDetails) {
+    throw new Error(interruptResponse.exceptionDetails.exception?.description || "failed to interrupt temporary terminal sleep");
   }
   const goldenPath = path.join("test", "golden");
   if (process.env.UPDATE_GOLDEN === "1") {
@@ -800,6 +863,148 @@ try {
     expression: "new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))",
     awaitPromise: true,
   });
+  await pageCdp.call("Runtime.evaluate", {
+    expression: `window.bcwebmux.write(${JSON.stringify("seq 1 1200\r")})`,
+  });
+  const longScrollbackResponse = await pageCdp.call("Runtime.evaluate", {
+    expression: `((async () => {
+      const end = Date.now() + 4000;
+      let diagnostics;
+      while (Date.now() < end) {
+        const state = window.bcwebmux.state;
+        diagnostics = {
+          scrollTotal: state.scrollTotal,
+          scrollLength: state.scrollLength,
+          viewportMode: state.viewportMode,
+          scrollOffset: state.scrollOffset,
+        };
+        if (
+          diagnostics.scrollTotal > diagnostics.scrollLength + 800 &&
+          diagnostics.viewportMode === "active" &&
+          diagnostics.scrollOffset + diagnostics.scrollLength === diagnostics.scrollTotal
+        ) return diagnostics;
+        await new Promise(resolve => requestAnimationFrame(resolve));
+      }
+      throw new Error("long scrollback did not settle at semantic bottom: " + JSON.stringify(diagnostics));
+    })())`,
+    awaitPromise: true,
+    returnByValue: true,
+  });
+  if (longScrollbackResponse.exceptionDetails) {
+    throw new Error(longScrollbackResponse.exceptionDetails.exception?.description || "long scrollback setup failed");
+  }
+  const mobileRowsBeforeResponse = await pageCdp.call("Runtime.evaluate", {
+    expression: `((async () => {
+      const end = Date.now() + 2000;
+      while (
+        (
+          window.bcwebmux.state.viewportMode !== "active" ||
+          window.bcwebmux.state.scrollOffset + window.bcwebmux.state.scrollLength !== window.bcwebmux.state.scrollTotal
+        ) &&
+        Date.now() < end
+      ) await new Promise(resolve => requestAnimationFrame(resolve));
+      if (
+        window.bcwebmux.state.viewportMode !== "active" ||
+        window.bcwebmux.state.scrollOffset + window.bcwebmux.state.scrollLength !== window.bcwebmux.state.scrollTotal
+      ) {
+        throw new Error("failed to reach active semantic bottom before mobile resize: " + JSON.stringify({
+          viewportMode: window.bcwebmux.state.viewportMode,
+          scrollTotal: window.bcwebmux.state.scrollTotal,
+          scrollOffset: window.bcwebmux.state.scrollOffset,
+          scrollLength: window.bcwebmux.state.scrollLength,
+          rows: window.bcwebmux.state.rows,
+        }));
+      }
+      return window.bcwebmux.state.rows;
+    })())`,
+    awaitPromise: true,
+    returnByValue: true,
+  });
+  if (mobileRowsBeforeResponse.exceptionDetails) {
+    throw new Error(mobileRowsBeforeResponse.exceptionDetails.exception?.description || "mobile resize setup failed");
+  }
+  const mobileRowsBefore = mobileRowsBeforeResponse.result.value;
+  await pageCdp.call("Emulation.setDeviceMetricsOverride", {
+    width: viewportWidth,
+    height: Math.max(320, viewportHeight - 160),
+    deviceScaleFactor: nativeViewport.devicePixelRatio,
+    mobile: true,
+  });
+  const mobileResizeResponse = await pageCdp.call("Runtime.evaluate", {
+    expression: `(async () => {
+      const end = Date.now() + 4000;
+      let diagnostics;
+      while (Date.now() < end) {
+        diagnostics = {
+          rows: window.bcwebmux.state.rows,
+          viewportMode: window.bcwebmux.state.viewportMode,
+          scrollTotal: window.bcwebmux.state.scrollTotal,
+          scrollOffset: window.bcwebmux.state.scrollOffset,
+          scrollLength: window.bcwebmux.state.scrollLength,
+        };
+        if (
+          diagnostics.rows < ${JSON.stringify(mobileRowsBefore)} &&
+          diagnostics.viewportMode === "active" &&
+          diagnostics.scrollOffset + diagnostics.scrollLength === diagnostics.scrollTotal
+        ) return diagnostics;
+        await new Promise(resolve => requestAnimationFrame(resolve));
+      }
+      throw new Error("mobile resize did not settle at active semantic bottom: " + JSON.stringify(diagnostics));
+    })()`,
+    awaitPromise: true,
+    returnByValue: true,
+  });
+  if (mobileResizeResponse.exceptionDetails) {
+    throw new Error(mobileResizeResponse.exceptionDetails.exception?.description || "mobile resize failed");
+  }
+  const mobileResize = mobileResizeResponse.result.value;
+  assert.ok(mobileResize.rows < mobileRowsBefore, "mobile resize did not decrease rows");
+  assert.equal(mobileResize.viewportMode, "active");
+  assert.equal(mobileResize.scrollOffset + mobileResize.scrollLength, mobileResize.scrollTotal);
+  const shrunkHeight = Math.max(320, viewportHeight - 160);
+  for (const fraction of [0.25, 0.5, 0.75, 1]) {
+    await pageCdp.call("Emulation.setDeviceMetricsOverride", {
+      width: viewportWidth,
+      height: Math.round(shrunkHeight + (viewportHeight - shrunkHeight) * fraction),
+      deviceScaleFactor: nativeViewport.devicePixelRatio,
+      mobile: true,
+    });
+    await pageCdp.call("Runtime.evaluate", {
+      expression: "new Promise(resolve => requestAnimationFrame(resolve))",
+      awaitPromise: true,
+    });
+  }
+  const mobileGrowResponse = await pageCdp.call("Runtime.evaluate", {
+    expression: `(async () => {
+      const end = Date.now() + 4000;
+      let diagnostics;
+      while (Date.now() < end) {
+        diagnostics = {
+          rows: window.bcwebmux.state.rows,
+          viewportMode: window.bcwebmux.state.viewportMode,
+          scrollTotal: window.bcwebmux.state.scrollTotal,
+          scrollOffset: window.bcwebmux.state.scrollOffset,
+          scrollLength: window.bcwebmux.state.scrollLength,
+        };
+        if (
+          diagnostics.rows > ${JSON.stringify(mobileResize.rows)} &&
+          diagnostics.viewportMode === "active" &&
+          diagnostics.scrollOffset + diagnostics.scrollLength === diagnostics.scrollTotal
+        ) return diagnostics;
+        await new Promise(resolve => requestAnimationFrame(resolve));
+      }
+      throw new Error("mobile grow did not settle at active semantic bottom: " + JSON.stringify(diagnostics));
+    })()`,
+    awaitPromise: true,
+    returnByValue: true,
+  });
+  if (mobileGrowResponse.exceptionDetails) {
+    throw new Error(mobileGrowResponse.exceptionDetails.exception?.description || "mobile grow failed");
+  }
+  const mobileGrow = mobileGrowResponse.result.value;
+  assert.ok(mobileGrow.rows > mobileResize.rows, "mobile grow did not increase rows");
+  assert.equal(mobileGrow.viewportMode, "active");
+  assert.equal(mobileGrow.scrollOffset + mobileGrow.scrollLength, mobileGrow.scrollTotal);
   const mobileInputResponse = await pageCdp.call("Runtime.evaluate", {
     expression: `(() => {
       const input = document.querySelector("#input");
@@ -808,7 +1013,7 @@ try {
       const chrome = document.querySelector("#terminal-chrome");
       const textView = document.querySelector("#text-view");
       const selectionButton = document.querySelector("#selection-button");
-      const spacer = document.querySelector("#spacer");
+      const surface = document.querySelector("#surface");
       const inputRect = input.getBoundingClientRect();
       const screenRect = screen.getBoundingClientRect();
       const viewportRect = viewport.getBoundingClientRect();
@@ -833,7 +1038,7 @@ try {
         viewportParentId: viewport.parentElement?.id || null,
         chromeParentId: chrome.parentElement?.id || null,
         textViewParentId: textView.parentElement?.id || null,
-        spacerParentId: spacer.parentElement?.id || null,
+        surfaceParentId: surface.parentElement?.id || null,
         position: inputStyle.position,
         pointerEvents: inputStyle.pointerEvents,
         selectionButtonDisplay: getComputedStyle(selectionButton).display,
@@ -862,8 +1067,8 @@ try {
   assert.notEqual(mobileInput.selectionButtonDisplay, "none");
   assert.equal(mobileInput.textViewPointerEvents, "none");
   assert.equal(mobileInput.textViewChildCount, 0);
-  assert.equal(mobileInput.textViewParentId, "spacer");
-  assert.equal(mobileInput.spacerParentId, "scroll");
+  assert.equal(mobileInput.textViewParentId, "surface");
+  assert.equal(mobileInput.surfaceParentId, "terminal-viewport");
   for (const edge of ["left", "top", "right", "bottom", "width", "height"]) {
     assert.ok(Math.abs(mobileInput.inputRect[edge] - mobileInput.screenRect[edge]) <= 1, `${edge} does not match screen ${JSON.stringify(mobileInput)}`);
   }

@@ -160,6 +160,7 @@ export function resetForCore(renderer, fontFamily) {
   Object.assign(renderer.submissionMetadata, {
     cols: 0,
     rows: 0,
+    viewportMode: "active",
     scrollTotal: 0,
     scrollOffset: 0,
     scrollLength: 0,

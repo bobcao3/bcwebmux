@@ -12,7 +12,7 @@ function mouseButton(button) {
 
 export class PointerController {
   constructor(options) {
-    this.scroll = options.scroll;
+    this.surface = options.surface;
     this.screen = options.screen;
     this.getWasm = options.getWasm;
     this.getRenderer = options.getRenderer;
@@ -20,61 +20,65 @@ export class PointerController {
     this.textView = options.textView;
     this.focusController = options.focusController;
     this.scheduleFrame = options.scheduleFrame;
+    this.scrollWheel = options.scrollWheel;
+    this.beginTouchScroll = options.beginTouchScroll;
+    this.updateTouchScroll = options.updateTouchScroll;
+    this.endTouchScroll = options.endTouchScroll;
+    this.cancelTouchScroll = options.cancelTouchScroll;
+    this.cancelScrollGesture = options.cancelScrollGesture;
+    this.enterSelectionMode = options.enterSelectionMode || (() => false);
     this.onLink = options.onLink || (() => {});
     this.strictDecoder = new TextDecoder("utf-8", { fatal: true });
     this.encodedRightClick = false;
     this.activeMouseGesture = null;
     this.suppressNextTerminalClick = false;
-    this.scrollbarHideTimer = 0;
     this.touchCandidate = null;
     this.suppressedMousePointerUps = new Set();
     this.touchMoveThreshold = 8;
     this.touchLongPressThreshold = 400;
-    this.scrollbarHideDelay = 900;
     this._listeners = [];
     this._installListeners();
   }
 
   _listen(type, listener, options) {
-    this.scroll.addEventListener(type, listener, options);
-    this._listeners.push(() => this.scroll.removeEventListener(type, listener, options));
+    this.surface.addEventListener(type, listener, options);
+    this._listeners.push(() => this.surface.removeEventListener(type, listener, options));
   }
 
   resetGestures() {
-    this.touchCandidate = null;
+    this.cancelScrollGesture();
+    this.clearTouchCandidate();
     this.activeMouseGesture = null;
     this.encodedRightClick = false;
   }
 
-  revealScrollbar() {
-    if (this.scroll.scrollHeight <= this.scroll.clientHeight) return;
-    this.scroll.classList.add("scrollbar-active");
-    clearTimeout(this.scrollbarHideTimer);
-    this.scrollbarHideTimer = setTimeout(() => {
-      this.scroll.classList.remove("scrollbar-active");
-    }, this.scrollbarHideDelay);
-  }
-
-  isScrollbarPointer(event) {
-    if (event.pointerType === "touch") return false;
-    const scrollbarWidth = this.scroll.offsetWidth - this.scroll.clientWidth;
-    if (scrollbarWidth <= 0 || this.scroll.scrollHeight <= this.scroll.clientHeight) return false;
-    const rect = this.scroll.getBoundingClientRect();
-    return event.clientX >= rect.right - scrollbarWidth &&
-      event.clientX < rect.right && event.clientY >= rect.top && event.clientY < rect.bottom;
+  clearTouchCandidate() {
+    if (this.touchCandidate?.longPressTimer != null) {
+      clearTimeout(this.touchCandidate.longPressTimer);
+    }
+    this.touchCandidate = null;
   }
 
   isTerminalPointer(event) {
     const rect = this.screen.getBoundingClientRect();
     return event.clientX >= rect.left && event.clientX < rect.right &&
-      event.clientY >= rect.top && event.clientY < rect.bottom &&
-      !this.isScrollbarPointer(event);
+      event.clientY >= rect.top && event.clientY < rect.bottom;
+  }
+
+  scrollContext(event) {
+    const renderer = this.getRenderer();
+    const rect = this.surface.getBoundingClientRect();
+    return {
+      mods: modifierBits(event),
+      x: Math.max(0, event.clientX - rect.left) * renderer.pixelScaleX,
+      y: Math.max(0, event.clientY - rect.top) * renderer.pixelScaleY,
+    };
   }
 
   sendMouse(event, action, button, anyButtonPressed = event.buttons !== 0) {
     const renderer = this.getRenderer();
     const wasm = this.getWasm();
-    const rect = this.scroll.getBoundingClientRect();
+    const rect = this.surface.getBoundingClientRect();
     const x = Math.max(0, event.clientX - rect.left) * renderer.pixelScaleX;
     const y = Math.max(0, event.clientY - rect.top) * renderer.pixelScaleY;
     return wasm.term_mouse(action, button, modifierBits(event), x, y, anyButtonPressed ? 1 : 0) === 1;
@@ -83,7 +87,7 @@ export class PointerController {
   sendSelection(event, action) {
     const renderer = this.getRenderer();
     const wasm = this.getWasm();
-    const rect = this.scroll.getBoundingClientRect();
+    const rect = this.surface.getBoundingClientRect();
     const x = Math.max(0, event.clientX - rect.left) * renderer.pixelScaleX;
     const y = Math.max(0, event.clientY - rect.top) * renderer.pixelScaleY;
     const handled = wasm.term_selection(action, x, y) === 1;
@@ -94,7 +98,7 @@ export class PointerController {
   hyperlinkAtEvent(event) {
     const renderer = this.getRenderer();
     const wasm = this.getWasm();
-    const rect = this.scroll.getBoundingClientRect();
+    const rect = this.surface.getBoundingClientRect();
     const x = Math.max(0, event.clientX - rect.left) * renderer.pixelScaleX;
     const y = Math.max(0, event.clientY - rect.top) * renderer.pixelScaleY;
     const status = wasm.term_hyperlink_at(x, y);
@@ -127,18 +131,30 @@ export class PointerController {
     } else {
       this.sendSelection(event, cancelled ? 3 : 1);
     }
-    if (this.scroll.hasPointerCapture(event.pointerId)) this.scroll.releasePointerCapture(event.pointerId);
+    if (this.surface.hasPointerCapture(event.pointerId)) this.surface.releasePointerCapture(event.pointerId);
     return true;
   }
 
   _installListeners() {
-    this._listen("scroll", () => this.revealScrollbar(), { passive: true });
     this._listen("pointerdown", (event) => {
-      if (this.getSelectionMode()) return;
+      if (this.getSelectionMode()) {
+        if (event.pointerType === "touch") {
+          const target = event.target;
+          const exactTextCell = target instanceof Element &&
+            target.matches(".text-cell") &&
+            this.textView.element.contains(target) &&
+            target.textContent?.trim().length > 0;
+          if (!exactTextCell) {
+            this.textView.selectWordAtPoint(event.clientX, event.clientY, { nearest: true });
+          }
+        }
+        return;
+      }
       if (event.pointerType !== "touch") this.suppressedMousePointerUps.delete(event.pointerId);
       if (event.pointerType === "touch") {
         if (this.isTerminalPointer(event)) {
-          this.touchCandidate = {
+          this.clearTouchCandidate();
+          const candidate = {
             pointerId: event.pointerId,
             startX: event.clientX,
             startY: event.clientY,
@@ -147,7 +163,22 @@ export class PointerController {
             ended: false,
             duration: 0,
             suppress: false,
+            longPressTimer: null,
           };
+          this.touchCandidate = candidate;
+          candidate.longPressTimer = setTimeout(() => {
+            if (this.touchCandidate !== candidate || candidate.moved || candidate.ended) return;
+            candidate.longPressTimer = null;
+            candidate.suppress = true;
+            if (this.enterSelectionMode(candidate.startX, candidate.startY) &&
+                this.surface.hasPointerCapture(candidate.pointerId)) {
+              this.surface.releasePointerCapture(candidate.pointerId);
+            }
+          }, this.touchLongPressThreshold);
+          this.beginTouchScroll(event.clientY);
+          try {
+            this.surface.setPointerCapture(event.pointerId);
+          } catch {}
         }
         return;
       }
@@ -167,7 +198,7 @@ export class PointerController {
             startY: event.clientY,
             moved: false,
           };
-          this.scroll.setPointerCapture(event.pointerId);
+          this.surface.setPointerCapture(event.pointerId);
           return;
         }
       }
@@ -182,7 +213,7 @@ export class PointerController {
         if (this.sendSelection(event, 0)) {
           event.preventDefault();
           this.activeMouseGesture = { pointerId: event.pointerId, button: 1, owner: "selection" };
-          this.scroll.setPointerCapture(event.pointerId);
+          this.surface.setPointerCapture(event.pointerId);
         }
         return;
       }
@@ -192,11 +223,11 @@ export class PointerController {
       if (encoded) {
         this.activeMouseGesture = { pointerId: event.pointerId, button, owner: "terminal" };
         event.preventDefault();
-        this.scroll.setPointerCapture(event.pointerId);
+        this.surface.setPointerCapture(event.pointerId);
       } else if (event.button === 0 && this.sendSelection(event, 0)) {
         this.activeMouseGesture = { pointerId: event.pointerId, button: 1, owner: "selection" };
         event.preventDefault();
-        this.scroll.setPointerCapture(event.pointerId);
+        this.surface.setPointerCapture(event.pointerId);
       }
     }, { passive: false });
 
@@ -205,9 +236,18 @@ export class PointerController {
       if (event.pointerType === "touch") {
         const candidate = this.touchCandidate;
         if (candidate?.pointerId === event.pointerId) {
+          clearTimeout(candidate.longPressTimer);
+          candidate.longPressTimer = null;
           candidate.ended = true;
           candidate.duration = Date.now() - candidate.startedAt;
           candidate.suppress = candidate.moved || candidate.duration >= this.touchLongPressThreshold;
+          if (candidate.moved) {
+            this.endTouchScroll(event.clientY, this.scrollContext(event));
+          } else {
+            this.cancelTouchScroll();
+          }
+          if (this.surface.hasPointerCapture(event.pointerId)) this.surface.releasePointerCapture(event.pointerId);
+          if (candidate.moved) event.preventDefault();
         }
         return;
       }
@@ -226,14 +266,22 @@ export class PointerController {
     }, { passive: false });
 
     this._listen("pointermove", (event) => {
-      if (event.pointerType !== "touch" && this.scroll.scrollHeight > this.scroll.clientHeight &&
-          event.clientX >= this.scroll.getBoundingClientRect().right - 12) this.revealScrollbar();
       if (this.getSelectionMode()) return;
       if (event.pointerType === "touch") {
-        if (this.touchCandidate?.pointerId === event.pointerId) {
-          const dx = event.clientX - this.touchCandidate.startX;
-          const dy = event.clientY - this.touchCandidate.startY;
-          if (Math.hypot(dx, dy) > this.touchMoveThreshold) this.touchCandidate.moved = true;
+        const candidate = this.touchCandidate;
+        if (candidate?.pointerId === event.pointerId) {
+          const dx = event.clientX - candidate.startX;
+          const dy = event.clientY - candidate.startY;
+          if (!candidate.moved && Math.hypot(dx, dy) > this.touchMoveThreshold) {
+            candidate.moved = true;
+            clearTimeout(candidate.longPressTimer);
+            candidate.longPressTimer = null;
+          }
+          if (candidate.moved) {
+            if (this.updateTouchScroll(event.clientY, this.scrollContext(event))) {
+              event.preventDefault();
+            }
+          }
         }
         return;
       }
@@ -258,7 +306,13 @@ export class PointerController {
     this._listen("pointercancel", (event) => {
       if (this.getSelectionMode()) return;
       if (event.pointerType === "touch") {
-        if (this.touchCandidate?.pointerId === event.pointerId) this.touchCandidate = null;
+        if (this.touchCandidate?.pointerId === event.pointerId) {
+          this.cancelTouchScroll();
+          this.clearTouchCandidate();
+          if (this.surface.hasPointerCapture(event.pointerId)) {
+            this.surface.releasePointerCapture(event.pointerId);
+          }
+        }
         return;
       }
       if (this.finishMouseGesture(event, true)) event.preventDefault();
@@ -266,7 +320,9 @@ export class PointerController {
     this._listen("lostpointercapture", (event) => this.finishMouseGesture(event, true));
     this._listen("wheel", (event) => {
       if (this.getSelectionMode() || !this.isTerminalPointer(event) || event.deltaY === 0) return;
-      if (this.sendMouse(event, 0, event.deltaY < 0 ? 4 : 5)) event.preventDefault();
+      if (this.scrollWheel(event, this.scrollContext(event))) {
+        event.preventDefault();
+      }
     }, { passive: false });
     this._listen("contextmenu", (event) => {
       if (this.getSelectionMode() || !this.encodedRightClick) return;
@@ -280,14 +336,14 @@ export class PointerController {
         return;
       }
       if (this.textView.hasSelection()) {
-        this.touchCandidate = null;
+        this.clearTouchCandidate();
         return;
       }
       if (!this.isTerminalPointer(event)) return;
       if (!event.shiftKey) {
         const uri = this.hyperlinkAtEvent(event);
         if (uri) {
-          this.touchCandidate = null;
+          this.clearTouchCandidate();
           event.preventDefault();
           this.onLink({ uri, event });
           return;
@@ -295,7 +351,7 @@ export class PointerController {
       }
       if (this.touchCandidate?.ended) {
         const suppress = this.touchCandidate.suppress;
-        this.touchCandidate = null;
+        this.clearTouchCandidate();
         if (suppress) return;
         this.sendMouse(event, 0, 1, true);
         this.sendMouse(event, 1, 1, false);
@@ -306,7 +362,6 @@ export class PointerController {
   }
 
   dispose() {
-    clearTimeout(this.scrollbarHideTimer);
     for (const dispose of this._listeners.splice(0)) dispose();
     this.resetGestures();
   }

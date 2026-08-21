@@ -45,6 +45,7 @@ export function attachCore(host, core) {
     throw new Error("terminal core WASM build does not match host");
   }
   if (core === host._core) return core;
+  host._viewportController.cancelScrollGesture();
   core._setHost(host);
   const previousCore = host._core;
   const previousWasm = host._wasm;

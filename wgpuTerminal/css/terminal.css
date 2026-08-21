@@ -20,48 +20,60 @@
   touch-action: pan-y;
 }
 
-.wgpu-terminal[data-terminal-role="viewport"] [data-terminal-role="scroll"] {
+.wgpu-terminal[data-terminal-role="viewport"] [data-terminal-role="surface"] {
   position: absolute;
   z-index: 2;
   inset: 0;
-  overflow-x: hidden;
-  overflow-y: auto;
-  overflow-anchor: none;
+  overflow: hidden;
   overscroll-behavior: contain;
-  touch-action: pan-y;
-  scrollbar-width: thin;
-  scrollbar-color: transparent transparent;
+  touch-action: none;
 }
 
-.wgpu-terminal[data-terminal-role="viewport"] [data-terminal-role="scroll"].scrollbar-active {
-  scrollbar-color: var(--color-muted) transparent;
+.wgpu-terminal[data-terminal-role="viewport"] [data-terminal-role="scrollbar"] {
+  position: absolute;
+  z-index: 5;
+  top: 4px;
+  bottom: 4px;
+  right: 2px;
+  width: 10px;
+  overflow: hidden;
+  touch-action: none;
+  opacity: .35;
+  transition: opacity 160ms ease;
 }
 
-.wgpu-terminal[data-terminal-role="viewport"] [data-terminal-role="scroll"]::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
+.wgpu-terminal[data-terminal-role="viewport"] [data-terminal-role="scrollbar"]:hover,
+.wgpu-terminal[data-terminal-role="viewport"] [data-terminal-role="scrollbar"]:focus-visible {
+  opacity: .8;
 }
 
-.wgpu-terminal[data-terminal-role="viewport"] [data-terminal-role="scroll"]::-webkit-scrollbar-track {
-  background: transparent;
+.wgpu-terminal[data-terminal-role="viewport"] [data-terminal-role="scrollbar"][data-autohidden="true"]:not(:hover):not(:focus-visible) {
+  opacity: 0;
 }
 
-.wgpu-terminal[data-terminal-role="viewport"] [data-terminal-role="scroll"]::-webkit-scrollbar-thumb {
-  background: transparent;
+.wgpu-terminal[data-terminal-role="viewport"] [data-terminal-role="scrollbar"][hidden] {
+  display: none;
 }
 
-.wgpu-terminal[data-terminal-role="viewport"] [data-terminal-role="scroll"].scrollbar-active::-webkit-scrollbar-thumb {
+@media (prefers-reduced-motion: reduce) {
+  .wgpu-terminal[data-terminal-role="viewport"] [data-terminal-role="scrollbar"] {
+    transition: none;
+  }
+}
+
+.wgpu-terminal[data-terminal-role="viewport"] [data-terminal-role="scrollbar-thumb"] {
+  position: absolute;
+  top: 0;
+  left: 2px;
+  right: 2px;
+  min-height: 20px;
+  border-radius: 999px;
   background: var(--color-muted);
-}
-
-.wgpu-terminal[data-terminal-role="viewport"] [data-terminal-role="spacer"] {
-  position: relative;
-  width: 100%;
-  min-height: 100%;
+  will-change: transform;
 }
 
 .wgpu-terminal[data-terminal-role="viewport"] [data-terminal-role="text-view"] {
-  position: sticky;
+  position: absolute;
   top: 0;
   z-index: 2;
   width: 100%;

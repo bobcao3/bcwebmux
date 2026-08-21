@@ -25,9 +25,11 @@ pub fn build(b: *std.Build) void {
         .@"emit-lib-vt" = true,
         .@"vt-features" = "-all,+render-state,+input-encode,+selection,+snapshot",
     });
+    // The headless server is latency-sensitive; Debug Ghostty makes output-heavy apps unusably slow.
+    const server_optimize = b.option(std.builtin.OptimizeMode, "server-optimize", "Optimization mode for the native server") orelse if (optimize == .Debug) .ReleaseSafe else optimize;
     const native_ghostty = b.dependency("ghostty", .{
         .target = target,
-        .optimize = optimize,
+        .optimize = server_optimize,
         .simd = false,
         .@"emit-lib-vt" = true,
         .@"vt-features" = "-all,+snapshot",
@@ -123,14 +125,14 @@ pub fn build(b: *std.Build) void {
     const assets_module = b.createModule(.{
         .root_source_file = server_embeds.add("assets.zig", "pub const data = @embedFile(\"web-assets.tar.zst\");\n"),
         .target = target,
-        .optimize = optimize,
+        .optimize = server_optimize,
     });
     const server = b.addExecutable(.{
         .name = "bcwebmux-server",
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/server.zig"),
             .target = target,
-            .optimize = optimize,
+            .optimize = server_optimize,
             .imports = &.{ .{
                 .name = "web_assets",
                 .module = assets_module,

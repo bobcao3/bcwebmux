@@ -5,6 +5,8 @@ const std = @import("std");
 const manifest = @import("session_manifest.zig");
 const c = @cImport({
     @cDefine("_XOPEN_SOURCE", "600");
+    // Disable glibc fortified variadic open/fcntl wrappers, which Zig cannot translate in optimized builds.
+    @cDefine("_FORTIFY_SOURCE", "0");
     @cInclude("fcntl.h");
     @cInclude("poll.h");
     @cInclude("pty.h");
@@ -75,8 +77,18 @@ pub const Connection = struct {
 
     pub fn receive(self: *Connection, buffer: []u8) !Message {
         if (buffer.len < 2) return error.InvalidWorkerPacket;
-        const count = c.recv(self.fd, buffer.ptr, buffer.len, 0);
-        if (count <= 0) return error.WorkerClosed;
+        var count = c.recv(self.fd, buffer.ptr, buffer.len, 0);
+        while (count == -1 and std.c.errno(count) == .INTR) {
+            count = c.recv(self.fd, buffer.ptr, buffer.len, 0);
+        }
+        if (count <= 0) {
+            std.log.err("worker packet receive failed: result={d}, errno={t}, closed={}", .{
+                count,
+                std.c.errno(count),
+                self.closed.load(.acquire),
+            });
+            return error.WorkerClosed;
+        }
         const kind = decodeKind(buffer[0]) orelse return error.InvalidWorkerPacket;
         return .{
             .kind = kind,
@@ -242,6 +254,7 @@ pub fn run(shell: [:0]const u8, cols: u16, rows: u16, limits: manifest.Limits) !
             child_reaped = true;
             _ = c.kill(-pid, c.SIGHUP);
             drainOutput(channel, master, &packet);
+            drainChannel(channel, &packet);
             var exit_packet: [5]u8 = undefined;
             exit_packet[0] = @intFromEnum(Kind.exited);
             std.mem.writeInt(i32, exit_packet[1..5], child_status, .little);
@@ -265,7 +278,17 @@ fn monotonicMs() u64 {
 }
 
 fn sendPacket(fd: c_int, packet: []const u8) bool {
-    return c.send(fd, packet.ptr, packet.len, c.MSG_NOSIGNAL) == @as(isize, @intCast(packet.len));
+    while (true) {
+        const result = c.send(fd, packet.ptr, packet.len, c.MSG_NOSIGNAL);
+        if (result == -1 and std.c.errno(result) == .INTR) continue;
+        if (result == @as(isize, @intCast(packet.len))) return true;
+        std.log.err("worker packet send failed: result={d}, expected packet length={d}, errno={t}", .{
+            result,
+            packet.len,
+            std.c.errno(result),
+        });
+        return false;
+    }
 }
 
 fn writeAll(fd: c_int, bytes: []const u8) void {
@@ -298,5 +321,14 @@ fn drainOutput(channel: c_int, master: c_int, packet: *[packet_capacity]u8) void
         if (count <= 0) return;
         packet[0] = @intFromEnum(Kind.output);
         if (!sendPacket(channel, packet[0 .. @as(usize, @intCast(count)) + 1])) return;
+    }
+}
+
+fn drainChannel(channel: c_int, packet: *[packet_capacity]u8) void {
+    while (true) {
+        const count = c.recv(channel, packet, packet.len, c.MSG_DONTWAIT);
+        if (count > 0) continue;
+        if (count == -1 and std.c.errno(count) == .INTR) continue;
+        return;
     }
 }

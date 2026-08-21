@@ -23,7 +23,7 @@ function copyMetadata(value) {
   if (result.generation != null) result.generation = String(result.generation)
   if (result.geometry) result.geometry = { ...result.geometry }
   if (result.state == null) result.state = "running"
-  if (result.name == null) result.name = "Shell"
+  if (result.name == null) result.name = ""
   if (result.title == null) result.title = ""
   return result
 }
@@ -446,7 +446,7 @@ export class SessionController {
     }
     const created = await this.#api.create({
       profile: options.profile ?? "shell",
-      ...(options.name == null ? {} : { name: String(options.name) }),
+      name: options.name == null ? "" : String(options.name),
       geometry,
     })
     const metadata = this.#putMetadata(created)

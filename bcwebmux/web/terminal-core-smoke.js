@@ -74,9 +74,73 @@ async function run() {
   await terminal.open(root);
   const coreA = terminal.core;
   coreA.write("\x1b[2J\x1b[H\x1b[48;2;220;40;40m  \x1b[0m CORE-A\r\n");
-  for (let index = 0; index < 40; index += 1) coreA.write(`A-history-${index}\r\n`);
+  for (let index = 0; index < 400; index += 1) coreA.write(`A-history-${index}\r\n`);
   coreA.write("\x1b[2J\x1b[H\x1b[48;2;220;40;40m  \x1b[0m CORE-A-ACTIVE");
   const imageA = await pixels(terminal);
+  const surface = root.querySelector('[data-terminal-role="surface"]');
+  const scrollbar = root.querySelector('[data-terminal-role="scrollbar"]');
+  if (!surface || !scrollbar) throw new Error("semantic viewport elements were not found");
+  const assertActive = (label) => {
+    const state = terminal.state;
+    if (state.viewportMode !== "active" || state.scrollOffset + state.scrollLength !== state.scrollTotal) {
+      throw new Error(`${label}: active viewport was not at semantic bottom`);
+    }
+  };
+  const scrollKey = async (key) => {
+    scrollbar.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true }));
+    await nextFrame();
+    await nextFrame();
+  };
+  if (getComputedStyle(surface).overflowY !== "hidden" || surface.scrollHeight !== surface.clientHeight) {
+    throw new Error("terminal surface is a DOM scroll container");
+  }
+  if (terminal.state.scrollTotal <= terminal.state.scrollLength) throw new Error("core A did not create scrollback");
+  if (scrollbar.hidden) throw new Error("semantic scrollbar is hidden with scrollback");
+  assertActive("initial frame");
+  const initialRows = coreA.rows;
+  root.style.height = "70%";
+  await nextFrame();
+  await nextFrame();
+  if (coreA.rows >= initialRows) throw new Error("shrinking root height did not reduce rows");
+  assertActive("active resize");
+  await scrollKey("Home");
+  coreA.write("\r\nA-WROTE-AT-TOP");
+  await nextFrame();
+  await nextFrame();
+  if (terminal.state.viewportMode !== "top" || terminal.state.scrollOffset !== 0) {
+    throw new Error("writing at the top moved the semantic viewport");
+  }
+  await scrollKey("ArrowDown");
+  await scrollKey("ArrowDown");
+  if (terminal.state.viewportMode !== "pinned" || terminal.state.scrollOffset <= 0) {
+    throw new Error("row scrolling did not create a pinned viewport");
+  }
+  let pinnedOffset = terminal.state.scrollOffset;
+  coreA.write("\r\nA-WROTE-IN-MIDDLE");
+  await nextFrame();
+  await nextFrame();
+  if (terminal.state.viewportMode !== "pinned") throw new Error("writing in the middle changed viewport mode");
+  if (terminal.state.scrollOffset !== pinnedOffset) throw new Error("writing in the middle changed scroll offset");
+  for (let batch = 0; batch < 12; batch += 1) {
+    let output = "";
+    for (let row = 0; row < 8; row += 1) output += `A-SUSTAINED-${batch}-${row}\r\n`;
+    coreA.write(output);
+    await nextFrame();
+    if (terminal.state.viewportMode !== "pinned") throw new Error("sustained output changed viewport mode");
+    if (terminal.state.scrollOffset !== pinnedOffset) throw new Error("sustained output moved the pinned viewport");
+  }
+  pinnedOffset = terminal.state.scrollOffset;
+  root.style.height = "60%";
+  await nextFrame();
+  await nextFrame();
+  if (terminal.state.viewportMode !== "pinned") throw new Error("pinned middle viewport mode changed during resize");
+  if (terminal.state.scrollOffset !== pinnedOffset) throw new Error("pinned middle viewport offset changed during resize");
+  await scrollKey("End");
+  assertActive("End");
+  root.style.height = "100%";
+  await nextFrame();
+  await nextFrame();
+  assertActive("active grow");
   const colorA = averageCell(imageA, terminal, 0, 0);
 
   const coreB = await terminal.createCore();
@@ -114,7 +178,7 @@ async function run() {
   await nextFrame();
   if (terminal.state.fontReloads !== fontReloads) throw new Error("core switches reloaded the font");
   const textA = selectedText(coreA);
-  if (!textA.includes("CORE-A-ACTIVE") || textA.includes("CORE-B-ACTIVE")) {
+  if (!textA.includes("A-SUSTAINED-11-7") || textA.includes("CORE-B-ACTIVE")) {
     throw new Error(`core A state leaked: ${JSON.stringify(textA)}`);
   }
 

@@ -44,8 +44,9 @@ export interface GpuTerminalStatsDraft {
 
 export interface TerminalViewElements {
   viewport: HTMLElement;
-  scroll: HTMLDivElement;
-  spacer: HTMLDivElement;
+  surface: HTMLDivElement;
+  scrollbar: HTMLDivElement;
+  scrollbarThumb: HTMLDivElement;
   textView: HTMLDivElement;
   input: HTMLTextAreaElement;
   screen: HTMLCanvasElement;
@@ -127,6 +128,10 @@ export interface TerminalState extends Partial<GpuTerminalStatsDraft> {
   txBytes: number;
   cols: number;
   rows: number;
+  viewportMode: "active" | "top" | "pinned";
+  scrollTotal: number;
+  scrollOffset: number;
+  scrollLength: number;
   wasmParseMs: number | null;
   wasmFrameMs: number | null;
   rxLatencyMs: number | null;

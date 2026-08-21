@@ -191,7 +191,35 @@ body {
 
 #softkeys-toggle {
   display: grid;
-  margin-right: auto;
+}
+
+#terminal-identity {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  flex-direction: column;
+  justify-content: center;
+  overflow: hidden;
+  text-align: center;
+  pointer-events: none;
+}
+
+#terminal-identity-primary,
+#terminal-identity-secondary {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#terminal-identity-primary {
+  color: var(--color-foreground);
+  font-family: var(--terminal-font);
+  font-weight: 700;
+}
+
+#terminal-identity-secondary {
+  color: var(--color-muted);
+  font-size: 11px;
 }
 
 #selection-button:hover,

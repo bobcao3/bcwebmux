@@ -86,6 +86,12 @@ fn isLigatureCandidate(codepoint: u21) bool {
     return codepoint <= 0x7f and std.mem.indexOfScalar(u8, "!#%&*+-/:<=>?@\\^|~", @intCast(codepoint)) != null;
 }
 
+pub const ViewportMode = enum(u32) {
+    active = 0,
+    top = 1,
+    pinned = 2,
+};
+
 pub const Frame = extern struct {
     magic: u32,
     version: u32,
@@ -102,6 +108,7 @@ pub const Frame = extern struct {
     scroll_total: u32,
     scroll_offset: u32,
     scroll_length: u32,
+    viewport_mode: ViewportMode,
     atlas_slots: u32,
 };
 
@@ -315,7 +322,7 @@ fn prepareRunMiss(self: *Self, raws: anytype, graphemes: anytype, start: usize, 
 }
 
 comptime {
-    std.debug.assert(@sizeOf(Frame) == 64);
+    std.debug.assert(@sizeOf(Frame) == 68);
     std.debug.assert(@sizeOf(Cell) == 8);
     std.debug.assert(@sizeOf(OrdinaryKey) == 8);
     std.debug.assert(@sizeOf(Style) == 12);
@@ -728,7 +735,7 @@ fn submitCached(self: *Self, state: *ghostty.RenderState, terminal: *ghostty.Ter
     const cursor_x: u32 = if (cursor) |pos| if (pos.wide_tail and pos.x > 0) pos.x - 1 else pos.x else std.math.maxInt(u16);
     self.frame = .{
         .magic = 0x46574342,
-        .version = 2,
+        .version = 3,
         .cols = state.cols,
         .rows = state.rows,
         .cell_count = @intCast(cell_count),
@@ -742,6 +749,11 @@ fn submitCached(self: *Self, state: *ghostty.RenderState, terminal: *ghostty.Ter
         .scroll_total = @intCast(bar.total),
         .scroll_offset = @intCast(bar.offset),
         .scroll_length = @intCast(bar.len),
+        .viewport_mode = switch (terminal.screens.active.pages.viewport) {
+            .active => .active,
+            .top => .top,
+            .pin => .pinned,
+        },
         .atlas_slots = @max(initial_atlas_slots, self.bitmap_slot_count),
     };
     if (state.cursor.visible and cursor != null) self.frame.cursor_flags |= 1;
@@ -757,7 +769,7 @@ fn submitCached(self: *Self, state: *ghostty.RenderState, terminal: *ghostty.Ter
     const bitmap_upload_pixels = self.bitmap_batch.uploadPixels();
     const submission = Submission{
         .magic = 0x5355424d,
-        .version = 2,
+        .version = 3,
         .byte_size = @sizeOf(Submission),
         .reserved = 0,
         .frame_offset = try wasmOffset(&self.frame),
