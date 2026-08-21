@@ -4,15 +4,13 @@
 const std = @import("std");
 const protocol = @import("protocol.zig");
 const vfs = @import("vfs.zig");
+const SessionRegistry = @import("SessionRegistry.zig");
+const session_api = @import("session_api.zig");
+const session_manifest = @import("session_manifest.zig");
+const session_worker = @import("session_worker.zig");
 const embedded_assets = @import("web_assets").data;
 const c = @cImport({
-    @cDefine("_XOPEN_SOURCE", "600");
-    @cInclude("pty.h");
-    @cInclude("signal.h");
     @cInclude("stdlib.h");
-    @cInclude("sys/ioctl.h");
-    @cInclude("sys/wait.h");
-    @cInclude("unistd.h");
     @cInclude("zstd.h");
 });
 
@@ -22,6 +20,8 @@ const App = struct {
     asset_dir: ?std.Io.Dir,
     shell: [:0]const u8,
     origin: []const u8,
+    executable: []const u8,
+    registry: *SessionRegistry,
 };
 
 const Config = struct {
@@ -30,27 +30,53 @@ const Config = struct {
     web_root: ?[]const u8 = null,
     shell: ?[:0]const u8 = null,
     origin: ?[]const u8 = null,
+    max_sessions: usize = 16,
 };
 
 pub fn main(init: std.process.Init) !void {
     const arena = init.arena.allocator();
     const args = try init.minimal.args.toSlice(arena);
+    if (args.len == 5 and std.mem.eql(u8, args[1], "--session-worker")) {
+        const cols = std.fmt.parseInt(u16, args[3], 10) catch return error.InvalidArgument;
+        const rows = std.fmt.parseInt(u16, args[4], 10) catch return error.InvalidArgument;
+        if (cols == 0 or rows == 0) return error.InvalidArgument;
+        try session_worker.run(args[2], cols, rows, .{});
+        return;
+    }
+    if (args.len == 2 and std.mem.eql(u8, args[1], "--help")) {
+        std.debug.print(
+            "usage: {s} [options]\n" ++
+                "  --host HOST\n" ++
+                "  --port PORT\n" ++
+                "  --web-root DIR\n" ++
+                "  --shell SHELL\n" ++
+                "  --origin ORIGIN\n" ++
+                "  --max-sessions N\n",
+            .{args[0]},
+        );
+        return;
+    }
     const config = try parseArgs(args);
     const shell = config.shell orelse defaultShell();
     var origin_buffer: [512]u8 = undefined;
     const origin = config.origin orelse try std.fmt.bufPrint(&origin_buffer, "http://{s}:{d}", .{ config.host, config.port });
+    const limits: session_manifest.Limits = .{ .max_live_sessions = config.max_sessions };
+    var registry = try SessionRegistry.init(std.heap.smp_allocator, init.io, args[0], shell, limits);
+    defer registry.deinit();
     const assets = try vfs.Vfs.init(arena, embedded_assets);
     const asset_dir = if (config.web_root) |web_root|
         try std.Io.Dir.cwd().openDir(init.io, web_root, .{})
     else
         null;
     defer if (asset_dir) |dir| dir.close(init.io);
-    const app = App{
+    var app = App{
         .io = init.io,
         .assets = assets,
         .asset_dir = asset_dir,
         .shell = shell,
         .origin = origin,
+        .executable = args[0],
+        .registry = &registry,
     };
     const address = try std.Io.net.IpAddress.parse(config.host, config.port);
     var listener = try address.listen(init.io, .{ .reuse_address = true });
@@ -96,6 +122,11 @@ fn parseArgs(args: []const [:0]const u8) !Config {
             i += 1;
             if (i >= args.len) return error.MissingArgument;
             config.origin = args[i];
+        } else if (std.mem.eql(u8, arg, "--max-sessions")) {
+            i += 1;
+            if (i >= args.len) return error.MissingArgument;
+            config.max_sessions = try std.fmt.parseInt(usize, args[i], 10);
+            if (config.max_sessions == 0) return error.InvalidArgument;
         } else {
             return error.UnknownArgument;
         }
@@ -108,7 +139,7 @@ fn defaultShell() [:0]const u8 {
     return std.mem.span(value);
 }
 
-fn handleConnection(app: *const App, stream: std.Io.net.Stream) void {
+fn handleConnection(app: *App, stream: std.Io.net.Stream) void {
     defer stream.close(app.io);
     var tcp_nodelay: c_int = 1;
     std.posix.setsockopt(stream.socket.handle, std.posix.IPPROTO.TCP, std.posix.TCP.NODELAY, std.mem.asBytes(&tcp_nodelay)) catch |err| {
@@ -147,7 +178,10 @@ fn handleConnection(app: *const App, stream: std.Io.net.Stream) void {
                 return;
             },
             .other => return,
-            .none => serveAsset(app, &request) catch return,
+            .none => {
+                if (session_api.serve(app.registry, app.origin, &request) catch return) continue;
+                serveAsset(app, &request) catch return;
+            },
         }
     }
 }
@@ -283,8 +317,8 @@ fn contentType(path: []const u8) []const u8 {
 }
 
 const PtySession = struct {
-    master: std.posix.fd_t,
-    pid: c.pid_t,
+    connection: session_worker.Connection,
+    io: std.Io,
     mutex: std.Io.Mutex = .init,
     stopped: std.atomic.Value(bool) = .init(false),
 
@@ -296,22 +330,18 @@ const PtySession = struct {
 
     fn stop(self: *PtySession) void {
         if (self.stopped.swap(true, .acq_rel)) return;
-        _ = c.kill(-self.pid, c.SIGHUP);
-        _ = c.close(self.master);
+        self.connection.terminate(self.io);
     }
 
-    fn reap(self: *PtySession) void {
+    fn reap(self: *PtySession, io: std.Io) void {
         self.stop();
-        var status: c_int = 0;
-        _ = c.waitpid(self.pid, &status, 0);
+        self.connection.close();
+        _ = self.connection.child.wait(io) catch {};
     }
 
-    fn resize(self: *PtySession, cols: u16, rows: u16) void {
+    fn resize(self: *PtySession, io: std.Io, cols: u16, rows: u16) void {
         if (cols == 0 or rows == 0 or self.stopped.load(.acquire)) return;
-        var size: c.struct_winsize = std.mem.zeroes(c.struct_winsize);
-        size.ws_col = cols;
-        size.ws_row = rows;
-        _ = c.ioctl(self.master, c.TIOCSWINSZ, &size);
+        self.connection.resize(io, cols, rows) catch {};
     }
 };
 
@@ -373,37 +403,29 @@ const ZstdOutputStream = struct {
     }
 };
 
-fn spawnPty(shell: [:0]const u8) !PtySession {
-    var master: c_int = -1;
-    var size: c.struct_winsize = std.mem.zeroes(c.struct_winsize);
-    size.ws_col = 80;
-    size.ws_row = 24;
-    const pid = c.forkpty(&master, null, null, &size);
-    if (pid < 0) return error.ForkPtyFailed;
-    if (pid == 0) {
-        _ = c.setenv("TERM", "xterm-256color", 1);
-        _ = c.setenv("COLORTERM", "truecolor", 1);
-        var argv = [_:null]?[*:0]const u8{ shell.ptr, "-l" };
-        _ = c.execvp(shell.ptr, @ptrCast(&argv));
-        c._exit(127);
-    }
-    return .{ .master = master, .pid = pid };
+fn spawnPty(app: *const App) !PtySession {
+    return .{
+        .connection = try session_worker.spawn(app.io, app.executable, app.shell, 80, 24),
+        .io = app.io,
+    };
 }
 
 fn serveTerminal(app: *const App, websocket: *std.http.Server.WebSocket) !void {
-    var session = try spawnPty(app.shell);
-    defer session.reap();
+    var session = try spawnPty(app);
+    defer session.reap(app.io);
     var compressor = try ZstdOutputStream.init();
     defer compressor.deinit();
     var receiver = try app.io.concurrent(receiveClient, .{ websocket, &session, app.io });
     defer receiver.cancel(app.io);
 
-    var buffer: [32 * 1024]u8 = undefined;
+    var buffer: [session_worker.packet_capacity]u8 = undefined;
     while (!session.stopped.load(.acquire)) {
-        const count = c.read(session.master, &buffer, buffer.len);
-        if (count <= 0) break;
-        const count_usize: usize = @intCast(count);
-        try compressor.send(app.io, &session, websocket, buffer[0..count_usize]);
+        const message = session.connection.receive(&buffer) catch break;
+        switch (message.kind) {
+            .output => try compressor.send(app.io, &session, websocket, message.payload),
+            .exited => break,
+            else => {},
+        }
     }
 }
 
@@ -419,7 +441,7 @@ fn receiveClient(websocket: *std.http.Server.WebSocket, session: *PtySession, io
                     var resize: protocol.Resize = undefined;
                     @memcpy(std.mem.asBytes(&resize), message.data);
                     if (resize.magic == protocol.resize_magic and resize.reserved == 0) {
-                        session.resize(resize.cols, resize.rows);
+                        session.resize(io, resize.cols, resize.rows);
                         continue;
                     }
                 }
@@ -435,11 +457,5 @@ fn receiveClient(websocket: *std.http.Server.WebSocket, session: *PtySession, io
 }
 
 fn writePty(session: *PtySession, data: []const u8) void {
-    var remaining = data;
-    while (remaining.len > 0 and !session.stopped.load(.acquire)) {
-        const count = c.write(session.master, remaining.ptr, remaining.len);
-        if (count <= 0) return;
-        const count_usize: usize = @intCast(count);
-        remaining = remaining[count_usize..];
-    }
+    session.connection.send(session.io, .input, data) catch {};
 }

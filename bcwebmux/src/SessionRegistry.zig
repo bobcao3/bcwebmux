@@ -1,0 +1,417 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Cheng Cao
+
+const std = @import("std");
+const Session = @import("Session.zig");
+const manifest = @import("session_manifest.zig");
+
+const Self = @This();
+const idempotency_capacity = 256;
+
+pub const CreateOptions = struct {
+    profile: []const u8,
+    name: []const u8,
+    geometry: Session.Geometry,
+};
+
+pub const CreateResult = struct {
+    metadata: Session.Metadata,
+    replayed: bool,
+};
+
+pub const TerminateResult = struct {
+    metadata: Session.Metadata,
+    replayed: bool,
+};
+
+const Operation = enum { create, terminate };
+const IdempotencyRecord = struct {
+    operation: Operation,
+    key_hash: [32]u8,
+    request_hash: [32]u8,
+    session_id: Session.Id,
+};
+
+allocator: std.mem.Allocator,
+io: std.Io,
+executable: []const u8,
+shell: []const u8,
+limits: manifest.Limits,
+server_instance: Session.Id,
+mutex: std.Io.Mutex = .init,
+sessions: std.AutoHashMapUnmanaged(Session.Id, *Session) = .empty,
+group: std.Io.Group = .init,
+revision: std.atomic.Value(u64) = .init(0),
+creating_count: usize = 0,
+idempotency: [idempotency_capacity]IdempotencyRecord = undefined,
+idempotency_len: usize = 0,
+idempotency_cursor: usize = 0,
+
+pub fn init(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    executable: []const u8,
+    shell: []const u8,
+    limits: manifest.Limits,
+) !Self {
+    if (limits.max_exited_sessions < limits.max_live_sessions or limits.max_exited_sessions > 64) return error.InvalidLimits;
+    var server_instance: Session.Id = undefined;
+    try randomId(io, &server_instance);
+    var self: Self = .{
+        .allocator = allocator,
+        .io = io,
+        .executable = executable,
+        .shell = shell,
+        .limits = limits,
+        .server_instance = server_instance,
+    };
+    const session_capacity = std.math.cast(u32, limits.max_exited_sessions) orelse return error.SessionLimitTooLarge;
+    try self.sessions.ensureTotalCapacity(allocator, session_capacity);
+    return self;
+}
+
+pub fn deinit(self: *Self) void {
+    var iterator = self.sessions.valueIterator();
+    while (iterator.next()) |entry| _ = entry.*.requestTerminate();
+    self.group.cancel(self.io);
+    iterator = self.sessions.valueIterator();
+    while (iterator.next()) |entry| entry.*.destroy();
+    self.sessions.deinit(self.allocator);
+    self.* = undefined;
+}
+
+pub fn create(
+    self: *Self,
+    options: CreateOptions,
+    idempotency_key: []const u8,
+    request_hash: [32]u8,
+) !CreateResult {
+    self.pruneExpired();
+    if (!std.mem.eql(u8, options.profile, manifest.command_profile)) return error.UnknownCommandProfile;
+    if (!validName(options.name, self.limits.max_name_bytes)) return error.InvalidSessionName;
+    if (!manifest.validGeometry(self.limits, options.geometry.cols, options.geometry.rows)) return error.InvalidGeometry;
+    const key_hash = hashIdempotencyKey(idempotency_key);
+
+    self.mutex.lockUncancelable(self.io);
+    if (self.findIdempotency(key_hash)) |record| {
+        if (record.operation != .create or !std.mem.eql(u8, &record.request_hash, &request_hash)) {
+            self.mutex.unlock(self.io);
+            return error.IdempotencyConflict;
+        }
+        const session = self.sessions.get(record.session_id) orelse {
+            self.mutex.unlock(self.io);
+            return error.SessionNotFound;
+        };
+        const metadata = session.snapshotMetadata();
+        self.mutex.unlock(self.io);
+        return .{ .metadata = metadata, .replayed = true };
+    }
+    const counts = self.countStatesLocked();
+    if (counts.live + self.creating_count >= self.limits.max_live_sessions) {
+        self.mutex.unlock(self.io);
+        return error.LiveSessionLimit;
+    }
+    if (self.sessions.count() + self.creating_count >= self.limits.max_exited_sessions) {
+        self.mutex.unlock(self.io);
+        return error.RetainedSessionLimit;
+    }
+    self.creating_count += 1;
+    self.mutex.unlock(self.io);
+
+    var id: Session.Id = undefined;
+    var generation: Session.Id = undefined;
+    randomId(self.io, &id) catch |err| {
+        self.releaseCreatingReservation();
+        return err;
+    };
+    randomId(self.io, &generation) catch |err| {
+        self.releaseCreatingReservation();
+        return err;
+    };
+    const session = Session.create(
+        self.allocator,
+        self.io,
+        self.executable,
+        self.shell,
+        self.limits,
+        &self.revision,
+        id,
+        generation,
+        options.name,
+        options.geometry,
+    ) catch |err| {
+        self.releaseCreatingReservation();
+        return err;
+    };
+
+    self.mutex.lockUncancelable(self.io);
+    self.creating_count -= 1;
+    if (self.sessions.contains(id)) {
+        self.mutex.unlock(self.io);
+        _ = session.requestTerminate();
+        session.run();
+        session.destroy();
+        return error.IdentifierCollision;
+    }
+    self.sessions.putAssumeCapacity(id, session);
+    _ = self.revision.fetchAdd(1, .monotonic);
+    self.storeIdempotency(.create, key_hash, request_hash, id);
+    self.group.concurrent(self.io, Session.run, .{session}) catch |err| {
+        _ = self.sessions.remove(id);
+        _ = self.revision.fetchAdd(1, .monotonic);
+        self.mutex.unlock(self.io);
+        _ = session.requestTerminate();
+        session.run();
+        session.destroy();
+        return err;
+    };
+    const metadata = session.snapshotMetadata();
+    self.mutex.unlock(self.io);
+    return .{ .metadata = metadata, .replayed = false };
+}
+
+pub fn list(self: *Self, output: []Session.Metadata) usize {
+    self.pruneExpired();
+    self.mutex.lockUncancelable(self.io);
+    defer self.mutex.unlock(self.io);
+    var count: usize = 0;
+    var iterator = self.sessions.valueIterator();
+    while (iterator.next()) |entry| {
+        if (count == output.len) break;
+        output[count] = entry.*.snapshotMetadata();
+        count += 1;
+    }
+    std.mem.sort(Session.Metadata, output[0..count], {}, newerFirst);
+    return count;
+}
+
+pub fn get(self: *Self, id: Session.Id) ?Session.Metadata {
+    self.pruneExpired();
+    self.mutex.lockUncancelable(self.io);
+    defer self.mutex.unlock(self.io);
+    const session = self.sessions.get(id) orelse return null;
+    return session.snapshotMetadata();
+}
+
+pub fn rename(self: *Self, id: Session.Id, name: []const u8) !Session.Metadata {
+    if (!validName(name, self.limits.max_name_bytes)) return error.InvalidSessionName;
+    self.mutex.lockUncancelable(self.io);
+    defer self.mutex.unlock(self.io);
+    const session = self.sessions.get(id) orelse return error.SessionNotFound;
+    if (!session.rename(name)) return error.InvalidSessionState;
+    _ = self.revision.fetchAdd(1, .monotonic);
+    return session.snapshotMetadata();
+}
+
+pub fn terminate(
+    self: *Self,
+    id: Session.Id,
+    idempotency_key: []const u8,
+    request_hash: [32]u8,
+) !TerminateResult {
+    const key_hash = hashIdempotencyKey(idempotency_key);
+    self.mutex.lockUncancelable(self.io);
+    if (self.findIdempotency(key_hash)) |record| {
+        if (record.operation != .terminate or !std.mem.eql(u8, &record.request_hash, &request_hash) or !std.mem.eql(u8, &record.session_id, &id)) {
+            self.mutex.unlock(self.io);
+            return error.IdempotencyConflict;
+        }
+        const session = self.sessions.get(id) orelse {
+            self.mutex.unlock(self.io);
+            return error.SessionNotFound;
+        };
+        const metadata = session.snapshotMetadata();
+        self.mutex.unlock(self.io);
+        return .{ .metadata = metadata, .replayed = true };
+    }
+    const session = self.sessions.get(id) orelse {
+        self.mutex.unlock(self.io);
+        return error.SessionNotFound;
+    };
+    if (!session.markTerminating()) {
+        self.mutex.unlock(self.io);
+        return error.InvalidSessionState;
+    }
+    _ = self.revision.fetchAdd(1, .monotonic);
+    self.storeIdempotency(.terminate, key_hash, request_hash, id);
+    const metadata = session.snapshotMetadata();
+    self.mutex.unlock(self.io);
+    session.signalTerminate();
+    return .{ .metadata = metadata, .replayed = false };
+}
+
+pub fn delete(self: *Self, id: Session.Id) !void {
+    self.mutex.lockUncancelable(self.io);
+    const session = self.sessions.get(id) orelse {
+        self.mutex.unlock(self.io);
+        return error.SessionNotFound;
+    };
+    const metadata = session.snapshotMetadata();
+    if (metadata.state != .exited and metadata.state != .failed) {
+        self.mutex.unlock(self.io);
+        return error.SessionRunning;
+    }
+    if (!session.actor_done.load(.acquire)) {
+        self.mutex.unlock(self.io);
+        return error.SessionBusy;
+    }
+    _ = self.sessions.remove(id);
+    _ = self.revision.fetchAdd(1, .monotonic);
+    self.mutex.unlock(self.io);
+    session.destroy();
+}
+
+pub fn currentRevision(self: *Self) u64 {
+    return self.revision.load(.monotonic);
+}
+
+fn pruneExpired(self: *Self) void {
+    var ids: [64]Session.Id = undefined;
+    var id_count: usize = 0;
+    const now = std.Io.Clock.real.now(self.io).toMilliseconds();
+
+    self.mutex.lockUncancelable(self.io);
+    var iterator = self.sessions.iterator();
+    while (iterator.next()) |entry| {
+        if (id_count == ids.len) break;
+        const session = entry.value_ptr.*;
+        if (!session.actor_done.load(.acquire)) continue;
+        const metadata = session.snapshotMetadata();
+        if (metadata.state != .exited and metadata.state != .failed) continue;
+        if (self.limits.exited_retention_ms > 0 and
+            (now < metadata.last_activity_ms or
+                now - metadata.last_activity_ms < self.limits.exited_retention_ms)) continue;
+        ids[id_count] = entry.key_ptr.*;
+        id_count += 1;
+    }
+
+    var sessions: [64]*Session = undefined;
+    var session_count: usize = 0;
+    for (ids[0..id_count]) |id| {
+        const session = self.sessions.get(id) orelse continue;
+        _ = self.sessions.remove(id);
+        sessions[session_count] = session;
+        session_count += 1;
+        _ = self.revision.fetchAdd(1, .monotonic);
+    }
+    self.mutex.unlock(self.io);
+
+    for (sessions[0..session_count]) |session| session.destroy();
+}
+
+fn findIdempotency(self: *Self, key_hash: [32]u8) ?IdempotencyRecord {
+    for (self.idempotency[0..self.idempotency_len]) |record|
+        if (std.mem.eql(u8, &record.key_hash, &key_hash)) return record;
+    return null;
+}
+
+fn releaseCreatingReservation(self: *Self) void {
+    self.mutex.lockUncancelable(self.io);
+    self.creating_count -= 1;
+    self.mutex.unlock(self.io);
+}
+
+fn storeIdempotency(self: *Self, operation: Operation, key_hash: [32]u8, request_hash: [32]u8, id: Session.Id) void {
+    const index = if (self.idempotency_len < self.idempotency.len) blk: {
+        const value = self.idempotency_len;
+        self.idempotency_len += 1;
+        break :blk value;
+    } else blk: {
+        const value = self.idempotency_cursor;
+        self.idempotency_cursor = (self.idempotency_cursor + 1) % self.idempotency.len;
+        break :blk value;
+    };
+    self.idempotency[index] = .{
+        .operation = operation,
+        .key_hash = key_hash,
+        .request_hash = request_hash,
+        .session_id = id,
+    };
+}
+
+fn countStatesLocked(self: *Self) struct { live: usize, exited: usize } {
+    var live: usize = 0;
+    var exited: usize = 0;
+    var iterator = self.sessions.valueIterator();
+    while (iterator.next()) |entry| switch (entry.*.snapshotMetadata().state) {
+        .creating, .running, .terminating => live += 1,
+        .exited, .failed => exited += 1,
+    };
+    return .{ .live = live, .exited = exited };
+}
+
+fn newerFirst(_: void, a: Session.Metadata, b: Session.Metadata) bool {
+    return a.last_activity_ms > b.last_activity_ms;
+}
+
+fn validName(name: []const u8, max_bytes: usize) bool {
+    if (name.len == 0 or name.len > max_bytes or !std.unicode.utf8ValidateSlice(name)) return false;
+    for (name) |byte| if (byte < 0x20 or byte == 0x7f) return false;
+    return true;
+}
+
+fn hashIdempotencyKey(key: []const u8) [32]u8 {
+    var digest: [32]u8 = undefined;
+    std.crypto.hash.sha2.Sha256.hash(key, &digest, .{});
+    return digest;
+}
+
+pub fn randomId(io: std.Io, id: *Session.Id) !void {
+    try io.randomSecure(id);
+    id[6] = (id[6] & 0x0f) | 0x40;
+    id[8] = (id[8] & 0x3f) | 0x80;
+}
+
+pub fn formatId(id: Session.Id, buffer: *[36]u8) []const u8 {
+    const hex = "0123456789abcdef";
+    var source: usize = 0;
+    var target: usize = 0;
+    while (source < id.len) : (source += 1) {
+        if (target == 8 or target == 13 or target == 18 or target == 23) {
+            buffer[target] = '-';
+            target += 1;
+        }
+        buffer[target] = hex[id[source] >> 4];
+        buffer[target + 1] = hex[id[source] & 0x0f];
+        target += 2;
+    }
+    return buffer;
+}
+
+pub fn parseId(text: []const u8) ?Session.Id {
+    if (text.len != 36 or text[8] != '-' or text[13] != '-' or text[18] != '-' or text[23] != '-') return null;
+    var id: Session.Id = undefined;
+    var source: usize = 0;
+    var target: usize = 0;
+    while (source < text.len) {
+        if (text[source] == '-') {
+            source += 1;
+            continue;
+        }
+        if (source + 1 >= text.len or target >= id.len) return null;
+        const high = hexNibble(text[source]) orelse return null;
+        const low = hexNibble(text[source + 1]) orelse return null;
+        id[target] = (@as(u8, high) << 4) | low;
+        source += 2;
+        target += 1;
+    }
+    return if (target == id.len) id else null;
+}
+
+fn hexNibble(byte: u8) ?u8 {
+    return switch (byte) {
+        '0'...'9' => byte - '0',
+        'a'...'f' => byte - 'a' + 10,
+        'A'...'F' => byte - 'A' + 10,
+        else => null,
+    };
+}
+
+test "session IDs round trip" {
+    const id: Session.Id = .{ 0, 1, 2, 3, 4, 5, 0x46, 7, 0x88, 9, 10, 11, 12, 13, 14, 15 };
+    var buffer: [36]u8 = undefined;
+    const text = formatId(id, &buffer);
+    try std.testing.expectEqualStrings("00010203-0405-4607-8809-0a0b0c0d0e0f", text);
+    try std.testing.expectEqual(id, parseId(text).?);
+    try std.testing.expect(parseId("not-an-id") == null);
+}

@@ -163,10 +163,13 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("src/server.zig"),
             .target = target,
             .optimize = optimize,
-            .imports = &.{.{
+            .imports = &.{ .{
                 .name = "web_assets",
                 .module = assets_module,
-            }},
+            }, .{
+                .name = "ghostty-vt",
+                .module = native_ghostty.module("ghostty-vt"),
+            } },
         }),
     });
     server.root_module.link_libc = true;
@@ -204,6 +207,11 @@ pub fn build(b: *std.Build) void {
         b.getInstallPath(.bin, "bcwebmux-server"),
         b.getInstallPath(.prefix, "web"),
     });
+    const session_api_smoke_cmd = b.addSystemCommand(&.{ "node", "test/session-api-smoke.mjs" });
+    session_api_smoke_cmd.step.dependOn(b.getInstallStep());
+    session_api_smoke_cmd.addArgs(&.{
+        b.getInstallPath(.bin, "bcwebmux-server"),
+    });
     e2e_cmd.step.dependOn(&mouse_selection_cmd.step);
     const e2e_step = b.step("e2e", "Run the physical-GPU browser-to-PTY end-to-end test");
     e2e_step.dependOn(&e2e_cmd.step);
@@ -225,13 +233,40 @@ pub fn build(b: *std.Build) void {
         }),
     });
     const run_vfs_tests = b.addRunArtifact(vfs_tests);
+    const session_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/Session.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{.{
+                .name = "ghostty-vt",
+                .module = native_ghostty.module("ghostty-vt"),
+            }},
+        }),
+    });
+    const run_session_tests = b.addRunArtifact(session_tests);
+    const session_registry_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/SessionRegistry.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{.{
+                .name = "ghostty-vt",
+                .module = native_ghostty.module("ghostty-vt"),
+            }},
+        }),
+    });
+    const run_session_registry_tests = b.addRunArtifact(session_registry_tests);
     const protocol_contract_cmd = b.addSystemCommand(&.{ "node", "test/protocol-contract.mjs" });
     const test_step = b.step("test", "Run unit and browser end-to-end tests");
     test_step.dependOn(&run_protocol_tests.step);
     test_step.dependOn(&run_vfs_tests.step);
+    test_step.dependOn(&run_session_tests.step);
+    test_step.dependOn(&run_session_registry_tests.step);
     test_step.dependOn(&protocol_contract_cmd.step);
     test_step.dependOn(&e2e_cmd.step);
     test_step.dependOn(&terminal_core_smoke_cmd.step);
+    test_step.dependOn(&session_api_smoke_cmd.step);
 }
 
 fn compressWoff2(b: *std.Build, input: std.Build.LazyPath, basename: []const u8) std.Build.LazyPath {
@@ -261,4 +296,3 @@ fn compressWoff2(b: *std.Build, input: std.Build.LazyPath, basename: []const u8)
     const output = command.addOutputFileArg(b.fmt("{s}.woff2", .{basename}));
     return output;
 }
-
