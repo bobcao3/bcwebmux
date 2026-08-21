@@ -80,9 +80,11 @@ async function run() {
   const colorA = averageCell(imageA, terminal, 0, 0);
 
   const coreB = await terminal.createCore();
+  const coreBMemoryBeforeRender = coreB.wasm.memory.buffer.byteLength;
   coreB.write("\x1b[2J\x1b[H\x1b[48;2;20;190;210m  \x1b[0m CORE-B-ACTIVE");
   terminal.attachCore(coreB);
   const imageB = await pixels(terminal);
+  const coreBMemoryAfterRender = coreB.wasm.memory.buffer.byteLength;
   const colorB = averageCell(imageB, terminal, 0, 0);
 
   const hiddenFrames = coreA.state.frames;
@@ -188,6 +190,8 @@ async function run() {
     gpuFrames: terminal.state.gpuFrames,
     colorA,
     colorB,
+    coreBMemoryBeforeRender,
+    coreBMemoryAfterRender,
     hiddenGeometry,
     redPixels,
     textA,

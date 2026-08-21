@@ -86,6 +86,8 @@ export interface TerminalDebugElements {
 
 export interface TerminalOptions {
   wasmUrl?: string | URL;
+  /** Font URLs in regular, bold, italic, bold-italic order; relative URLs resolve beside wasmUrl. */
+  wasmFontUrls?: readonly [string | URL, string | URL, string | URL, string | URL];
   renderer?: TerminalRenderer;
   canonicalGeometry?: boolean;
   font?: Partial<TerminalFont>;
@@ -100,6 +102,8 @@ export interface TerminalOptions {
 
 export interface TerminalCoreOptions {
   wasmUrl?: string | URL;
+  /** Font URLs in regular, bold, italic, bold-italic order; relative URLs resolve beside wasmUrl. */
+  wasmFontUrls?: readonly [string | URL, string | URL, string | URL, string | URL];
   renderer?: TerminalRenderer;
   font?: Partial<TerminalFont>;
   theme?: TerminalTheme;

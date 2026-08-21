@@ -12,6 +12,7 @@ import {
   packedColor,
   strictDecoder,
 } from "./TerminalOptions.js";
+import { loadWasmFontFaces, resolveWasmFontUrls } from "./WasmFonts.js";
 
 const WASM_STAGING_CAPACITY = 64 * 1024;
 const TEXT_STAGING_CHUNK = 48 * 1024;
@@ -39,14 +40,17 @@ function compiledModule(url) {
 export class TerminalCore {
   constructor(options = {}) {
     if (!options || typeof options !== "object") throw new TypeError("terminal core options must be an object");
+    const wasmUrl = options.wasmUrl || "/terminal.wasm";
     this.options = {
-      wasmUrl: options.wasmUrl || "/terminal.wasm",
+      wasmUrl,
+      wasmFontUrls: resolveWasmFontUrls(wasmUrl, options.wasmFontUrls),
       renderer: options.renderer === "kb-canvas" ? "kb-canvas" : "kb-stb",
       font: normalizeFont(options.font || DEFAULT_FONT),
       theme: options.theme || DEFAULT_THEME,
       clipboardWrite: options.clipboardWrite,
     };
     this._wasm = null;
+    this._fontFaces = null;
     this._host = null;
     this._opened = false;
     this._disposed = false;
@@ -104,6 +108,7 @@ export class TerminalCore {
       this._errorEmitter.emit(error);
       this._wasm?.term_deinit?.();
       this._wasm = null;
+      this._fontFaces = null;
       throw error;
     } finally {
       this._opening = null;
@@ -111,7 +116,11 @@ export class TerminalCore {
   }
 
   async _open(cols, rows) {
-    const module = await compiledModule(this.options.wasmUrl);
+    const [module, fontFaces] = await Promise.all([
+      compiledModule(this.options.wasmUrl),
+      loadWasmFontFaces(this.options.wasmFontUrls),
+    ]);
+    this._fontFaces = fontFaces;
     const instance = await WebAssembly.instantiate(module, this._createWasmImports());
     this._wasm = instance.exports;
     this._wasm.term_bootstrap();
@@ -156,6 +165,19 @@ export class TerminalCore {
         gpu_text_backend: () => this.options.renderer === "kb-canvas" ? 1 : 0,
         gpu_init: (...args) => this._host?._gpuInit(this, ...args) ?? 1,
         gpu_submit: (submissionPtr) => this._host?._gpuSubmit(this, submissionPtr) ?? 0,
+        font_size: (style) => {
+          if (!Number.isInteger(style) || style < 0 || style >= (this._fontFaces?.length ?? 0)) return 0;
+          return this._fontFaces[style]?.byteLength ?? 0;
+        },
+        font_copy: (style, ptr, len) => {
+          if (!Number.isInteger(style) || style < 0 || style >= (this._fontFaces?.length ?? 0)) return 0;
+          const face = this._fontFaces[style];
+          if (!face || !Number.isInteger(ptr) || !Number.isInteger(len) || ptr < 0 || len !== face.byteLength) return 0;
+          const memory = this._wasm?.memory?.buffer;
+          if (!memory || ptr > memory.byteLength - len) return 0;
+          new Uint8Array(memory, ptr, len).set(face);
+          return 1;
+        },
         user_write: (ptr, len) => emitBytes(this._dataEmitter, ptr, len, false),
         terminal_reply: (ptr, len) => emitBytes(this._replyEmitter, ptr, len, true),
         clipboard_write: (location, ptr, len) => this._clipboardWrite(location, ptr, len),
@@ -435,6 +457,7 @@ export class TerminalCore {
     this._disposed = true;
     this._wasm?.term_deinit?.();
     this._wasm = null;
+    this._fontFaces = null;
     this._host?._coreDisposed(this);
     this._host = null;
     for (const emitter of [

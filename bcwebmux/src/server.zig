@@ -314,6 +314,7 @@ const mime_types = std.StaticStringMap([]const u8).initComptime(.{
     .{ ".png", "image/png" },
     .{ ".wasm", "application/wasm" },
     .{ ".woff2", "font/woff2" },
+    .{ ".ttf", "font/ttf" },
     .{ ".txt", "text/plain; charset=utf-8" },
 });
 

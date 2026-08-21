@@ -61,6 +61,14 @@ let browser;
 
 try {
   await waitFor(async () => (await fetch(`${base}/api/server`).catch(() => null))?.ok, 10000, "server failed to start");
+  const font = await fetch(`${base}/fonts/JetBrainsMonoNerdFontMono-Regular.ttf`);
+  assert.equal(font.status, 200);
+  assert.match(font.headers.get("content-type") || "", /^font\/ttf(?:;|$)/);
+  assert.equal(font.headers.get("cache-control"), "public, no-cache, must-revalidate");
+  assert.match(font.headers.get("etag") || "", /^"[0-9a-f]{64}"$/);
+  assert.ok((await font.arrayBuffer()).byteLength > 2 * 1024 * 1024);
+  const dialogs = await fetch(`${base}/dialogs.css`);
+  assert.equal(dialogs.status, 200);
   chromium = spawn(process.env.CHROMIUM || "chromium", [
     "--headless=new",
     "--window-size=1024,720",

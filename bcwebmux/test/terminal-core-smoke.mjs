@@ -123,6 +123,8 @@ try {
   assert.equal(result.coreCount, 2);
   assert.ok(result.coreSwitches >= 14);
   assert.ok(result.gpuFrames >= result.coreSwitches);
+  assert.ok(result.coreBMemoryBeforeRender < 20 * 1024 * 1024, JSON.stringify(result));
+  assert.ok(result.coreBMemoryAfterRender > result.coreBMemoryBeforeRender, JSON.stringify(result));
   assert.ok(result.colorA[0] > result.colorA[1] * 2 && result.colorA[0] > result.colorA[2] * 2, JSON.stringify(result.colorA));
   assert.ok(result.colorB[1] > result.colorB[0] * 2 && result.colorB[2] > result.colorB[0] * 2, JSON.stringify(result.colorB));
   assert.ok(result.redPixels >= 4);

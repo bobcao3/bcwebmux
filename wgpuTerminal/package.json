@@ -18,6 +18,7 @@
       "default": "./src/index.js"
     },
     "./terminal.wasm": "./dist/terminal.wasm",
+    "./fonts/*": "./dist/fonts/*",
     "./css/terminal.css": "./css/terminal.css"
   },
   "files": [

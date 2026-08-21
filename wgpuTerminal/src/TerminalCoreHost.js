@@ -12,6 +12,7 @@ export async function createCore(host, options = {}) {
   const font = normalizeFont({ ...host.options.font, ...(options.font || {}) });
   const core = new TerminalCore({
     wasmUrl: options.wasmUrl ?? host.options.wasmUrl,
+    wasmFontUrls: options.wasmFontUrls ?? host.options.wasmFontUrls,
     renderer: options.renderer ?? host.options.renderer,
     font,
     theme: options.theme ?? host.options.theme,

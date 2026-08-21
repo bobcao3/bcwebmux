@@ -27,6 +27,17 @@ await terminal.open(document.querySelector("#terminal-container"));
 terminal.focus();
 ```
 
+## WASM fonts
+
+`terminal.wasm` contains no fonts. The default loader fetches four
+`JetBrainsMonoNerdFontMono` TTF files from `fonts/` beside `wasmUrl`, in
+regular, bold, italic, and bold-italic order. Fetched face bytes are cached
+and shared across cores; each core copies a face into its own linear memory
+only when that style is first rendered. The package exports these files under
+`@bcwebmux/wgpu-terminal/fonts/*`; consumers may provide a `wasmFontUrls`
+array in the same order. CSS `@font-face` declarations should point at the
+same URLs so the HTTP cache serves both browser and WASM users.
+
 ## More than one terminal
 
 Create a core for each terminal state and attach the one that should be visible. Cores can keep receiving backend output while another is on screen, and snapshots can be restored before attachment.

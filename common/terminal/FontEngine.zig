@@ -2,7 +2,6 @@
 // Copyright (c) 2026 Cheng Cao
 
 const std = @import("std");
-const fonts = @import("fonts");
 const Self = @This();
 
 const c = @cImport({
@@ -10,7 +9,11 @@ const c = @cImport({
     @cInclude("stb_truetype.h");
 });
 
+extern "host" fn font_size(style: u32) u32;
+extern "host" fn font_copy(style: u32, ptr: [*]u8, len: u32) i32;
+
 const alloc = std.heap.wasm_allocator;
+const max_font_bytes: usize = 16 * 1024 * 1024;
 
 pub const Metrics = struct {
     cell_width: u16,
@@ -43,10 +46,12 @@ const Face = struct {
 context: ?*c.kbts_shape_context = null,
 faces: [4]Face = undefined,
 face_ready: [4]bool = [_]bool{false} ** 4,
+font_data: [4]?[]u8 = [_]?[]u8{null} ** 4,
 
 pub fn bootstrap(self: *Self) void {
     self.context = null;
     self.face_ready = [_]bool{false} ** 4;
+    self.font_data = [_]?[]u8{null} ** 4;
 }
 
 pub fn cAlloc(len: usize) ?*anyopaque {
@@ -78,15 +83,26 @@ pub fn init(self: *Self) !void {
     self.context = c.kbts_CreateShapeContext(&kbAllocator, null) orelse return error.ShapeContextInitFailed;
 }
 
+fn loadFont(self: *Self, index: usize) ![]u8 {
+    if (self.font_data[index]) |existing| return existing;
+
+    const size_raw = font_size(@intCast(index));
+    if (size_raw == 0) return error.FontDataMissing;
+    const size = std.math.cast(usize, size_raw) orelse return error.FontTooLarge;
+    if (size > max_font_bytes) return error.FontTooLarge;
+
+    const data = try alloc.alloc(u8, size);
+    errdefer alloc.free(data);
+    if (font_copy(@intCast(index), data.ptr, size_raw) != 1)
+        return error.FontCopyFailed;
+    self.font_data[index] = data;
+    return data;
+}
+
 fn ensureFace(self: *Self, style: FontStyle) !*Face {
     const index = @intFromEnum(style);
     if (self.face_ready[index]) return &self.faces[index];
-    const data = switch (style) {
-        .regular => fonts.regular,
-        .bold => fonts.bold,
-        .italic => fonts.italic,
-        .bold_italic => fonts.bold_italic,
-    };
+    const data = try self.loadFont(index);
     try initFace(&self.faces[index], data);
     self.face_ready[index] = true;
     return &self.faces[index];

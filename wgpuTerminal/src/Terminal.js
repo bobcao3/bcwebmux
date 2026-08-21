@@ -45,6 +45,7 @@ export class Terminal {
     if (!options || typeof options !== "object") throw new TypeError("terminal options must be an object");
     this.options = {
       wasmUrl: options.wasmUrl || "/terminal.wasm",
+      wasmFontUrls: options.wasmFontUrls,
       renderer: options.renderer === "kb-canvas" ? "kb-canvas" : "kb-stb",
       font: normalizeFont(options.font),
       theme: options.theme || DEFAULT_THEME,
@@ -208,6 +209,7 @@ export class Terminal {
 
     const core = new TerminalCore({
       wasmUrl: this.options.wasmUrl,
+      wasmFontUrls: this.options.wasmFontUrls,
       renderer: this.options.renderer,
       font: this.options.font,
       theme: this.options.theme,

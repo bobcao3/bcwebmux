@@ -4,7 +4,7 @@ A fast browser terminal built with Ghostty's terminal engine, WebAssembly, WebGP
 
 ## Get started
 
-Prerequisites: Zig 0.16, Node/npm, GNU tar, zstd and development headers, `woff2_compress`, Linux, and WebGPU-capable Chromium.
+Prerequisites: Zig 0.16, Node/npm, GNU tar, zstd and development headers, Linux, and WebGPU-capable Chromium.
 
 ```sh
 npm install

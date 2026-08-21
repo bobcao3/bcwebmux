@@ -17,6 +17,7 @@ pub fn build(b: *std.Build) void {
     const kb = b.dependency("kb", .{ .target = wasm_target, .optimize = wasm_optimize });
     const stb = b.dependency("stb", .{ .target = wasm_target, .optimize = wasm_optimize });
     const jetbrains_mono_nerd_font = b.dependency("jetbrains_mono_nerd_font", .{});
+    const terminal_font_styles = [_][]const u8{ "Regular", "Bold", "Italic", "BoldItalic" };
     const ghostty = b.dependency("ghostty", .{
         .target = wasm_target,
         .optimize = wasm_optimize,
@@ -31,47 +32,16 @@ pub fn build(b: *std.Build) void {
         .@"emit-lib-vt" = true,
         .@"vt-features" = "-all,+snapshot",
     });
-    const terminal_fonts = b.addWriteFiles();
-    _ = terminal_fonts.addCopyFile(
-        jetbrains_mono_nerd_font.path("JetBrainsMonoNerdFontMono-Regular.ttf"),
-        "regular.ttf",
-    );
-    _ = terminal_fonts.addCopyFile(
-        jetbrains_mono_nerd_font.path("JetBrainsMonoNerdFontMono-Bold.ttf"),
-        "bold.ttf",
-    );
-    _ = terminal_fonts.addCopyFile(
-        jetbrains_mono_nerd_font.path("JetBrainsMonoNerdFontMono-Italic.ttf"),
-        "italic.ttf",
-    );
-    _ = terminal_fonts.addCopyFile(
-        jetbrains_mono_nerd_font.path("JetBrainsMonoNerdFontMono-BoldItalic.ttf"),
-        "bold_italic.ttf",
-    );
-    const fonts_module = b.createModule(.{
-        .root_source_file = terminal_fonts.add("fonts.zig",
-            \\pub const regular = @embedFile("regular.ttf");
-            \\pub const bold = @embedFile("bold.ttf");
-            \\pub const italic = @embedFile("italic.ttf");
-            \\pub const bold_italic = @embedFile("bold_italic.ttf");
-            \\
-        ),
-        .target = wasm_target,
-        .optimize = wasm_optimize,
-    });
     const wasm = b.addExecutable(.{
         .name = "terminal",
         .root_module = b.createModule(.{
             .root_source_file = b.path("../common/terminal/main.zig"),
             .target = wasm_target,
             .optimize = wasm_optimize,
-            .imports = &.{ .{
+            .imports = &.{.{
                 .name = "ghostty-vt",
                 .module = ghostty.module("ghostty-vt"),
-            }, .{
-                .name = "fonts",
-                .module = fonts_module,
-            } },
+            }},
         }),
     });
     wasm.root_module.addCSourceFile(.{
@@ -113,17 +83,15 @@ pub fn build(b: *std.Build) void {
     _ = web_assets.addCopyDirectory(b.path("../wgpuTerminal/src"), "wgpuTerminal/src", .{});
     _ = web_assets.addCopyDirectory(b.path("../wgpuTerminal/css"), "wgpuTerminal/css", .{});
     _ = web_assets.addCopyFile(b.path("../node_modules/fzstd/esm/index.mjs"), "fzstd.js");
-    for ([_][]const u8{ "Regular", "Bold", "Italic", "BoldItalic" }) |style| {
+    for (terminal_font_styles) |style| {
         const basename = b.fmt("JetBrainsMonoNerdFontMono-{s}", .{style});
-        _ = web_assets.addCopyFile(
-            compressWoff2(
-                b,
-                jetbrains_mono_nerd_font.path(b.fmt("{s}.ttf", .{basename})),
-                basename,
-            ),
-            b.fmt("fonts/{s}.woff2", .{basename}),
-        );
+        const font = jetbrains_mono_nerd_font.path(b.fmt("{s}.ttf", .{basename}));
+        const font_install = b.addInstallFile(font, b.fmt("wgpu-terminal/fonts/{s}.ttf", .{basename}));
+        terminal_wasm_step.dependOn(&font_install.step);
+        _ = web_assets.addCopyFile(font, b.fmt("fonts/{s}.ttf", .{basename}));
     }
+    const font_license_install = b.addInstallFile(b.path("web/fonts/OFL.txt"), "wgpu-terminal/fonts/OFL.txt");
+    terminal_wasm_step.dependOn(&font_license_install.step);
     _ = web_assets.addCopyFile(
         b.path("../node_modules/@fontsource/noto-emoji/files/noto-emoji-emoji-400-normal.woff2"),
         "fonts/NotoEmoji-Regular.woff2",
@@ -232,9 +200,12 @@ pub fn build(b: *std.Build) void {
     session_checkpoint_contract_cmd.addArgs(&.{
         b.getInstallPath(.prefix, "web"),
     });
+    const wasm_font_contract_cmd = b.addSystemCommand(&.{ "node", "test/wasm-font-contract.mjs" });
+    wasm_font_contract_cmd.step.dependOn(b.getInstallStep());
+    wasm_font_contract_cmd.step.dependOn(&session_checkpoint_contract_cmd.step);
     const wasm_size_contract_cmd = b.addSystemCommand(&.{ "node", "test/wasm-size-contract.mjs" });
     wasm_size_contract_cmd.step.dependOn(b.getInstallStep());
-    wasm_size_contract_cmd.step.dependOn(&session_checkpoint_contract_cmd.step);
+    wasm_size_contract_cmd.step.dependOn(&wasm_font_contract_cmd.step);
     wasm_size_contract_cmd.addArgs(&.{
         b.getInstallPath(.prefix, "web/terminal.wasm"),
     });
@@ -255,6 +226,7 @@ pub fn build(b: *std.Build) void {
     e2e_step.dependOn(&session_browser_smoke_cmd.step);
     e2e_step.dependOn(&session_controller_contract_cmd.step);
     e2e_step.dependOn(&session_checkpoint_contract_cmd.step);
+    e2e_step.dependOn(&wasm_font_contract_cmd.step);
     e2e_step.dependOn(&wasm_size_contract_cmd.step);
     e2e_step.dependOn(&session_ui_e2e_cmd.step);
 
@@ -312,34 +284,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&session_browser_smoke_cmd.step);
     test_step.dependOn(&session_controller_contract_cmd.step);
     test_step.dependOn(&session_checkpoint_contract_cmd.step);
+    test_step.dependOn(&wasm_font_contract_cmd.step);
     test_step.dependOn(&wasm_size_contract_cmd.step);
     test_step.dependOn(&session_ui_e2e_cmd.step);
-}
-
-fn compressWoff2(b: *std.Build, input: std.Build.LazyPath, basename: []const u8) std.Build.LazyPath {
-    const command = b.addSystemCommand(&.{
-        "sh",
-        "-c",
-        \\set -eu
-        \\if ! command -v woff2_compress >/dev/null 2>&1; then
-        \\    echo "error: woff2_compress was not found in PATH" >&2
-        \\    exit 1
-        \\fi
-        \\input="$1"
-        \\output="$2"
-        \\temporary="${output%.woff2}.ttf"
-        \\trap 'rm -f -- "$temporary"' EXIT
-        \\cp -- "$input" "$temporary"
-        \\if diagnostics="$(woff2_compress "$temporary" 2>&1)"; then
-        \\    :
-        \\else
-        \\    printf '%s\n' "$diagnostics" >&2
-        \\    exit 1
-        \\fi
-        ,
-        "compressWoff2",
-    });
-    command.addFileArg(input);
-    const output = command.addOutputFileArg(b.fmt("{s}.woff2", .{basename}));
-    return output;
 }

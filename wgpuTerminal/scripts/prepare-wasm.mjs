@@ -18,3 +18,17 @@ if (result.status !== 0) process.exit(result.status ?? 1);
 const destination = resolve(packageRoot, "dist/terminal.wasm");
 await mkdir(dirname(destination), { recursive: true });
 await copyFile(resolve(repositoryRoot, "bcwebmux/zig-out/wgpu-terminal/terminal.wasm"), destination);
+
+const fontFiles = [
+  "JetBrainsMonoNerdFontMono-Regular.ttf",
+  "JetBrainsMonoNerdFontMono-Bold.ttf",
+  "JetBrainsMonoNerdFontMono-Italic.ttf",
+  "JetBrainsMonoNerdFontMono-BoldItalic.ttf",
+  "OFL.txt",
+];
+const fontsSource = resolve(repositoryRoot, "bcwebmux/zig-out/wgpu-terminal/fonts");
+const fontsDestination = resolve(packageRoot, "dist/fonts");
+await mkdir(fontsDestination, { recursive: true });
+for (const filename of fontFiles) {
+  await copyFile(resolve(fontsSource, filename), resolve(fontsDestination, filename));
+}

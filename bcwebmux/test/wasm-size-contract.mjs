@@ -33,6 +33,6 @@ for (let offset = 8; offset < wasm.byteLength;) {
 const codeBytes = sections.get(10) ?? 0;
 const dataBytes = sections.get(11) ?? 0;
 assert.ok(codeBytes <= 512 * 1024, `WASM code section exceeded 512 KiB: ${codeBytes}`);
-assert.ok(dataBytes <= 11 * 1024 * 1024, `WASM data section exceeded 11 MiB: ${dataBytes}`);
-assert.ok(wasm.byteLength <= 12 * 1024 * 1024, `terminal WASM exceeded 12 MiB: ${wasm.byteLength}`);
+assert.ok(dataBytes <= 1 * 1024 * 1024, `WASM data section exceeded 1 MiB: ${dataBytes}`);
+assert.ok(wasm.byteLength <= 2 * 1024 * 1024, `terminal WASM exceeded 2 MiB: ${wasm.byteLength}`);
 console.log(JSON.stringify({ wasmBytes: wasm.byteLength, codeBytes, dataBytes }));
