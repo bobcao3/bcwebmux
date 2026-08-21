@@ -76,6 +76,7 @@ class MockTransport {
     this.state = { connected: true };
     this.failAttach = false;
     this.active = null;
+    this.lastAttachOptions = null;
   }
 
   onStatus() { return disposable(); }
@@ -84,7 +85,8 @@ class MockTransport {
   activate() {}
   async connect() {}
 
-  async attach(session, core) {
+  async attach(session, core, options = {}) {
+    this.lastAttachOptions = { ...options };
     if (this.failAttach) {
       this.failAttach = false;
       throw new Error("injected attachment failure");
@@ -157,10 +159,11 @@ async function harness(values, coreLimit = 4) {
 }
 
 {
-  const { controller, terminal } = await harness([metadata("a"), metadata("b")]);
+  const { controller, terminal, transport } = await harness([metadata("a"), metadata("b")]);
   const oldCore = terminal.core;
   terminal.failAttachCore = true;
   await assert.rejects(controller.switchTo("b"), /injected renderer handoff failure/);
+  assert.equal(transport.lastAttachOptions.preserveCore, false);
   assert.equal(controller.activeSessionId, "a");
   assert.equal(controller.activeCore, oldCore);
   assert.equal(controller.coreCount, 1);
@@ -187,10 +190,25 @@ async function harness(values, coreLimit = 4) {
   controller.activeAttachment.active = false;
   transport.failAttach = true;
   await assert.rejects(controller.switchTo("a"), /injected attachment failure/);
+  assert.equal(transport.lastAttachOptions.preserveCore, true);
   assert.equal(controller.activeSessionId, "a");
   assert.equal(controller.activeCore, retainedCore);
   assert.equal(retainedCore.disposed, false);
   assert.equal(controller.activeAttachment, null);
+  controller.dispose();
+}
+
+{
+  const { controller, api } = await harness([metadata("a")]);
+  const events = [];
+  const subscription = controller.onChange(event => events.push(event.type));
+  await controller.refresh();
+  assert.deepEqual(events, []);
+  api.values.set("a", { ...api.values.get("a"), name: "Changed" });
+  api.revision += 1;
+  await controller.refresh();
+  subscription.dispose();
+  assert.deepEqual(events, ["list"]);
   controller.dispose();
 }
 

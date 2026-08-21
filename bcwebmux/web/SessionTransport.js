@@ -41,6 +41,7 @@ import {
 const INITIAL_CREDIT = 32 * 1024 * 1024;
 const MAX_BUFFERED_AMOUNT = 4 * 1024 * 1024;
 const MAX_FROZEN_BYTES = 4 * 1024 * 1024;
+const MAX_EVENT_RAW_BYTES = 256 * 1024
 const INITIAL_RECONNECT_MS = 250;
 const MAX_RECONNECT_MS = 5000;
 const RTT_INTERVAL_MS = 1000;
@@ -74,6 +75,7 @@ export class SessionTransport {
   #statusEmitter = createEmitter();
   #sessionChangedEmitter = createEmitter();
   #errorEmitter = createEmitter();
+  #eventScratch = null
   #state = {
     connected: false,
     status: "disconnected",
@@ -158,6 +160,7 @@ export class SessionTransport {
       frozen: [],
       frozenBytes: 0,
       claim: options.claim !== false,
+      preserveCore: options.preserveCore !== false,
       resolve: null,
       reject: null,
       promise: null,
@@ -207,6 +210,7 @@ export class SessionTransport {
     for (const record of [...this.#records.values()]) this.#removeRecord(record, new Error("session transport disposed"));
     this.#socket?.close();
     this.#socket = null;
+    this.#eventScratch = null
     this.#setStatus("disconnected", false);
     this.#statusEmitter.clear();
     this.#sessionChangedEmitter.clear();
@@ -306,7 +310,8 @@ export class SessionTransport {
     const controller = readUint64LE(frame.payload, 72);
     record.controller = controller === record.attachmentId;
     record.state = mode === 1 ? "restoring" : "catching-up";
-    if (mode === 1 || (mode === 0 && (record.eventSeq !== 0n || record.outputOffset !== 0n))) {
+    const replayMutatesCore = mode === 1 || (mode === 0 && (record.eventSeq !== 0n || record.outputOffset !== 0n))
+    if (record.preserveCore && replayMutatesCore) {
       if (!await ensureShadow(this.#terminal, this.#records, record, data => this.#sendInput(record, data))) return;
     }
     this.#requireRecord(record, frame);
@@ -370,8 +375,9 @@ export class SessionTransport {
     const body = payload.subarray(32);
     if (kind === 0) {
       if (flags !== COMPRESSED_FLAG) throw new Error("output event is not independently compressed");
-      if (rawLength > 256 * 1024) throw new Error("output event is too large");
-      const raw = decompress(body, new Uint8Array(rawLength));
+      if (rawLength > MAX_EVENT_RAW_BYTES) throw new Error("output event is too large");
+      if (!this.#eventScratch || this.#eventScratch.byteLength < rawLength) this.#eventScratch = new Uint8Array(rawLength)
+      const raw = decompress(body, this.#eventScratch.subarray(0, rawLength))
       if (raw.byteLength !== rawLength || crc32c(raw) !== crc) throw new Error("corrupt output event");
       if (record === this.#activeRecord && this.#terminal) this.#terminal.write(raw);
       else record.core.write(raw);
@@ -406,6 +412,7 @@ export class SessionTransport {
     record.previousInputDisposable = null;
     record.previousCore = null;
     record.previousWasHostActive = false;
+    record.preserveCore = true
     this.#sendAck(record, INITIAL_CREDIT);
     record.resolve?.(record);
     record.resolve = null;

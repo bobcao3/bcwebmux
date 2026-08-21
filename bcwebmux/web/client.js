@@ -46,6 +46,8 @@ let softkeysVisibilityOverride = null;
 let softkeysVisible = false;
 let pendingLinkUri = null;
 let appReady = false;
+let lastTelemetryLine = null;
+let lastTelemetryDescription = null;
 
 async function openInitialSession() {
   await terminal.open(terminalElement);
@@ -418,7 +420,7 @@ function combinedState() {
 
 function updateTelemetry() {
   const mode = perf.dataset.mode || "detailed";
-  if (mode === "off") return;
+  if (document.hidden || mode === "off") return;
   const state = combinedState();
   const atlasUsed = state.atlasGlyphs ?? 0;
   const atlasCapacity = state.atlasCapacity ?? 0;
@@ -436,10 +438,16 @@ function updateTelemetry() {
       `Viewport: ${state.cols} × ${state.rows} · cell: ${state.physicalCellWidth}x${state.physicalCellHeight} px · font: ${state.physicalFontSize} px · Glyph atlas: ${atlasUsed} / ${atlasCapacity} (${atlasPercent}%) · cache: ${cacheHits} hit / ${cacheMisses} miss`,
       `Network received: ${formatBytes(state.rxBytes)} decoded · wire: ${formatBytes(state.rxWireBytes)} · compression: ${formatCompressionRatio(state.rxBytes, state.rxWireBytes)} · sent: ${formatBytes(state.txBytes)}`,
     ].join("\n");
-  perf.value = line;
+  if (line !== lastTelemetryLine) {
+    perf.value = line;
+    lastTelemetryLine = line;
+  }
   const description = `WASM frame ${formatMs(state.wasmFrameMs)} ms; WASM parse ${formatMs(state.wasmParseMs)} ms; presentation opportunity ${formatMs(state.presentationOpportunityMs)} ms; queue drain ${formatMs(state.queueDrainMs)} ms; Socket → frame ${formatMs(state.rxLatencyMs)} ms; Input → echo frame ${formatMs(state.inputLatencyMs)} ms; WebSocket RTT latest / median / p95 ${formatMs(state.wsRttLatestMs)} / ${formatMs(state.wsRttMedianMs)} / ${formatMs(state.wsRttP95Ms)} ms; terminal ${state.cols} by ${state.rows}; atlas ${atlasUsed} of ${atlasCapacity} (${atlasPercent}%); down ${formatBytes(state.rxBytes)} decoded, ${formatBytes(state.rxWireBytes)} wire (${formatCompressionRatio(state.rxBytes, state.rxWireBytes)}), up ${formatBytes(state.txBytes)}; CPU submit ${formatMs(state.frameMs)} ms; canvas ${screen.width} by ${screen.height} pixels`;
-  perf.title = description;
-  perf.setAttribute("aria-label", description);
+  if (description !== lastTelemetryDescription) {
+    perf.title = description;
+    perf.setAttribute("aria-label", description);
+    lastTelemetryDescription = description;
+  }
 }
 
 window.bcwebmux = {

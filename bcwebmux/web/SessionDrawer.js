@@ -52,6 +52,7 @@ export class SessionDrawer {
   #narrow = false
   #open = false
   #initialized = false
+  #renderQueued = false
   #disposed = false
   #focusBeforeOpen = null
   #confirm = null
@@ -144,7 +145,7 @@ export class SessionDrawer {
           this.#apply(false, false)
           this.#restoreFocus()
         }
-        this.render()
+        this.#scheduleRender()
       }))
     }
     if (typeof this.#controller.onError === "function") this.#subscriptions.push(this.#controller.onError(error => this.#announce(error?.message || String(error))))
@@ -172,6 +173,15 @@ export class SessionDrawer {
     }
     if (this.#initialized) this.#apply(this.#desiredOpen(), false)
     return this
+  }
+
+  #scheduleRender() {
+    if (this.#renderQueued || this.#disposed) return
+    this.#renderQueued = true
+    queueMicrotask(() => {
+      this.#renderQueued = false
+      if (!this.#disposed) this.render()
+    })
   }
 
   render() {
@@ -421,6 +431,7 @@ export class SessionDrawer {
   dispose() {
     if (this.#disposed) return
     this.#disposed = true
+    this.#renderQueued = false
     for (const item of this.#dom.splice(0)) item.target.removeEventListener?.(item.type, item.listener)
     for (const subscription of this.#subscriptions.splice(0)) subscription?.dispose?.()
     for (const dialog of this.#ownedDialogs.splice(0)) dialog.remove()

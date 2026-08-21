@@ -30,6 +30,34 @@ function copyMetadata(value) {
 
 function activityTime(metadata) { return Number(metadata.lastActivityMs ?? metadata.last_activity_ms ?? 0) || 0 }
 
+function sameObservableMetadata(a, b) {
+  if (a === b) return true
+  const aGeometry = a?.geometry
+  const bGeometry = b?.geometry
+  const aController = a?.controller
+  const bController = b?.controller
+  return (
+    Object.is(a?.generation == null ? null : String(a.generation), b?.generation == null ? null : String(b.generation)) &&
+    Object.is(a?.name == null ? null : String(a.name), b?.name == null ? null : String(b.name)) &&
+    Object.is(a?.title == null ? null : String(a.title), b?.title == null ? null : String(b.title)) &&
+    Object.is(a?.state == null ? null : String(a.state), b?.state == null ? null : String(b.state)) &&
+    Object.is(Number(a?.createdAtMs ?? 0), Number(b?.createdAtMs ?? 0)) &&
+    Object.is(Number(a?.lastActivityMs ?? 0), Number(b?.lastActivityMs ?? 0)) &&
+    Object.is(Number(a?.attachments ?? 0), Number(b?.attachments ?? 0)) &&
+    Object.is(Number(a?.checkpointBytes ?? 0), Number(b?.checkpointBytes ?? 0)) &&
+    Object.is(cursor(a?.eventSeq), cursor(b?.eventSeq)) &&
+    Object.is(cursor(a?.outputOffset), cursor(b?.outputOffset)) &&
+    Object.is(cursor(a?.checkpointEventSeq), cursor(b?.checkpointEventSeq)) &&
+    Object.is(aController?.attachmentId == null ? null : String(aController.attachmentId), bController?.attachmentId == null ? null : String(bController.attachmentId)) &&
+    Object.is(aController?.leaseEpoch == null ? null : String(aController.leaseEpoch), bController?.leaseEpoch == null ? null : String(bController.leaseEpoch)) &&
+    Object.is(a?.exitStatus, b?.exitStatus) &&
+    Object.is(Number(aGeometry?.cols ?? 0), Number(bGeometry?.cols ?? 0)) &&
+    Object.is(Number(aGeometry?.rows ?? 0), Number(bGeometry?.rows ?? 0)) &&
+    Object.is(Number(aGeometry?.cellWidthPx ?? 0), Number(bGeometry?.cellWidthPx ?? 0)) &&
+    Object.is(Number(aGeometry?.cellHeightPx ?? 0), Number(bGeometry?.cellHeightPx ?? 0))
+  )
+}
+
 export class SessionController {
   #terminal; #api; #transport; #storage; #coreLimit
   #metadata = new Map()
@@ -120,6 +148,7 @@ export class SessionController {
     this.#events.change.emit({ type: "started", controller: this })
     if (!this.#refreshTimer) this.#refreshTimer = setInterval(() => {
       if (globalThis.document?.hidden === true) return
+      if (!this.sessions.some(session => !this.isAttached(session.id))) return
       this.refresh().catch(error => this.#reportError(error, false))
     }, 3000)
     return this.activeSession
@@ -134,7 +163,7 @@ export class SessionController {
       const list = await this.#api.list()
       this.#replaceList(list, requestedAtRevision)
       this.#syncPointers()
-      this.#events.change.emit({ type: "refresh", controller: this, revision: this.#listRevision }); return this.sessions
+      return this.sessions
     } finally {
       this.#refreshing = false
       if (this.#refreshQueued) {
@@ -172,7 +201,7 @@ export class SessionController {
     const entry = await this.#ensureEntry(target)
     let record
     try {
-      record = await this.#attach(entry, target)
+      record = await this.#attach(entry, target, entry === old)
       this.#syncEntry(entry, record)
       if (record.live === false) throw new Error("session attachment did not reach the live barrier")
     } catch (error) {
@@ -219,10 +248,11 @@ export class SessionController {
     }
   }
 
-  async #attach(entry, metadata) {
+  async #attach(entry, metadata, preserveCore) {
     const record = await this.#transport.attach(metadata, entry.core, {
       eventSeq: entry.eventSeq,
       outputOffset: entry.outputOffset,
+      preserveCore,
     })
     this.#syncEntry(entry, record); return record
   }
@@ -371,6 +401,7 @@ export class SessionController {
     if (incomingRevision > 0 && requestedAtRevision != null && this.#listRevision > requestedAtRevision && incomingRevision <= this.#listRevision) return
     if (Number.isFinite(incomingRevision)) this.#listRevision = Math.max(this.#listRevision, incomingRevision)
     const seen = new Set()
+    let changed = false
     for (const value of values) {
       const metadata = copyMetadata(value)
       if (this.#removedIds.has(metadata.id)) continue
@@ -378,16 +409,23 @@ export class SessionController {
       const unread = previous?.unread ?? false
       const hasNewActivity = Boolean(previous && metadata.id !== this.#activeId && cursor(metadata.outputOffset) > cursor(previous.outputOffset))
       const error = previous?.error ?? null
+      const observableChanged = Boolean(previous && !sameObservableMetadata(previous, metadata))
       if (previous) Object.assign(previous, metadata)
-      else this.#metadata.set(metadata.id, metadata)
+      else {
+        this.#metadata.set(metadata.id, metadata)
+        changed = true
+      }
       const current = this.#metadata.get(metadata.id)
       current.unread = (metadata.unread ?? unread) || hasNewActivity
       current.error = metadata.error ?? error
+      if (observableChanged) changed = true
+      if (previous && unread !== current.unread) changed = true
+      if (previous && error !== current.error) changed = true
       seen.add(metadata.id)
     }
-    for (const [id, entry] of [...this.#cores]) if (!seen.has(id) && id !== this.#activeId && !this.#pendingSwitches.has(id)) this.#closeEntry(entry)
-    for (const id of [...this.#metadata.keys()]) if (!seen.has(id) && id !== this.#activeId && !this.#pendingSwitches.has(id)) this.#metadata.delete(id)
-    this.#events.change.emit({ type: "list", controller: this, revision: this.#listRevision })
+    for (const [id, entry] of [...this.#cores]) if (!seen.has(id) && id !== this.#activeId && !this.#pendingSwitches.has(id)) { this.#closeEntry(entry); changed = true }
+    for (const id of [...this.#metadata.keys()]) if (!seen.has(id) && id !== this.#activeId && !this.#pendingSwitches.has(id)) { this.#metadata.delete(id); changed = true }
+    if (changed) this.#events.change.emit({ type: "list", controller: this, revision: this.#listRevision })
   }
 
   #setStorageScope(serverInstance, principal) { const server = encodeURIComponent(String(serverInstance || "server")); const user = encodeURIComponent(String(principal || "principal")); this.#storageKey = `bcwebmux.last-session:${STORAGE_VERSION}:${server}:${user}`; this.#storageDenied = false }

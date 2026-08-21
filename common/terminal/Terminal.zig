@@ -209,6 +209,7 @@ pub fn term_snapshot_restore(self: *Self, len: u32) i32 {
     if (self.busy or len == 0 or len > snapshot_capacity) return 0;
     const staged = self.snapshot_staging orelse return 0;
     if (staged.len != len) return 0;
+    defer self.freeSnapshotStaging();
 
     self.busy = true;
     defer self.finishBusy();

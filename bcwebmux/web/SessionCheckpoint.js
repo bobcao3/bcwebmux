@@ -82,11 +82,13 @@ export function appendCheckpoint(record, frame) {
   if (rawLength > 256 * 1024 || offset + rawLength > record.checkpoint.byteLength) {
     throw new Error("corrupt checkpoint chunk");
   }
-  const raw = decompress(frame.payload.subarray(16), new Uint8Array(rawLength));
+  const raw = decompress(
+    frame.payload.subarray(16),
+    record.checkpoint.subarray(offset, offset + rawLength),
+  );
   if (raw.byteLength !== rawLength || crc32c(raw) !== crc) {
     throw new Error("corrupt checkpoint chunk");
   }
-  record.checkpoint.set(raw, offset);
   record.checkpointOffset += rawLength;
   return rawLength;
 }

@@ -188,6 +188,8 @@ pub fn detach(session: *Session, key: Session.AttachmentKey) Session.LeaseState 
         else
             session.promoteControllerLocked();
     }
+    if (session.attachment_count == 0 and session.state == .exited and session.current_checkpoint != null)
+        session.journal.release();
     session.bumpRevision();
     return leaseStateLocked(session);
 }

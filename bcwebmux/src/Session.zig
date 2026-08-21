@@ -81,16 +81,13 @@ pub const Event = struct {
 };
 
 pub const Journal = struct {
+    allocator: std.mem.Allocator,
     bytes: std.ArrayListUnmanaged(u8) = .empty,
     events: std.ArrayListUnmanaged(Event) = .empty,
     byte_limit: usize,
 
     pub fn init(allocator: std.mem.Allocator, byte_limit: usize) !Journal {
-        var value: Journal = .{ .byte_limit = byte_limit };
-        errdefer value.deinit(allocator);
-        try value.bytes.ensureTotalCapacity(allocator, byte_limit);
-        try value.events.ensureTotalCapacity(allocator, max_journal_records);
-        return value;
+        return .{ .allocator = allocator, .byte_limit = byte_limit };
     }
 
     pub fn deinit(self: *Journal, allocator: std.mem.Allocator) void {
@@ -102,6 +99,11 @@ pub const Journal = struct {
     pub fn clear(self: *Journal) void {
         self.bytes.clearRetainingCapacity();
         self.events.clearRetainingCapacity();
+    }
+
+    pub fn release(self: *Journal) void {
+        self.bytes.clearAndFree(self.allocator);
+        self.events.clearAndFree(self.allocator);
     }
 
     pub fn discardThrough(self: *Journal, event_seq: u64) void {
@@ -128,8 +130,32 @@ pub const Journal = struct {
         return byte_count <= self.byte_limit -| self.bytes.items.len and self.events.items.len < max_journal_records;
     }
 
+    fn ensureBytesCapacity(self: *Journal, additional: usize) !void {
+        const required = self.bytes.items.len + additional;
+        if (required <= self.bytes.capacity) return;
+        var capacity = self.bytes.capacity;
+        if (capacity == 0) capacity = 1;
+        while (capacity < required) {
+            capacity = @min(capacity +| (capacity / 2 + 1), self.byte_limit);
+        }
+        try self.bytes.ensureTotalCapacityPrecise(self.allocator, capacity);
+    }
+
+    fn ensureEventCapacity(self: *Journal, additional: usize) !void {
+        const required = self.events.items.len + additional;
+        if (required <= self.events.capacity) return;
+        var capacity = self.events.capacity;
+        if (capacity == 0) capacity = 1;
+        while (capacity < required) {
+            capacity = @min(capacity +| (capacity / 2 + 1), @as(usize, max_journal_records));
+        }
+        try self.events.ensureTotalCapacityPrecise(self.allocator, capacity);
+    }
+
     pub fn appendOutput(self: *Journal, bytes: []const u8, seq: u64, offset: u64, timestamp_ms: i64) !void {
         if (!self.canAppend(bytes.len)) return error.JournalFull;
+        try self.ensureBytesCapacity(bytes.len);
+        try self.ensureEventCapacity(1);
         const start = self.bytes.items.len;
         self.bytes.appendSliceAssumeCapacity(bytes);
         self.events.appendAssumeCapacity(.{
@@ -145,6 +171,7 @@ pub const Journal = struct {
 
     pub fn appendResize(self: *Journal, geometry: Geometry, seq: u64, offset: u64, timestamp_ms: i64) !void {
         if (!self.canAppend(0)) return error.JournalFull;
+        try self.ensureEventCapacity(1);
         self.events.appendAssumeCapacity(.{
             .kind = .resize,
             .seq = seq,
@@ -159,6 +186,7 @@ pub const Journal = struct {
 
     pub fn appendExit(self: *Journal, status: i32, seq: u64, offset: u64, timestamp_ms: i64) !void {
         if (!self.canAppend(0)) return error.JournalFull;
+        try self.ensureEventCapacity(1);
         self.events.appendAssumeCapacity(.{
             .kind = .exit,
             .seq = seq,
@@ -233,7 +261,6 @@ bytes_since_checkpoint: usize = 0,
 checkpoint_event_seq: u64 = 0,
 checkpoint_at_monotonic_ms: i64,
 current_checkpoint: ?Checkpoint = null,
-previous_checkpoint: ?Checkpoint = null,
 journal: Journal,
 connection: worker.Connection,
 mirror_terminal: ghostty.Terminal,
@@ -315,7 +342,6 @@ pub fn destroy(self: *Self) void {
     self.mirror_terminal.deinit(self.allocator);
     self.journal.deinit(self.allocator);
     freeCheckpoint(self.allocator, &self.current_checkpoint);
-    freeCheckpoint(self.allocator, &self.previous_checkpoint);
     self.allocator.destroy(self);
 }
 
@@ -558,6 +584,7 @@ fn acceptExit(self: *Self, status: i32) !void {
     self.exit_status = status;
     self.last_activity_ms = now;
     try self.createCheckpoint(now);
+    if (self.attachment_count == 0) self.journal.release();
     self.state = .exited;
     self.bumpRevision();
 }
@@ -606,8 +633,7 @@ fn createCheckpoint(self: *Self, now: i64) !void {
     const bytes = try encoded.toOwnedSlice();
     var digest: [32]u8 = undefined;
     std.crypto.hash.sha2.Sha256.hash(bytes, &digest, .{});
-    freeCheckpoint(self.allocator, &self.previous_checkpoint);
-    self.previous_checkpoint = self.current_checkpoint;
+    freeCheckpoint(self.allocator, &self.current_checkpoint);
     self.current_checkpoint = .{
         .bytes = bytes,
         .sha256 = digest,
@@ -766,4 +792,31 @@ test "journal compacts acknowledged prefix" {
     journal.discardThrough(4);
     try std.testing.expectEqual(@as(usize, 0), journal.events.items.len);
     try std.testing.expectEqual(@as(usize, 0), journal.bytes.items.len);
+}
+
+test "journal grows lazily within configured bounds" {
+    const byte_limit = 8 * 1024 * 1024;
+    var journal = try Journal.init(std.testing.allocator, byte_limit);
+    defer journal.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(usize, 0), journal.bytes.capacity);
+    try std.testing.expectEqual(@as(usize, 0), journal.events.capacity);
+
+    const data = [_]u8{0} ** (70 * 1024);
+    try journal.appendOutput(&data, 1, 0, 10);
+    try std.testing.expectEqual(data.len, journal.bytes.items.len);
+    try std.testing.expect(journal.bytes.capacity >= data.len);
+    try std.testing.expect(journal.bytes.capacity <= byte_limit);
+    try std.testing.expect(journal.events.capacity <= max_journal_records);
+
+    journal.release();
+    try std.testing.expectEqual(@as(usize, 0), journal.bytes.items.len);
+    try std.testing.expectEqual(@as(usize, 0), journal.events.items.len);
+    try std.testing.expectEqual(@as(usize, 0), journal.bytes.capacity);
+    try std.testing.expectEqual(@as(usize, 0), journal.events.capacity);
+
+    var small_journal = try Journal.init(std.testing.allocator, 4);
+    defer small_journal.deinit(std.testing.allocator);
+    try small_journal.appendOutput("1234", 1, 0, 10);
+    try std.testing.expectError(error.JournalFull, small_journal.appendOutput("x", 2, 4, 11));
 }

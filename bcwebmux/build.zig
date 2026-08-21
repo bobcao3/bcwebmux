@@ -226,6 +226,18 @@ pub fn build(b: *std.Build) void {
     const session_controller_contract_cmd = b.addSystemCommand(&.{ "node", "test/session-controller-contract.mjs" });
     session_controller_contract_cmd.step.dependOn(b.getInstallStep());
     session_controller_contract_cmd.step.dependOn(&session_browser_smoke_cmd.step);
+    const session_checkpoint_contract_cmd = b.addSystemCommand(&.{ "node", "test/session-checkpoint-contract.mjs" });
+    session_checkpoint_contract_cmd.step.dependOn(b.getInstallStep());
+    session_checkpoint_contract_cmd.step.dependOn(&session_controller_contract_cmd.step);
+    session_checkpoint_contract_cmd.addArgs(&.{
+        b.getInstallPath(.prefix, "web"),
+    });
+    const wasm_size_contract_cmd = b.addSystemCommand(&.{ "node", "test/wasm-size-contract.mjs" });
+    wasm_size_contract_cmd.step.dependOn(b.getInstallStep());
+    wasm_size_contract_cmd.step.dependOn(&session_checkpoint_contract_cmd.step);
+    wasm_size_contract_cmd.addArgs(&.{
+        b.getInstallPath(.prefix, "web/terminal.wasm"),
+    });
     const session_ui_e2e_cmd = b.addSystemCommand(&.{ "timeout", "120s", "node", "test/session-ui-e2e.mjs" });
     session_ui_e2e_cmd.step.dependOn(b.getInstallStep());
     session_ui_e2e_cmd.addArgs(&.{
@@ -236,12 +248,14 @@ pub fn build(b: *std.Build) void {
     terminal_core_smoke_cmd.step.dependOn(&e2e_cmd.step);
     session_browser_smoke_cmd.step.dependOn(&e2e_cmd.step);
     session_browser_smoke_cmd.step.dependOn(&terminal_core_smoke_cmd.step);
-    session_ui_e2e_cmd.step.dependOn(&session_controller_contract_cmd.step);
+    session_ui_e2e_cmd.step.dependOn(&wasm_size_contract_cmd.step);
     const e2e_step = b.step("e2e", "Run the physical-GPU browser-to-PTY end-to-end test");
     e2e_step.dependOn(&e2e_cmd.step);
     e2e_step.dependOn(&terminal_core_smoke_cmd.step);
     e2e_step.dependOn(&session_browser_smoke_cmd.step);
     e2e_step.dependOn(&session_controller_contract_cmd.step);
+    e2e_step.dependOn(&session_checkpoint_contract_cmd.step);
+    e2e_step.dependOn(&wasm_size_contract_cmd.step);
     e2e_step.dependOn(&session_ui_e2e_cmd.step);
 
     const protocol_tests = b.addTest(.{
@@ -297,6 +311,8 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&session_ws_smoke_cmd.step);
     test_step.dependOn(&session_browser_smoke_cmd.step);
     test_step.dependOn(&session_controller_contract_cmd.step);
+    test_step.dependOn(&session_checkpoint_contract_cmd.step);
+    test_step.dependOn(&wasm_size_contract_cmd.step);
     test_step.dependOn(&session_ui_e2e_cmd.step);
 }
 
