@@ -3,6 +3,8 @@
 
 import { Terminal } from "/wgpuTerminal/src/index.js";
 import { SessionApi } from "./SessionApi.js";
+import { SessionController } from "./SessionController.js";
+import { SessionDrawer } from "./SessionDrawer.js";
 import { SessionTransport } from "./SessionTransport.js";
 import { initializeSettings } from "./settings.js";
 
@@ -38,39 +40,52 @@ const settings = initializeSettings();
 const query = new URLSearchParams(location.search);
 const requestedRenderer = query.get("renderer");
 const textRenderer = requestedRenderer === "kb-canvas" ? "kb-canvas" : settings.renderer;
+if (query.has("gpu-test")) document.querySelector("#session-toggle").hidden = true;
 
 let softkeysVisibilityOverride = null;
 let softkeysVisible = false;
 let pendingLinkUri = null;
+let appReady = false;
 
 async function openInitialSession() {
   await terminal.open(terminalElement);
+  if (query.has("gpu-test")) return openGpuTestSession();
+  await sessionController.start();
+  activeAttachment = sessionController.activeAttachment;
+  drawer.setStorageScope(sessionController.storageScope);
+  drawer.render();
+  if (activeAttachment?.metadata?.state === "running") {
+    for (let elapsed = 0; elapsed < 3000 && !activeAttachment.controller; elapsed += 10) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      activeAttachment = sessionController.activeAttachment;
+    }
+    if (!activeAttachment.controller) throw new Error("session controller timeout");
+  }
+}
+
+async function openGpuTestSession() {
   const connectPromise = transport.connect();
   const [info, sessionList] = await Promise.all([sessionApi.info(), sessionApi.list()]);
   await connectPromise;
-  if (info.protocol !== "bcw.sessions") throw new Error("unsupported session protocol");
-  serverInfo = info;
-
-  const storageKey = `bcwebmux.last-session:${serverInfo.serverInstance}:${serverInfo.principal}`;
-  let storedSessionId = null;
-  try {
-    storedSessionId = localStorage.getItem(storageKey);
-  } catch {}
-  let selected = sessionList.sessions.find((session) => String(session.id) === storedSessionId);
-  if (!selected) selected = sessionList.sessions.find((session) => session.state === "running");
+  if (info?.protocol !== "bcw.sessions") throw new Error("unsupported session protocol");
+  let selected = sessionList.sessions.find((session) => session.state === "running");
   if (!selected) {
+    const state = terminal.state;
+    const cellWidth = Number.isFinite(state.physicalCellWidth) && state.physicalCellWidth > 0
+      ? Math.round(state.physicalCellWidth) : 8;
+    const cellHeight = Number.isFinite(state.physicalCellHeight) && state.physicalCellHeight > 0
+      ? Math.round(state.physicalCellHeight) : 16;
     selected = await sessionApi.create({
       profile: "shell",
       name: "Shell",
       geometry: {
         cols: terminal.cols,
         rows: terminal.rows,
-        cellWidthPx: Math.round(terminal.state.physicalCellWidth) || 8,
-        cellHeightPx: Math.round(terminal.state.physicalCellHeight) || 16,
+        cellWidthPx: cellWidth,
+        cellHeightPx: cellHeight,
       },
     });
   }
-
   activeAttachment = await transport.attach(selected, terminal.core);
   transport.setActive(activeAttachment);
   if (selected.state === "running") {
@@ -79,9 +94,6 @@ async function openInitialSession() {
     }
     if (!activeAttachment.controller) throw new Error("session controller timeout");
   }
-  try {
-    localStorage.setItem(storageKey, String(selected.id));
-  } catch {}
 }
 
 function setConnectionStatus(connected, label) {
@@ -280,14 +292,46 @@ const terminal = new Terminal({
 const sessionApi = new SessionApi();
 const transport = new SessionTransport();
 transport.activate(terminal);
+const sessionController = new SessionController({
+  terminal,
+  api: sessionApi,
+  transport,
+  coreLimit: 4,
+});
 let activeAttachment = null;
-let serverInfo = null;
-transport.onSessionChanged(async () => {
-  if (!activeAttachment) return;
-  try {
-    const sessionId = activeAttachment.metadata?.id ?? activeAttachment.sessionId ?? activeAttachment.id;
-    activeAttachment.metadata = await sessionApi.get(sessionId);
-  } catch {}
+const drawer = new SessionDrawer({
+  controller: sessionController,
+  elements: {
+    drawer: document.querySelector("#session-drawer"),
+    shell: document.querySelector("#app-shell"),
+    tabs: document.querySelector("#session-tabs"),
+    newButton: document.querySelector("#session-new"),
+    toggleButton: document.querySelector("#session-toggle"),
+    controlButton: document.querySelector("#session-control"),
+    workspace: document.querySelector("#workspace"),
+    backdrop: document.querySelector("#session-backdrop"),
+    liveRegion: document.querySelector("#session-live-region"),
+    renameDialog: document.querySelector("#session-rename-dialog"),
+    renameInput: document.querySelector("#session-rename-input"),
+    renameForm: document.querySelector("#session-rename-dialog form"),
+    renameCancel: document.querySelector("#session-rename-cancel"),
+    renameSubmit: document.querySelector("#session-rename-save"),
+    confirmDialog: document.querySelector("#session-action-dialog"),
+    confirmMessage: document.querySelector("#session-action-message"),
+    confirmCancel: document.querySelector("#session-action-cancel"),
+    confirmSubmit: document.querySelector("#session-action-confirm"),
+  },
+});
+drawer.init();
+if (query.has("gpu-test")) drawer.close();
+sessionController.onChange(() => {
+  activeAttachment = sessionController.activeAttachment;
+  const count = sessionController.sessions.length;
+  document.querySelector("#session-drawer-status").textContent =
+    `${count} ${count === 1 ? "SESSION" : "SESSIONS"}`;
+});
+sessionController.onActiveChange(() => {
+  activeAttachment = sessionController.activeAttachment;
 });
 terminal.onError((error) => setConnectionStatus(false, error?.message || "terminal error"));
 terminal.onTitleChange((title) => { document.title = title || "bcwebmux"; });
@@ -296,6 +340,15 @@ terminal.onBell(() => {
   setTimeout(() => terminalElement.classList.remove("flash"), 80);
 });
 terminal.onNotification(({ title, body }) => showDesktopNotification(title, body));
+sessionController.onTitleChange((title, metadata) => {
+  document.title = title || metadata?.name || "bcwebmux";
+});
+sessionController.onNotification(({ title, body }, metadata, active) => {
+  if (!active) showDesktopNotification(metadata?.name || metadata?.title || title || "bcwebmux", title ? `${title}: ${body}` : body);
+});
+sessionController.onError((error, global) => {
+  if (global) setConnectionStatus(false, error?.message || "session error");
+});
 terminal.onLinkActivate(({ uri }) => showLinkConfirmation(uri));
 terminal.onSelectionModeChange(({ active }) => updateSelectionModeUi(active));
 terminal.onSoftModifiersChange(updateSoftModifiers);
@@ -391,7 +444,7 @@ function updateTelemetry() {
 
 window.bcwebmux = {
   get connected() {
-    return transport.state.connected && !!activeAttachment?.live &&
+    return appReady && transport.state.connected && !!activeAttachment?.live &&
       (activeAttachment?.metadata?.state !== "running" || !!activeAttachment?.controller);
   },
   get activeSessionId() {
@@ -430,6 +483,58 @@ if (query.has("session-test")) {
     clientInstanceId: {
       get() { return transport.clientInstanceId; },
     },
+    sessions: {
+      get() {
+        return sessionController.sessions.map((metadata) => ({ ...metadata }));
+      },
+    },
+    drawerState: {
+      get() { return drawer.state; },
+    },
+    createSession: {
+      value(options) { return sessionController.create(options); },
+    },
+    switchSession: {
+      value(id) { return sessionController.switchTo(id); },
+    },
+    renameSession: {
+      value(id, name) { return sessionController.rename(id, name); },
+    },
+    terminateSession: {
+      value(id) { return sessionController.terminate(id); },
+    },
+    deleteSession: {
+      value(id) { return sessionController.delete(id); },
+    },
+    claimControl: {
+      value() { return sessionController.claim(); },
+    },
+    refreshSessions: {
+      value() { return sessionController.refresh(); },
+    },
+    toggleDrawer: {
+      value() { return drawer.toggle(); },
+    },
+    openDrawer: {
+      value() { return drawer.open(); },
+    },
+    closeDrawer: {
+      value() { return drawer.close(); },
+    },
+    resetDrawerPreference: {
+      value() { return drawer.resetPreference(); },
+    },
+    rendererIdentity: {
+      get() {
+        return {
+          coreCount: terminal.coreCount,
+          rendererCount: terminal._renderer ? 1 : 0,
+          deviceCount: terminal._renderer?.device ? 1 : 0,
+          screenCount: document.querySelectorAll("canvas#screen").length,
+          terminalCount: document.querySelectorAll("#terminal").length,
+        };
+      },
+    },
   });
 }
 
@@ -444,3 +549,4 @@ applyPerfMode(settings.perfMode);
 updateTelemetry();
 setInterval(updateTelemetry, 250);
 maybeShowNotificationPrompt();
+appReady = true;

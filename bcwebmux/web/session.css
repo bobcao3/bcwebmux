@@ -1,0 +1,436 @@
+/* SPDX-License-Identifier: MIT */
+/* Copyright (c) 2026 Cheng Cao */
+
+#app-shell {
+  --session-drawer-width: clamp(240px, 22vw, 280px);
+  position: fixed;
+  inset: 0;
+  display: grid;
+  grid-template-columns: var(--session-drawer-width) minmax(0, 1fr);
+  overflow: hidden;
+  background: var(--color-background);
+}
+
+#workspace {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  grid-column: 2;
+  grid-row: 1;
+  overflow: hidden;
+}
+
+#workspace #terminal {
+  position: absolute;
+  inset: 0;
+}
+
+#session-drawer {
+  z-index: 20;
+  display: grid;
+  min-width: 0;
+  min-height: 0;
+  grid-column: 1;
+  grid-row: 1;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  overflow: hidden;
+  border-right: 2px solid var(--color-border);
+  background: var(--color-background);
+  color: var(--color-foreground);
+  font-family: var(--terminal-font);
+}
+
+#session-drawer > header {
+  display: grid;
+  gap: 5px;
+  min-height: 58px;
+  padding: max(12px, env(safe-area-inset-top)) 14px 10px max(14px, env(safe-area-inset-left));
+  border-bottom: 2px solid var(--color-border);
+  background: var(--color-surface);
+}
+
+#session-drawer h1 {
+  margin: 0;
+  font-size: 15px;
+  line-height: 1;
+  letter-spacing: .06em;
+}
+
+#session-drawer-status {
+  min-height: 12px;
+  overflow: hidden;
+  color: var(--color-muted);
+  font-size: 10px;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#session-tabs {
+  display: flex;
+  min-height: 0;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px;
+  overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-color: var(--color-border) var(--color-background);
+}
+
+.session-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 44px 44px;
+  min-height: 56px;
+  border: 2px solid transparent;
+  background: var(--color-background);
+}
+
+.session-row:focus-within,
+.session-row:hover {
+  border-color: var(--color-border);
+}
+
+.session-tab,
+.session-viewer,
+.session-rename,
+.session-lifecycle {
+  min-width: 0;
+  min-height: 44px;
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--color-foreground);
+  font-family: var(--terminal-font);
+}
+
+.session-tab {
+  position: relative;
+  display: grid;
+  align-content: center;
+  gap: 5px;
+  padding: 7px 10px 7px 13px;
+  overflow: hidden;
+  text-align: left;
+}
+
+.session-tab[aria-selected="true"] {
+  background: var(--color-accent);
+  color: var(--color-background);
+  box-shadow: inset 5px 0 0 var(--color-foreground);
+}
+
+.session-name,
+.session-detail {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-name {
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.session-detail {
+  color: var(--color-muted);
+  font-size: 9px;
+  text-transform: uppercase;
+}
+
+.session-tab[aria-selected="true"] .session-detail {
+  color: var(--color-background);
+}
+
+.session-unread.is-unread::after {
+  position: absolute;
+  top: 8px;
+  right: 6px;
+  width: 7px;
+  height: 7px;
+  background: var(--color-success);
+  content: "";
+}
+
+.session-viewer,
+.session-rename,
+.session-lifecycle {
+  display: grid;
+  width: 44px;
+  height: 100%;
+  padding: 0;
+  place-items: center;
+  border-left: 1px solid var(--color-surface);
+  color: var(--color-muted);
+  font-size: 17px;
+  font-weight: 700;
+}
+
+.session-viewer:hover,
+.session-viewer:focus-visible,
+.session-rename:hover,
+.session-rename:focus-visible {
+  background: var(--color-foreground);
+  color: var(--color-background);
+  outline: 0;
+}
+
+.session-lifecycle:hover,
+.session-lifecycle:focus-visible {
+  background: var(--color-danger);
+  color: var(--color-background);
+  outline: 0;
+}
+
+.session-tab:focus-visible,
+#session-drawer button:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: -4px;
+}
+
+.session-row[data-state="exited"] .session-name,
+.session-row[data-state="failed"] .session-name {
+  color: var(--color-muted);
+}
+
+#session-drawer > footer {
+  display: grid;
+  gap: 6px;
+  padding: 8px max(8px, env(safe-area-inset-right)) calc(8px + env(safe-area-inset-bottom)) max(8px, env(safe-area-inset-left));
+  border-top: 2px solid var(--color-border);
+  background: var(--color-surface);
+}
+
+#session-new,
+#session-control {
+  min-height: 44px;
+  border: 2px solid var(--color-border);
+  border-radius: 0;
+  background: var(--color-background);
+  color: var(--color-foreground);
+  font: 700 11px/1 var(--terminal-font);
+}
+
+#session-new {
+  border-color: var(--color-accent);
+  background: var(--color-accent);
+  color: var(--color-background);
+}
+
+#session-new:hover,
+#session-new:focus-visible,
+#session-control:hover,
+#session-control:focus-visible {
+  border-color: var(--color-foreground);
+  background: var(--color-foreground);
+  color: var(--color-background);
+  outline: 0;
+}
+
+#session-control[data-controller="true"] {
+  border-color: var(--color-success);
+  color: var(--color-success);
+}
+
+#session-control:disabled,
+#session-new:disabled,
+.session-row button:disabled {
+  cursor: not-allowed;
+  opacity: .45;
+}
+
+#session-toggle {
+  display: grid;
+  width: 44px;
+  height: 44px;
+  flex: 0 0 44px;
+  padding: 8px;
+  place-items: center;
+  border: 0;
+  border-radius: 0;
+  background: var(--color-surface);
+  color: var(--color-foreground);
+  font: inherit;
+}
+
+#terminal-controls:has(#session-toggle:not([hidden])) {
+  padding-top: 0;
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+#session-toggle:hover,
+#session-toggle[aria-expanded="true"] {
+  color: var(--color-accent);
+}
+
+#session-toggle:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: -2px;
+}
+
+#session-toggle svg {
+  fill: currentColor;
+}
+
+#session-backdrop {
+  display: none;
+}
+
+#session-live-region {
+  position: fixed;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+#session-rename-dialog,
+#session-action-dialog {
+  width: min(460px, calc(100vw - 32px));
+  max-width: none;
+  padding: 0;
+  border: 2px solid var(--color-border);
+  border-radius: 0;
+  box-shadow: 4px 4px 0 var(--color-accent);
+  background: var(--color-background);
+  color: var(--color-foreground);
+  font-family: var(--terminal-font);
+}
+
+#session-rename-dialog::backdrop,
+#session-action-dialog::backdrop {
+  background: rgb(0 0 0 / 78%);
+}
+
+#session-rename-dialog form,
+#session-action-dialog[open] {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+}
+
+#session-rename-dialog header,
+#session-action-dialog header,
+#session-rename-dialog label,
+#session-action-dialog p {
+  grid-column: 1 / -1;
+}
+
+#session-rename-dialog header,
+#session-action-dialog header {
+  min-height: 48px;
+  padding: 0 14px;
+  border-bottom: 2px solid var(--color-border);
+  background: var(--color-surface);
+}
+
+#session-rename-dialog h1,
+#session-action-dialog h1 {
+  margin: 15px 0;
+  font-size: 15px;
+  letter-spacing: .06em;
+}
+
+#session-rename-dialog label,
+#session-action-dialog p {
+  display: grid;
+  gap: 8px;
+  margin: 18px 20px;
+  color: var(--color-muted);
+  font-size: 11px;
+}
+
+#session-rename-input {
+  width: 100%;
+  min-height: 40px;
+  padding: 6px 9px;
+  border: 2px solid var(--color-border);
+  border-radius: 0;
+  background: var(--color-surface);
+  color: var(--color-foreground);
+  font: 13px/1 var(--terminal-font);
+}
+
+#session-rename-dialog button,
+#session-action-dialog button {
+  min-height: 44px;
+  margin: 0 0 20px 20px;
+  border: 2px solid var(--color-border);
+  border-radius: 0;
+  background: var(--color-background);
+  color: var(--color-foreground);
+  font: 700 11px/1 var(--terminal-font);
+}
+
+#session-rename-dialog button:last-child,
+#session-action-dialog button:last-child {
+  margin-right: 20px;
+  border-color: var(--color-danger);
+  background: var(--color-danger);
+  color: var(--color-background);
+}
+
+#session-rename-dialog button:hover,
+#session-rename-dialog button:focus-visible,
+#session-action-dialog button:hover,
+#session-action-dialog button:focus-visible {
+  border-color: var(--color-foreground);
+  background: var(--color-foreground);
+  color: var(--color-background);
+  outline: 0;
+}
+
+@media (min-width: 721px) {
+  #app-shell.drawer-closed {
+    grid-template-columns: 0 minmax(0, 1fr);
+  }
+
+  #app-shell.drawer-closed #session-drawer {
+    visibility: hidden;
+  }
+
+  #app-shell.drawer-closed #workspace {
+    grid-column: 1 / -1;
+  }
+}
+
+@media (max-width: 720px) {
+  #app-shell {
+    display: block;
+  }
+
+  #workspace {
+    position: absolute;
+    inset: 0;
+  }
+
+  #session-drawer {
+    position: fixed;
+    inset: 0 auto 0 0;
+    width: min(320px, 86vw);
+    visibility: hidden;
+    transform: translateX(-100%);
+    border-right-color: var(--color-accent);
+    box-shadow: 6px 0 0 rgb(0 0 0 / 40%);
+  }
+
+  #app-shell.drawer-open #session-drawer {
+    visibility: visible;
+    transform: translateX(0);
+  }
+
+  #app-shell.drawer-open #session-backdrop {
+    position: fixed;
+    z-index: 19;
+    inset: 0;
+    display: block;
+    width: 100%;
+    height: 100%;
+    padding: 0;
+    border: 0;
+    background: rgb(0 0 0 / 66%);
+  }
+}
+

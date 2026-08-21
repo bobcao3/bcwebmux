@@ -18,9 +18,24 @@
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;700&amp;display=block">
   <link rel="stylesheet" href="/wgpuTerminal/css/terminal.css">
   <link rel="stylesheet" href="/style.css">
+  <link rel="stylesheet" href="/session.css">
 </head>
 <body>
-  <main id="terminal">
+  <div id="app-shell">
+    <output id="session-live-region" role="status" aria-live="polite"></output>
+    <aside id="session-drawer" aria-label="Sessions">
+      <header>
+        <h1>[ SESSIONS ]</h1>
+        <output id="session-drawer-status"></output>
+      </header>
+      <div id="session-tabs" role="tablist" aria-orientation="vertical" aria-label="Terminal sessions"></div>
+      <footer>
+        <button id="session-control" type="button">TAKE CONTROL</button>
+        <button id="session-new" type="button">NEW SESSION</button>
+      </footer>
+    </aside>
+    <div id="workspace">
+      <main id="terminal">
     <section id="terminal-viewport" role="application" aria-label="Terminal">
       <div id="scroll">
         <div id="spacer"><div id="text-view" aria-hidden="true"></div></div>
@@ -47,6 +62,11 @@
         <button type="button" data-code="PageDown" data-key="PageDown">PGDN</button>
       </nav>
       <div id="terminal-controls">
+        <button id="session-toggle" type="button" aria-controls="session-drawer" aria-expanded="false" aria-label="Open sessions" title="Open sessions">
+          <svg aria-hidden="true" viewBox="0 0 24 24" width="24" height="24" focusable="false">
+            <path fill="currentColor" d="M3 5h18v2H3V5Zm0 6h18v2H3v-2Zm0 6h18v2H3v-2Z"/>
+          </svg>
+        </button>
         <button id="selection-button" type="button" aria-pressed="false" aria-label="Enter selection mode" title="Select frozen terminal text">
           <svg aria-hidden="true" viewBox="0 0 24 24" width="24" height="24" focusable="false">
             <path fill="currentColor" d="M3 8V3h5v2H5v3H3Zm13-5h5v5h-2V5h-3V3ZM3 16h2v3h3v2H3v-5Zm16 0h2v5h-5v-2h3v-3ZM7 5h8v2h-3v6h-2V7H7V5Zm5 6 9 7-4 .8 2 3-1.7 1.1-2-3-2.2 2.8L12 11Z"/>
@@ -65,7 +85,10 @@
         </button>
       </div>
     </footer>
-  </main>
+      </main>
+    </div>
+    <button id="session-backdrop" type="button" aria-label="Close sessions" hidden></button>
+  </div>
   <aside id="input-debug" hidden>
     <header>INPUT TRACE</header>
     <button id="input-debug-clear" type="button">CLEAR</button>
@@ -89,6 +112,24 @@
     <output id="link-dialog-uri"></output>
     <button id="link-dialog-cancel" type="button">CANCEL</button>
     <button id="link-dialog-open" type="button">OPEN LINK</button>
+  </dialog>
+  <dialog id="session-rename-dialog" aria-labelledby="session-rename-title">
+    <form method="dialog">
+      <header>
+        <h1 id="session-rename-title">[ RENAME SESSION ]</h1>
+      </header>
+      <label>NAME <input id="session-rename-input" name="name" autocomplete="off" maxlength="80" required></label>
+      <button id="session-rename-cancel" value="cancel" type="submit">CANCEL</button>
+      <button id="session-rename-save" value="default" type="submit">SAVE</button>
+    </form>
+  </dialog>
+  <dialog id="session-action-dialog" aria-labelledby="session-action-title">
+    <header>
+      <h1 id="session-action-title">[ CONFIRM ]</h1>
+    </header>
+    <p id="session-action-message"></p>
+    <button id="session-action-cancel" type="button">CANCEL</button>
+    <button id="session-action-confirm" type="button">TERMINATE</button>
   </dialog>
   <dialog id="settings-dialog" aria-labelledby="settings-title">
     <header>
