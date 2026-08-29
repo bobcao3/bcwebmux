@@ -10,12 +10,13 @@ export interface GpuAdapterInfoDraft {
 }
 
 export interface GpuTerminalStatsDraft {
-  backend: "webgpu";
+  backend: "webgpu" | "webgl2";
   textRenderer: "kb-stb" | "kb-canvas";
   shaderF16: boolean;
   fontFamily: string;
   fontReloads: number;
   gpuFrames: number;
+  drawCalls?: number;
   coreSwitches: number;
   frameMs: number | null;
   queueDrainMs: number | null;
@@ -55,6 +56,8 @@ export interface TerminalViewElements {
 
 export type TerminalRenderer = "kb-stb" | "kb-canvas";
 
+export type TerminalRenderBackend = "auto" | "webgpu" | "webgl2";
+
 export interface TerminalTheme {
   background: string;
   foreground: string;
@@ -90,6 +93,7 @@ export interface TerminalOptions {
   /** Font URLs in regular, bold, italic, bold-italic order; relative URLs resolve beside wasmUrl. */
   wasmFontUrls?: readonly [string | URL, string | URL, string | URL, string | URL];
   renderer?: TerminalRenderer;
+  renderBackend?: TerminalRenderBackend;
   canonicalGeometry?: boolean;
   font?: Partial<TerminalFont>;
   theme?: TerminalTheme;

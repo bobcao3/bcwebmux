@@ -25,6 +25,9 @@ const input = document.querySelector("#input");
 const composition = document.querySelector("#composition");
 const softkeys = document.querySelector("#softkeys");
 const status = document.querySelector("#status");
+const clientError = document.querySelector("#client-error");
+const clientErrorMessage = document.querySelector("#client-error-message");
+const clientErrorDismiss = document.querySelector("#client-error-dismiss");
 const inputDebugPanel = document.querySelector("#input-debug");
 const inputDebugLog = document.querySelector("#input-debug-log");
 const inputDebugClear = document.querySelector("#input-debug-clear");
@@ -40,9 +43,52 @@ const notificationsEnable = document.querySelector("#notifications-enable");
 const notificationsStatus = document.querySelector("#notifications-status");
 const notificationPromptDismissalKey = "bcwebmux.notification-prompt-dismissed";
 const coarsePointer = window.matchMedia("(hover: none) and (pointer: coarse)");
+const clientErrorDetailLimit = 8;
+const clientErrorCharacterLimit = 2048;
+
+function errorValueMessage(value) {
+  if (typeof value === "string") return value.trim();
+  if (value instanceof Error) return value.message.trim();
+  return typeof value?.message === "string" ? value.message.trim() : "";
+}
+
+function formatClientError(error, fallback) {
+  const primary = errorValueMessage(error) || fallback;
+  const candidates = [
+    ...(Array.isArray(error?.errors) ? error.errors : []),
+    ...(error?.cause == null ? [] : [error.cause]),
+  ];
+  const details = [];
+  for (const candidate of candidates.slice(0, clientErrorDetailLimit)) {
+    const message = errorValueMessage(candidate);
+    if (message && message !== primary && !details.includes(message)) details.push(message);
+  }
+  return [primary, ...details.map((message) => `• ${message}`)]
+    .join("\n")
+    .slice(0, clientErrorCharacterLimit);
+}
+
+function showClientError(error, fallback = "client error") {
+  const message = formatClientError(error, fallback);
+  setConnectionStatus(false, message);
+  clientErrorMessage.textContent = message;
+  clientError.hidden = false;
+  console.error("client error", error);
+}
+
+clientErrorDismiss.addEventListener("click", () => {
+  clientErrorMessage.textContent = "";
+  clientError.hidden = true;
+});
+window.addEventListener("error", (event) => showClientError(event.error || event.message));
+window.addEventListener("unhandledrejection", (event) => showClientError(event.reason));
+
 const settings = initializeSettings();
 const query = new URLSearchParams(location.search);
 const requestedRenderer = query.get("renderer");
+const requestedBackend = query.get("backend");
+const renderBackend = requestedBackend === "webgpu" || requestedBackend === "webgl2"
+  ? requestedBackend : "auto";
 const textRenderer = requestedRenderer === "kb-canvas" ? "kb-canvas" : settings.renderer;
 if (query.has("gpu-test")) document.querySelector("#session-toggle").hidden = true;
 
@@ -52,6 +98,7 @@ let pendingLinkUri = null;
 let appReady = false;
 let lastTelemetryLine = null;
 let lastTelemetryDescription = null;
+let lastGpuError = null;
 
 async function openInitialSession() {
   await terminal.open(terminalElement);
@@ -129,7 +176,7 @@ function showDesktopNotification(title, body) {
       notification.close();
     });
   } catch (error) {
-    console.error("desktop notification failed", error);
+    showClientError(error, "desktop notification failed");
   }
 }
 
@@ -169,7 +216,7 @@ notificationsEnable?.addEventListener("click", async () => {
   try {
     await Notification.requestPermission();
   } catch (error) {
-    console.error("notification permission request failed", error);
+    showClientError(error, "notification permission request failed");
   } finally {
     updateNotificationPermissionUi();
   }
@@ -183,7 +230,7 @@ notificationDialogEnable?.addEventListener("click", async () => {
   try {
     await Notification.requestPermission();
   } catch (error) {
-    console.error("notification permission request failed", error);
+    showClientError(error, "notification permission request failed");
   } finally {
     updateNotificationPermissionUi();
     notificationDialog.close();
@@ -285,6 +332,7 @@ softkeys.addEventListener("click", (event) => {
 const terminal = new Terminal({
   wasmUrl: "/terminal.wasm",
   renderer: textRenderer,
+  renderBackend,
   canonicalGeometry: true,
   font: settings.font,
   theme: settings.profile,
@@ -320,6 +368,7 @@ const sessionController = new SessionController({
 let activeAttachment = null;
 const drawer = new SessionDrawer({
   controller: sessionController,
+  onError: (error) => showClientError(error, "session error"),
   elements: {
     drawer: document.querySelector("#session-drawer"),
     shell: document.querySelector("#app-shell"),
@@ -353,7 +402,7 @@ sessionController.onActiveChange(() => {
   activeAttachment = sessionController.activeAttachment;
   updateTerminalIdentity(sessionController.activeSession);
 });
-terminal.onError((error) => setConnectionStatus(false, error?.message || "terminal error"));
+terminal.onError((error) => showClientError(error, "terminal error"));
 terminal.onTitleChange((title) => {
   document.title = title || "bcwebmux";
   if (query.has("gpu-test")) updateTerminalIdentity(null, title);
@@ -370,8 +419,8 @@ sessionController.onTitleChange((title, metadata) => {
 sessionController.onNotification(({ title, body }, metadata, active) => {
   if (!active) showDesktopNotification(metadata?.name || metadata?.title || title || "bcwebmux", title ? `${title}: ${body}` : body);
 });
-sessionController.onError((error, global) => {
-  if (global) setConnectionStatus(false, error?.message || "session error");
+sessionController.onError((error) => {
+  showClientError(error, "session error");
 });
 terminal.onLinkActivate(({ uri }) => showLinkConfirmation(uri));
 terminal.onSelectionModeChange(({ active }) => updateSelectionModeUi(active));
@@ -383,14 +432,14 @@ settings.setOnFontChange(async (font) => {
   try {
     await terminal.setFont(font);
   } catch (error) {
-    setConnectionStatus(false, error?.message || "font error");
+    showClientError(error, "font error");
   }
 });
 settings.setOnRendererChange((renderer) => {
   try {
     terminal.setRenderer(renderer);
   } catch (error) {
-    setConnectionStatus(false, error?.message || "renderer error");
+    showClientError(error, "renderer error");
     throw error;
   }
 });
@@ -445,9 +494,14 @@ function combinedState() {
 }
 
 function updateTelemetry() {
-  const mode = perf.dataset.mode || "detailed";
-  if (document.hidden || mode === "off") return;
   const state = combinedState();
+  const mode = perf.dataset.mode || "detailed";
+  const gpuError = typeof state.gpuError === "string" ? state.gpuError.trim() || null : null;
+  if (gpuError !== null && gpuError !== lastGpuError) {
+    showClientError(new Error(gpuError), "renderer error");
+  }
+  lastGpuError = gpuError;
+  if (document.hidden || mode === "off") return;
   const atlasUsed = state.atlasGlyphs ?? 0;
   const atlasCapacity = state.atlasCapacity ?? 0;
   const atlasPercent = atlasCapacity ? Math.round(atlasUsed * 100 / atlasCapacity) : 0;
@@ -580,7 +634,7 @@ setConnectionStatus(false, "connecting");
 try {
   await openInitialSession();
 } catch (error) {
-  setConnectionStatus(false, error?.message || "terminal error");
+  showClientError(error, "terminal error");
   throw error;
 }
 applyPerfMode(settings.perfMode);

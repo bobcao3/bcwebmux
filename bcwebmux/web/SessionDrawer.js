@@ -48,6 +48,7 @@ export class SessionDrawer {
   #controller
   #refs
   #storage
+  #onError
   #storageKey = null
   #storageDenied = false
   #preference = null
@@ -70,6 +71,7 @@ export class SessionDrawer {
   constructor(controllerOrOptions, refs = {}) {
     const options = controllerOrOptions?.controller ? controllerOrOptions : { controller: controllerOrOptions, refs }
     this.#controller = options.controller
+    this.#onError = typeof options.onError === "function" ? options.onError : null
     const source = options.elements ?? options.refs ?? (controllerOrOptions?.controller ? controllerOrOptions : refs)
     this.#refs = {
       drawer: source.drawer ?? source.element,
@@ -328,7 +330,7 @@ export class SessionDrawer {
 
   #select(id) {
     if (this.#narrow && this.#open) { this.#apply(false, false); this.#restoreFocus() }
-    Promise.resolve(this.#controller.switchTo(id)).catch(error => this.#announce(error?.message || String(error)))
+    Promise.resolve(this.#controller.switchTo(id)).catch(error => this.#report(error))
   }
 
   #tabKey(event) {
@@ -475,7 +477,7 @@ export class SessionDrawer {
     const value = this.#refs.renameInput.value.trim()
     this.#closeDialog(this.#refs.renameDialog)
     try { await this.#controller.rename(id, value); this.#announce(value ? "Session renamed" : "Session name cleared") }
-    catch (error) { this.#announce(error?.message || String(error)) }
+    catch (error) { this.#report(error) }
   }
 
   #showConfirm(id, action) {
@@ -504,13 +506,13 @@ export class SessionDrawer {
         if (activeId != null) this.#tabs.get(String(activeId))?.focus()
       }
       this.#announce(action === "terminate" ? "Session termination requested" : "Session removed")
-    } catch (error) { this.#announce(error?.message || String(error)) }
+    } catch (error) { this.#report(error) }
   }
 
   async #create() {
     if (this.#narrow) this.close()
     try { await this.#controller.create(); this.#announce("Session created") }
-    catch (error) { this.#announce(error?.message || String(error)) }
+    catch (error) { this.#report(error) }
   }
 
   #ensureContextMenu(doc) {
@@ -559,6 +561,12 @@ export class SessionDrawer {
     if (!dialog) return
     try { dialog.close?.() } catch {}
     dialog.hidden = true
+  }
+
+  #report(error) {
+    const message = error?.message || String(error ?? "session error")
+    this.#announce(message)
+    this.#onError?.(error)
   }
 
   #announce(message) { if (this.#refs.liveRegion) this.#refs.liveRegion.textContent = String(message) }

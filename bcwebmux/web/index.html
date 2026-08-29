@@ -47,6 +47,11 @@
       <div id="composition" aria-hidden="true"></div>
       <div id="scrollbar" role="scrollbar" aria-label="Terminal scrollback" aria-orientation="vertical" tabindex="0" hidden><div id="scrollbar-thumb" aria-hidden="true"></div></div>
       <output id="perf">—</output>
+      <section id="client-error" role="alert" aria-live="assertive" hidden>
+        <header>[ CLIENT ERROR ]</header>
+        <button id="client-error-dismiss" type="button">DISMISS</button>
+        <output id="client-error-message"></output>
+      </section>
     </section>
     <footer id="terminal-chrome">
       <nav id="softkeys" aria-label="Terminal soft keys">

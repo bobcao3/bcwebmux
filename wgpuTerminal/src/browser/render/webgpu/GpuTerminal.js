@@ -13,23 +13,13 @@ import {
   readPixels as readPixelsResources,
   dispose as disposeResources,
 } from "./GpuTerminalResources.js";
+import {
+  parseRendererSubmission,
+  decodeCanvasRequestText,
+  applyRendererSubmission,
+} from "../RendererSubmission.js";
 
 const UNIFORM_BUFFER_SIZE = 72;
-const strictDecoder = new TextDecoder("utf-8", { fatal: true });
-
-function validateRange(memoryLength, ptr, length, label) {
-  if (!Number.isSafeInteger(ptr) || !Number.isSafeInteger(length) || ptr < 0 || length < 0 ||
-      ptr > memoryLength || length > memoryLength - ptr) {
-    throw new Error(`invalid submission ${label} range`);
-  }
-}
-
-function validateRecords(memoryLength, ptr, count, size, label) {
-  if (!Number.isSafeInteger(count) || count < 0 || count > Math.floor(Number.MAX_SAFE_INTEGER / size)) {
-    throw new Error(`invalid submission ${label} count`);
-  }
-  validateRange(memoryLength, ptr, count * size, label);
-}
 
 // JS drives WebGPU, but WASM owns the data-driven frame/cell/bitmap buffers shared across this boundary. CSS/DPR is converted once to integer raw-pixel font/cell metrics, which are then the single source of truth for both WASM rasterization and GPU uniforms.
 export class GpuTerminal {
@@ -184,130 +174,17 @@ export class GpuTerminal {
   }
 
   submitWasm(memory, submissionPtr) {
-    if (!this.initialized) throw new Error("GPU terminal is not initialized");
-    if (!(memory instanceof ArrayBuffer)) throw new Error("invalid renderer memory");
-    validateRange(memory.byteLength, submissionPtr, 112, "header");
-    const submission = new DataView(memory, submissionPtr, 112);
-    if (submission.getUint32(0, true) !== 0x5355424d || submission.getUint32(4, true) !== 3 || submission.getUint32(8, true) !== 112 || submission.getUint32(12, true) !== 0) {
-      throw new Error("invalid renderer submission");
-    }
-    const framePtr = submission.getUint32(16, true);
-    const frameLen = submission.getUint32(20, true);
-    const cellsPtr = submission.getUint32(24, true);
-    const cellsCount = submission.getUint32(28, true);
-    const dirtyRangesPtr = submission.getUint32(32, true);
-    const dirtyRangesCount = submission.getUint32(36, true);
-    const stylesPtr = submission.getUint32(40, true);
-    const stylesFirst = submission.getUint32(44, true);
-    const stylesCount = submission.getUint32(48, true);
-    const selectionsPtr = submission.getUint32(52, true);
-    const selectionsCount = submission.getUint32(56, true);
-    const bitmapUploadsPtr = submission.getUint32(60, true);
-    const bitmapUploadsCount = submission.getUint32(64, true);
-    const bitmapUploadPixelsPtr = submission.getUint32(68, true);
-    const bitmapUploadPixelsLen = submission.getUint32(72, true);
-    const canvasRequestsPtr = submission.getUint32(76, true);
-    const canvasRequestsCount = submission.getUint32(80, true);
-    const canvasTextPtr = submission.getUint32(84, true);
-    const canvasTextLen = submission.getUint32(88, true);
-    const textRowsPtr = submission.getUint32(92, true);
-    const textCellsPtr = submission.getUint32(96, true);
-    const textBytesPtr = submission.getUint32(100, true);
-    const textBytesLen = submission.getUint32(104, true);
-    const textChanged = submission.getUint32(108, true);
-    if (frameLen !== 68) throw new Error("invalid renderer frame length");
-    validateRange(memory.byteLength, framePtr, frameLen, "frame");
-    const frame = new DataView(memory, framePtr, frameLen);
-    validateRange(memory.byteLength, cellsPtr, cellsCount * this.cellSize, "cells");
-    validateRecords(memory.byteLength, dirtyRangesPtr, dirtyRangesCount, 8, "dirty");
-    const dirtyRangesView = new DataView(memory, dirtyRangesPtr, dirtyRangesCount * 8);
-    validateRecords(memory.byteLength, stylesPtr + stylesFirst * 12, stylesCount, 12, "styles");
-    validateRecords(memory.byteLength, selectionsPtr, selectionsCount, 4, "selections");
-    validateRecords(memory.byteLength, bitmapUploadsPtr, bitmapUploadsCount, 16, "bitmap upload");
-    const bitmapUploads = new DataView(memory, bitmapUploadsPtr, bitmapUploadsCount * 16);
-    validateRecords(memory.byteLength, canvasRequestsPtr, canvasRequestsCount, 24, "Canvas");
-    const canvases = new DataView(memory, canvasRequestsPtr, canvasRequestsCount * 24);
-    validateRange(memory.byteLength, bitmapUploadPixelsPtr, bitmapUploadPixelsLen, "bitmap upload pixels");
-    const bitmapUploadPixels = new Uint8Array(memory, bitmapUploadPixelsPtr, bitmapUploadPixelsLen);
-    validateRange(memory.byteLength, canvasTextPtr, canvasTextLen, "Canvas text");
-    validateRange(memory.byteLength, textBytesPtr, textBytesLen, "text bytes");
-    if (frame.getUint32(0, true) !== 0x46574342 || frame.getUint32(4, true) !== 3) {
-      throw new Error("invalid renderer frame");
-    }
-    const cols = frame.getUint32(8, true);
-    const rows = frame.getUint32(12, true);
-    const frameCells = frame.getUint32(16, true);
-    if (cellsCount !== frameCells || frameCells !== cols * rows || frameCells > this.maxCells) {
-      throw new Error(`terminal grid exceeds ${this.maxCells} GPU cells`);
-    }
-    if (selectionsCount !== rows) throw new Error("invalid renderer selections");
-    if (stylesFirst + stylesCount > this.maxStyles) throw new Error("invalid renderer styles");
-    for (let index = 0; index < dirtyRangesCount; index += 1) {
-      const firstRow = dirtyRangesView.getUint32(index * 8, true);
-      const rowCount = dirtyRangesView.getUint32(index * 8 + 4, true);
-      if (rowCount === 0 || firstRow >= rows || rowCount > rows - firstRow) {
-        throw new Error("invalid renderer dirty range");
-      }
-    }
-    if (textChanged) {
-      validateRecords(memory.byteLength, textRowsPtr, rows, 32, "text rows");
-      validateRecords(memory.byteLength, textCellsPtr, cellsCount, 4, "text cells");
-    }
-    const viewportModeValue = frame.getUint32(60, true);
-    if (viewportModeValue > 2) throw new Error("invalid renderer viewport mode");
-    const viewportMode = ["active", "top", "pinned"][viewportModeValue];
-    const atlasSlots = frame.getUint32(64, true);
-    if (atlasSlots > this.maxGlyphs) throw new Error(`terminal glyph atlas exceeds ${this.maxGlyphs} glyphs`);
-    for (let index = 0; index < bitmapUploadsCount; index += 1) {
-      const base = index * 16;
-      const firstSlot = bitmapUploads.getUint32(base, true);
-      const slotCount = bitmapUploads.getUint32(base + 4, true);
-      const pixelOffset = bitmapUploads.getUint32(base + 8, true);
-      const bytesPerRow = bitmapUploads.getUint32(base + 12, true);
-      const width = slotCount * this.atlas.tileWidth;
-      const byteLength = bytesPerRow * this.atlas.tileHeight;
-      if (this.atlas.format !== "r8unorm" || slotCount === 0 || firstSlot >= atlasSlots ||
-          slotCount > atlasSlots - firstSlot || slotCount > this.atlas.columns - (firstSlot % this.atlas.columns) ||
-          bytesPerRow !== width ||
-          pixelOffset > bitmapUploadPixelsLen || byteLength > bitmapUploadPixelsLen - pixelOffset) {
-        throw new Error("invalid renderer bitmap upload");
-      }
-    }
-    for (let index = 0; index < canvasRequestsCount; index += 1) {
-      const base = index * 24;
-      const slot = canvases.getUint32(base, true);
-      const slotCount = canvases.getUint32(base + 4, true);
-      const spanCells = canvases.getUint32(base + 8, true);
-      const offset = canvases.getUint32(base + 12, true);
-      const length = canvases.getUint32(base + 16, true);
-      if (slot >= atlasSlots || slotCount === 0 || slotCount > atlasSlots - slot ||
-          spanCells === 0 || offset > canvasTextLen || length > canvasTextLen - offset) {
-        throw new Error("invalid renderer Canvas request");
-      }
-    }
-    const cacheData = frame.getUint32(20, true);
-    this.cols = cols;
-    this.rows = rows;
-    this.cacheHits = cacheData >>> 16;
-    this.cacheMisses = cacheData & 0xffff;
-    this.background = frame.getUint32(24, true);
-    this.foreground = frame.getUint32(28, true);
-    this.cursorX = frame.getUint32(32, true);
-    this.cursorY = frame.getUint32(36, true);
-    this.cursorFlags = frame.getUint32(40, true);
-    this.cursorStyle = frame.getUint32(44, true);
-    const scrollTotal = frame.getUint32(48, true);
-    const scrollOffset = frame.getUint32(52, true);
-    const scrollLength = frame.getUint32(56, true);
-    const atlasGrew = this.atlas.ensureCapacity(atlasSlots);
+    const parsed = parseRendererSubmission(this, memory, submissionPtr);
+    const metadata = applyRendererSubmission(this, parsed);
+    const atlasGrew = this.atlas.ensureCapacity(parsed.atlasSlots);
     if (atlasGrew) this.rebuildCellBundle();
-    if (atlasGrew && (bitmapUploadsCount > 0 || canvasRequestsCount > 0)) this.flushAtlasGrowthCopies();
-    for (let index = 0; index < bitmapUploadsCount; index += 1) {
-      const base = index * 16;
-      const firstSlot = bitmapUploads.getUint32(base, true);
-      const slotCount = bitmapUploads.getUint32(base + 4, true);
-      const pixelOffset = bitmapUploads.getUint32(base + 8, true);
-      const bytesPerRow = bitmapUploads.getUint32(base + 12, true);
+    if (atlasGrew && (parsed.bitmapUploadsCount > 0 || parsed.canvasRequestsCount > 0)) this.flushAtlasGrowthCopies();
+    for (let index = 0; index < parsed.bitmapUploadsCount; index += 1) {
+      const offset = index * 16;
+      const firstSlot = parsed.bitmapUploads.getUint32(offset, true);
+      const slotCount = parsed.bitmapUploads.getUint32(offset + 4, true);
+      const pixelOffset = parsed.bitmapUploads.getUint32(offset + 8, true);
+      const bytesPerRow = parsed.bitmapUploads.getUint32(offset + 12, true);
       this.device.queue.writeTexture(
         {
           texture: this.atlas.texture,
@@ -317,58 +194,35 @@ export class GpuTerminal {
             0,
           ],
         },
-        bitmapUploadPixels,
+        parsed.bitmapUploadPixels,
         { offset: pixelOffset, bytesPerRow, rowsPerImage: this.atlas.tileHeight },
         [slotCount * this.atlas.tileWidth, this.atlas.tileHeight, 1],
       );
       this.atlas.nextSlot = Math.max(this.atlas.nextSlot, firstSlot + slotCount);
     }
-    for (let index = 0; index < canvasRequestsCount; index += 1) {
-      const base = index * 24;
-      const slot = canvases.getUint32(base, true);
-      const slotCount = canvases.getUint32(base + 4, true);
-      const spanCells = canvases.getUint32(base + 8, true);
-      const offset = canvases.getUint32(base + 12, true);
-      const length = canvases.getUint32(base + 16, true);
-      const flags = canvases.getUint32(base + 20, true);
-      let text;
-      try {
-        text = strictDecoder.decode(new Uint8Array(memory, canvasTextPtr + offset, length));
-      } catch {
-        throw new Error("invalid renderer Canvas UTF-8");
-      }
-      this.atlas.setCanvasRun(slot, slotCount, spanCells, text, flags);
+    for (let index = 0; index < parsed.canvasRequestsCount; index += 1) {
+      const offset = index * 24;
+      const slot = parsed.canvasRequests.getUint32(offset, true);
+      const slotCount = parsed.canvasRequests.getUint32(offset + 4, true);
+      const spanCells = parsed.canvasRequests.getUint32(offset + 8, true);
+      const flags = parsed.canvasRequests.getUint32(offset + 20, true);
+      this.atlas.setCanvasRun(
+        slot,
+        slotCount,
+        spanCells,
+        decodeCanvasRequestText(parsed, index),
+        flags,
+      );
     }
-    this.atlasRequiredSlots = atlasSlots;
-    if (frameCells !== this.drawnCellCount) {
-      this.drawnCellCount = frameCells;
-      this.indirectData[1] = frameCells;
+    this.atlasRequiredSlots = parsed.atlasSlots;
+    if (parsed.frameCells !== this.drawnCellCount) {
+      this.drawnCellCount = parsed.frameCells;
+      this.indirectData[1] = parsed.frameCells;
       this.indirectDirty = true;
     }
-    this.submissionMetadata.cols = cols;
-    this.submissionMetadata.rows = rows;
-    this.submissionMetadata.viewportMode = viewportMode;
-    this.submissionMetadata.scrollTotal = scrollTotal;
-    this.submissionMetadata.scrollOffset = scrollOffset;
-    this.submissionMetadata.scrollLength = scrollLength;
-    this.submissionMetadata.textRowsPtr = textRowsPtr;
-    this.submissionMetadata.textCellsPtr = textCellsPtr;
-    this.submissionMetadata.textBytesPtr = textBytesPtr;
-    this.submissionMetadata.textBytesLen = textBytesLen;
-    this.submissionMetadata.textChanged = textChanged !== 0;
-    this.submissionMemory = memory;
-    this.submissionCellsPtr = cellsPtr;
-    this.submissionDirtyRangesPtr = dirtyRangesPtr;
-    this.submissionDirtyRangesCount = dirtyRangesCount;
-    this.submissionStylesPtr = stylesPtr;
-    this.submissionStylesFirst = stylesFirst;
-    this.submissionStylesCount = stylesCount;
-    this.submissionSelectionsPtr = selectionsPtr;
-    this.submissionCanvasRequestsPtr = canvasRequestsPtr;
-    this.submissionCanvasRequestsCount = canvasRequestsCount;
     this.draw(true);
     this.updateBlinkTimer();
-    return this.submissionMetadata;
+    return metadata;
   }
 
   draw(hasSubmission = false) {

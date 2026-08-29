@@ -54,6 +54,9 @@ assert.ok(serverPath && webRoot, "usage: gpu-e2e.mjs SERVER WEB_ROOT");
 const serverPort = await freePort();
 const debugPort = await freePort();
 const rendererQuery = process.env.TEXT_RENDERER === "kb-canvas" ? "&renderer=kb-canvas" : "";
+const requestedBackend = process.env.RENDER_BACKEND === "webgl2" ? "webgl2" : "webgpu";
+const backendQuery = `&backend=${requestedBackend}`;
+const pageQuery = `?gpu-test=1${rendererQuery}${backendQuery}`;
 const profile = await mkdtemp(path.join(os.tmpdir(), "bcwebmux-gpu-e2e-"));
 const server = spawn(serverPath, ["--web-root", webRoot, "--port", String(serverPort)], {
   stdio: ["ignore", "pipe", "pipe"],
@@ -74,6 +77,15 @@ const alternateScrollCommand = "stty raw -echo; printf '\\033[?1049h\\033[?1007h
 const specialKeysCommand = "stty raw -echo; printf '\\033[2J\\033[H\\033[48;2;64;64;64m \\033[0m'; keys=$(dd bs=1 count=26 2>/dev/null); stty sane; test \"$keys\" = \"$(printf '\\033[A\\033[B\\033[D\\033[C\\033[H\\033[F\\033[5~\\033[6~')\" && printf '\\033[2J\\033[H\\033[48;2;0;255;0m \\033[0m'\r";
 const cursorMoveCommand = "stty raw -echo; printf '\\033[2J\\033[H\\033[2 q\\033[48;2;255;0;0m \\033[0m\\033[4G'; dd of=/dev/null bs=1 count=3 2>/dev/null; printf '\\033[D'; sleep 1; stty sane\r";
 const historyCommand = "stty -ixon; printf '\\033[3J\\033[2J\\033[H\\033[48;2;255;0;255m \\033[0mHISTORY\\n'; seq 1 40\r";
+const printableAscii = Array.from({ length: 0x7f - 0x20 }, (_, index) => String.fromCharCode(0x20 + index)).join("");
+const glyphAtlasPayload = [
+  "\x1b[0m",
+  "\x1b[1m",
+  "\x1b[3m",
+  "\x1b[1;3m",
+].map(style => `${style}${printableAscii}`).join("");
+const glyphAtlasBase64 = Buffer.from(glyphAtlasPayload).toString("base64");
+const glyphAtlasCommand = `printf '\\033[2J\\033[H'; printf '%s' '${glyphAtlasBase64}' | base64 -d; printf '\\033[0m'`;
 
 try {
   await waitFor(async () => {
@@ -191,7 +203,7 @@ try {
     "--disable-background-networking",
     `--remote-debugging-port=${debugPort}`,
     `--user-data-dir=${profile}`,
-    `http://127.0.0.1:${serverPort}/?gpu-test=1${rendererQuery}`,
+    `http://127.0.0.1:${serverPort}/${pageQuery}`,
   ], { stdio: ["ignore", "ignore", "pipe"] });
   let chromiumLog = "";
   chromium.stderr.on("data", data => { chromiumLog += data; });
@@ -200,7 +212,7 @@ try {
     const response = await fetch(`http://127.0.0.1:${debugPort}/json/list`).catch(() => null);
     if (!response?.ok) return null;
     const targets = await response.json();
-    return targets.find(item => item.type === "page" && item.url.startsWith(`http://127.0.0.1:${serverPort}/?gpu-test=1${rendererQuery}`));
+    return targets.find(item => item.type === "page" && item.url.startsWith(`http://127.0.0.1:${serverPort}/${pageQuery}`));
   }, 15000, () => `Chromium failed to expose the page\n${chromiumLog}`);
 
   const version = await (await fetch(`http://127.0.0.1:${debugPort}/json/version`)).json();
@@ -650,10 +662,29 @@ try {
     if (window.bcwebmux.state.scrollOffset + window.bcwebmux.state.scrollLength !== window.bcwebmux.state.scrollTotal) {
       throw new Error("Ctrl+B did not restore scroll position to bottom");
     }
+    if (${requestedBackend === "webgl2"}) {
+      const previousAtlasCapacity = window.bcwebmux.state.atlasCapacity;
+      window.bcwebmux.write(${JSON.stringify(glyphAtlasCommand + "\r")});
+      until = deadline(2500);
+      while (window.bcwebmux.state.atlasRequiredSlots <= previousAtlasCapacity && Date.now() < until) {
+        await sleep(20);
+      }
+      if (window.bcwebmux.state.atlasRequiredSlots <= previousAtlasCapacity) {
+        throw new Error("WebGL2 glyph atlas did not grow");
+      }
+      if (window.bcwebmux.state.atlasCapacity < window.bcwebmux.state.atlasRequiredSlots) {
+        throw new Error("WebGL2 glyph atlas capacity does not cover required slots");
+      }
+      await capture();
+    }
     scrollbar.dispatchEvent(new KeyboardEvent("keydown", { key: "Home", bubbles: true, cancelable: true }));
     await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
     if (window.bcwebmux.state.viewportMode !== "top") throw new Error("scrolling to history did not set top viewport mode");
 
+    const clientError = document.querySelector("#client-error");
+    if (!clientError.hidden) {
+      throw new Error("#client-error is visible: " + document.querySelector("#client-error-message")?.textContent);
+    }
     const state = window.bcwebmux.state;
     return {
       keyboardPixels,
@@ -681,7 +712,8 @@ try {
   const response = await pageCdp.call("Runtime.evaluate", { expression, awaitPromise: true, returnByValue: true });
   if (response.exceptionDetails) {
     const runtimeExceptions = pageCdp.events.filter(event => event.method === "Runtime.exceptionThrown");
-    throw new Error(`${response.exceptionDetails.exception?.description || "browser evaluation failed"}\nRuntime exceptions: ${JSON.stringify(runtimeExceptions)}`);
+    const consoleErrors = pageCdp.events.filter(event => event.method === "Runtime.consoleAPICalled" && event.params?.type === "error");
+    throw new Error(`${response.exceptionDetails.exception?.description || "browser evaluation failed"}\nRuntime exceptions: ${JSON.stringify(runtimeExceptions)}\nConsole errors: ${JSON.stringify(consoleErrors)}`);
   }
   const value = response.result.value;
   const screenshot = await pageCdp.call("Page.captureScreenshot", { format: "png" });
@@ -832,19 +864,16 @@ try {
   assert.ok(Math.abs(state.pixelScaleY - nativeViewport.height / nativeViewport.clientHeight) <= 0.01);
   assert.ok(Number.isFinite(state.rxWireBytes) && state.rxWireBytes > 0);
   assert.ok(Number.isFinite(state.rxBytes) && state.rxBytes > 0);
-  for (const name of ["wasmParseMs", "wasmFrameMs", "rxLatencyMs", "inputLatencyMs", "frameMs", "gpuFrameMs", "queueDrainMs", "presentationOpportunityMs", "wsRttLatestMs", "wsRttMedianMs", "wsRttP95Ms"]) {
+  for (const name of ["wasmParseMs", "wasmFrameMs", "rxLatencyMs", "inputLatencyMs", "frameMs", "presentationOpportunityMs", "wsRttLatestMs", "wsRttMedianMs", "wsRttP95Ms"]) {
     assert.equal(typeof state[name], "number");
     assert.ok(Number.isFinite(state[name]) && state[name] >= 0, `${name} is invalid`);
   }
   assert.ok(state.wsRttMedianMs <= state.wsRttP95Ms, "WebSocket RTT median exceeds p95");
   assert.equal(state.connected, true);
-  assert.equal(state.backend, "webgpu");
+  assert.equal(state.backend, requestedBackend);
   assert.equal(state.gpuError, null);
   assert.equal(state.gpuFallbackAdapter, false);
-  assert.doesNotMatch(JSON.stringify(state.gpuAdapter), /swiftshader|llvmpipe|software/i);
-  assert.ok(Object.values(state.gpuAdapter).some(Boolean), "WebGPU adapter identity is empty");
   assert.ok(state.gpuFrames >= 5);
-  assert.ok(state.bundleExecutions >= 5);
   assert.ok(state.rasterPasses >= 5);
   assert.equal(state.atlasFormat, "r8unorm");
   assert.ok(Number.isInteger(state.atlasRequiredSlots) && state.atlasRequiredSlots >= 256);
@@ -855,6 +884,21 @@ try {
     assert.ok(state.cacheHits > 0);
     assert.ok(state.cacheMisses >= 0);
     assert.ok(state.atlasGlyphs <= state.atlasRequiredSlots);
+  }
+  if (requestedBackend === "webgpu") {
+    for (const name of ["gpuFrameMs", "queueDrainMs"]) {
+      assert.equal(typeof state[name], "number");
+      assert.ok(Number.isFinite(state[name]) && state[name] >= 0, `${name} is invalid`);
+    }
+    assert.ok(state.bundleExecutions >= 5);
+    assert.doesNotMatch(JSON.stringify(state.gpuAdapter), /swiftshader|llvmpipe|software/i);
+    assert.ok(Object.values(state.gpuAdapter).some(Boolean), "WebGPU adapter identity is empty");
+  } else {
+    assert.equal(state.gpuFrameMs, null);
+    assert.equal(state.queueDrainMs, null);
+    assert.ok(state.drawCalls >= 5);
+    assert.ok(state.atlasRequiredSlots > 256);
+    assert.ok(Object.values(state.gpuAdapter).some(Boolean), "WebGL2 adapter identity is empty");
   }
   assert.ok(value.readbacks >= 5);
   assert.ok(value.elapsed < 3000, `GPU E2E took ${value.elapsed}ms`);
@@ -1076,6 +1120,36 @@ try {
     assert.ok(Math.abs(mobileInput.inputRect[edge] - mobileInput.viewportRect[edge]) <= 1, `${edge} does not match viewport ${JSON.stringify(mobileInput)}`);
   }
   assert.equal(mobileInput.centerTextViewId, null);
+  const clientErrorResponse = await pageCdp.call("Runtime.evaluate", {
+    expression: `(() => {
+      const panel = document.querySelector("#client-error");
+      const message = document.querySelector("#client-error-message");
+      const dismiss = document.querySelector("#client-error-dismiss");
+      if (!panel || !message || !dismiss) throw new Error("client error panel controls are missing");
+      if (!panel.hidden) throw new Error("client error panel is not initially hidden");
+      const marker = "CLIENT_ERROR_E2E";
+      window.dispatchEvent(new ErrorEvent("error", {
+        error: new Error(marker),
+        message: marker,
+      }));
+      if (panel.hidden) throw new Error("client error panel did not become visible synchronously");
+      if (!message.textContent.includes(marker)) throw new Error("client error message does not include marker");
+      const style = getComputedStyle(panel);
+      if (style.display === "none" || style.visibility === "hidden") throw new Error("client error panel is not on-screen");
+      const rect = panel.getBoundingClientRect();
+      if (!(rect.width > 0 && rect.height > 0)) throw new Error("client error panel has no visible bounds");
+      dismiss.click();
+      if (!panel.hidden) throw new Error("client error panel did not hide after dismissal");
+      return true;
+    })()`,
+    returnByValue: true,
+  });
+  if (clientErrorResponse.exceptionDetails) {
+    throw new Error(clientErrorResponse.exceptionDetails.exception?.description || "client error path evaluation failed");
+  }
+  if (clientErrorResponse.result.value !== true) {
+    throw new Error("client error path evaluation did not return true");
+  }
   const exceptions = pageCdp.events.filter(event => event.method === "Runtime.exceptionThrown");
   assert.deepEqual(exceptions, [], JSON.stringify(exceptions));
   console.log(JSON.stringify({ ...value, presentedPixel, visualPsnr, gpuDevice: gpuDeviceText, mobileInput }));

@@ -162,6 +162,14 @@ pub fn build(b: *std.Build) void {
         b.getInstallPath(.bin, "bcwebmux-server"),
         b.getInstallPath(.prefix, "web"),
     });
+    const e2e_webgl_cmd = b.addSystemCommand(&.{ "node", "test/gpu-e2e.mjs" });
+    e2e_webgl_cmd.step.dependOn(b.getInstallStep());
+    e2e_webgl_cmd.step.dependOn(&e2e_cmd.step);
+    e2e_webgl_cmd.addArgs(&.{
+        b.getInstallPath(.bin, "bcwebmux-server"),
+        b.getInstallPath(.prefix, "web"),
+    });
+    e2e_webgl_cmd.setEnvironmentVariable("RENDER_BACKEND", "webgl2");
     const mouse_selection_cmd = b.addSystemCommand(&.{
         "node",
         "test/mouse-selection-e2e.mjs",
@@ -218,12 +226,13 @@ pub fn build(b: *std.Build) void {
         b.getInstallPath(.prefix, "web"),
     });
     e2e_cmd.step.dependOn(&mouse_selection_cmd.step);
-    terminal_core_smoke_cmd.step.dependOn(&e2e_cmd.step);
+    terminal_core_smoke_cmd.step.dependOn(&e2e_webgl_cmd.step);
     session_browser_smoke_cmd.step.dependOn(&e2e_cmd.step);
     session_browser_smoke_cmd.step.dependOn(&terminal_core_smoke_cmd.step);
     session_ui_e2e_cmd.step.dependOn(&wasm_size_contract_cmd.step);
     const e2e_step = b.step("e2e", "Run the physical-GPU browser-to-PTY end-to-end test");
     e2e_step.dependOn(&e2e_cmd.step);
+    e2e_step.dependOn(&e2e_webgl_cmd.step);
     e2e_step.dependOn(&terminal_core_smoke_cmd.step);
     e2e_step.dependOn(&session_browser_smoke_cmd.step);
     e2e_step.dependOn(&session_controller_contract_cmd.step);

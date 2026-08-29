@@ -192,6 +192,7 @@ function resolveFont(settings) {
   return {
     ...FONT_OPTIONS[settings.fontFamily],
     id: settings.fontFamily,
+    canvasOnly: isCanvasOnlyFont(FONT_OPTIONS[settings.fontFamily]),
     size: settings.fontSize,
     ligatures: settings.ligatures,
     fallbacks: [...settings.fontFallbacks[settings.fontFamily]],

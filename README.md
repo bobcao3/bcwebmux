@@ -1,10 +1,10 @@
 # bcwebmux
 
-A fast browser terminal built with Ghostty's terminal engine, WebAssembly, WebGPU, and a small Zig server.
+A fast browser terminal built with Ghostty's terminal engine, WebAssembly with WebGPU and an automatic WebGL2 fallback, and a small Zig server.
 
 ## Get started
 
-Prerequisites: Zig 0.16, Node/npm, GNU tar, zstd and development headers, Linux, and WebGPU-capable Chromium.
+Prerequisites: Zig 0.16, Node/npm, GNU tar, zstd and development headers, Linux, and a modern Chromium browser with WebGPU or WebGL2.
 
 ```sh
 npm install

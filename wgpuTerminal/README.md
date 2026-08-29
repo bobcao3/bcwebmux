@@ -1,6 +1,6 @@
 # @bcwebmux/wgpu-terminal
 
-Embeddable WebGPU terminal frontend used by bcwebmux. The package owns terminal emulation, rendering, keyboard/IME input, pointer handling, scrollback, and selection. It does not create a PTY or choose a transport.
+Embeddable GPU terminal frontend using WebGPU with a WebGL2 fallback, used by bcwebmux. The package owns terminal emulation, rendering, keyboard/IME input, pointer handling, scrollback, and selection. It does not create a PTY or choose a transport.
 
 ```js
 import { Terminal } from "@bcwebmux/wgpu-terminal";
@@ -9,6 +9,7 @@ import "@bcwebmux/wgpu-terminal/css/terminal.css";
 const terminal = new Terminal({
   wasmUrl: "/assets/terminal.wasm",
   renderer: "kb-stb",
+  renderBackend: "auto",
   font: {
     cssFamily: "JetBrains Mono Nerd Font",
     size: 15,
@@ -26,6 +27,13 @@ backend.onData(bytes => terminal.write(bytes));
 await terminal.open(document.querySelector("#terminal-container"));
 terminal.focus();
 ```
+
+## Render backends
+
+`auto` is the default and tries WebGPU before WebGL2. Set `renderBackend` to
+`webgpu` or `webgl2` to force a backend for diagnostics. Backend choice does
+not change the `kb-stb`/`kb-canvas` text renderer. Context or device loss
+requires a reload rather than live migration.
 
 ## WASM fonts
 

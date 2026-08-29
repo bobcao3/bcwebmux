@@ -8,7 +8,10 @@ import {
   restoreSnapshot as restoreHostedSnapshot,
 } from "./TerminalCoreHost.js";
 import { EventEmitter } from "./common/EventEmitter.js";
-import { GpuTerminal } from "./browser/render/webgpu/GpuTerminal.js";
+import {
+  createRenderBackend,
+  normalizeRenderBackend,
+} from "./browser/render/RenderBackend.js";
 import { TerminalTextView } from "./browser/selection/TerminalTextView.js";
 import { TerminalView } from "./browser/TerminalView.js";
 import { FrameScheduler } from "./browser/FrameScheduler.js";
@@ -47,6 +50,7 @@ export class Terminal {
       wasmUrl: options.wasmUrl || "/terminal.wasm",
       wasmFontUrls: options.wasmFontUrls,
       renderer: options.renderer === "kb-canvas" ? "kb-canvas" : "kb-stb",
+      renderBackend: normalizeRenderBackend(options.renderBackend),
       font: normalizeFont(options.font),
       theme: options.theme || DEFAULT_THEME,
       grainStrength: Number.isFinite(Number(options.grainStrength)) ? Number(options.grainStrength) : 4,
@@ -208,7 +212,12 @@ export class Terminal {
     });
     const initialPixelViewport = this._viewportController.latestPixelViewport;
     const initialLayout = this._viewportController.physicalLayout(initialPixelViewport);
-    this._renderer = await GpuTerminal.create(this._view.screen, initialPixelViewport, this.options.renderer);
+    this._renderer = await createRenderBackend(
+      this._view.screen,
+      initialPixelViewport,
+      this.options.renderer,
+      this.options.renderBackend,
+    );
     this._renderer.setPhysicalCellMetrics(initialLayout.cellWidth, initialLayout.cellHeight, initialLayout.fontSize);
     this._renderer.setGrainStrength(this.options.grainStrength);
 
@@ -477,6 +486,9 @@ export class Terminal {
 
   async setFont(fontOptions) {
     const font = normalizeFont({ ...this.options.font, ...(fontOptions || {}) });
+    if (font.canvasOnly && this._activeTextRenderer !== "kb-canvas") {
+      throw new Error("Canvas-only font requires the kb-canvas renderer");
+    }
     this.options.font = font;
     if (!this._terminalElement) return;
     const generation = ++this._fontChangeGeneration;
@@ -485,9 +497,6 @@ export class Terminal {
       await Promise.all(loadTerminalFonts(font));
       await document.fonts.ready;
       if (generation !== this._fontChangeGeneration || !this._wasm) return;
-      if (font.canvasOnly && this._activeTextRenderer !== "kb-canvas") {
-        throw new Error("Canvas-only font requires the kb-canvas renderer");
-      }
       for (const core of this._cores) core.setFont(font);
       this._viewportController.remeasureCells();
       this._viewportController.resize(this._viewportController.latestPixelViewport);
@@ -505,6 +514,9 @@ export class Terminal {
 
   setRenderer(rendererName) {
     const normalized = rendererName === "kb-canvas" ? "kb-canvas" : "kb-stb";
+    if (normalized !== "kb-canvas" && this.options.font.canvasOnly) {
+      throw new Error("Canvas-only font requires the kb-canvas renderer");
+    }
     this.options.renderer = normalized;
     this._activeTextRenderer = normalized;
     if (!this._wasm || !this._renderer) return;

@@ -276,6 +276,55 @@ body {
 
 #perf[data-mode="simple"] { white-space: nowrap; }
 
+#client-error {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  left: 4px;
+  z-index: 7;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  max-height: calc(100% - 8px);
+  padding: 8px;
+  overflow: auto;
+  border: 2px solid var(--color-danger);
+  background: var(--color-background);
+  color: var(--color-foreground);
+  user-select: text;
+}
+
+#client-error > header {
+  grid-column: 1;
+}
+
+#client-error > button {
+  grid-column: 2;
+  padding: 4px 8px;
+  border: 2px solid var(--color-danger);
+  background: var(--color-danger);
+  color: var(--color-background);
+  font: inherit;
+  font-weight: 700;
+}
+
+#client-error > button:focus-visible {
+  outline: 2px solid var(--color-foreground);
+  outline-offset: 2px;
+}
+
+#client-error > output {
+  grid-column: 1 / -1;
+  display: block;
+  min-width: 0;
+  margin: 8px 0 0;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+#client-error[hidden] {
+  display: none;
+}
+
 #terminal.flash {
   filter: brightness(1.35);
 }
