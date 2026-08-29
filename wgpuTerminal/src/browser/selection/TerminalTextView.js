@@ -3,6 +3,7 @@
 
 const ROW_SIZE = 32;
 const CELL_SIZE = 4;
+const CELL_TEXT = 1;
 const ROW_WRAP = 1;
 const COARSE_SELECTION_HIT_SLOP = 22;
 const decoder = new TextDecoder("utf-8", { fatal: true });
@@ -139,6 +140,7 @@ export class TerminalTextView {
       const offset = (y * cols + x) * CELL_SIZE;
       const utf16Length = cellData.getUint16(offset, true);
       const width = cellData.getUint8(offset + 2);
+      const flags = cellData.getUint8(offset + 3);
       if (width === 0) {
         if (utf16Length !== 0) throw new Error("terminal spacer cell contains text");
         continue;
@@ -152,6 +154,7 @@ export class TerminalTextView {
         cell.className = "text-cell";
         row.append(cell);
       }
+      cell._terminalCellText = (flags & CELL_TEXT) !== 0;
       const start = String(x);
       const end = String(Math.min(cols, x + width));
       const cellWidth = String(width);
@@ -192,7 +195,7 @@ export class TerminalTextView {
       cell = null;
       row = null;
     }
-    if (cell && options.nearest === true && !(cell.textContent || "").trim()) {
+    if (cell && options.nearest === true && cell._terminalCellText !== true) {
       cell = null;
       row = null;
     }
@@ -215,7 +218,7 @@ export class TerminalTextView {
           if (dy > COARSE_SELECTION_HIT_SLOP) continue;
           for (const candidateCell of candidateRow.children) {
             if (!candidateCell.classList.contains("text-cell") ||
-                !(candidateCell.textContent || "").trim()) continue;
+                candidateCell._terminalCellText !== true) continue;
             const start = Number(candidateCell.dataset.start);
             const end = Number(candidateCell.dataset.end);
             if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) continue;
@@ -252,10 +255,13 @@ export class TerminalTextView {
     const boundary = isBoundary(cell);
     let firstIndex = cellIndex;
     let lastIndex = cellIndex;
-    while (firstIndex > 0 && isBoundary(row.children[firstIndex - 1]) === boundary) {
+    while (firstIndex > 0 &&
+           row.children[firstIndex - 1]._terminalCellText === true &&
+           isBoundary(row.children[firstIndex - 1]) === boundary) {
       firstIndex -= 1;
     }
     while (lastIndex + 1 < row.children.length &&
+           row.children[lastIndex + 1]._terminalCellText === true &&
            isBoundary(row.children[lastIndex + 1]) === boundary) {
       lastIndex += 1;
     }

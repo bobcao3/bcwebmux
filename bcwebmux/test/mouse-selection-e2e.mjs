@@ -312,7 +312,7 @@ try {
   assert.equal(await evaluate("getComputedStyle(document.querySelector('#text-view')).pointerEvents"), "none", "text mirror was interactive for coarse pointer mode");
   assert.equal(await evaluate("window.bcwebmux.selectionMode"), false, "selection mode was active before entering");
 
-  const selectionScreen = "printf '\\033[?1000l\\033[?1002l\\033[?1003l\\033[?1006l\\033[2J\\033[H\\033[38;2;240;240;240m\\033[48;2;127;127;127mAé中Z \\033[0m\\033[10;1H'\r";
+  const selectionScreen = "printf '\\033[?1000l\\033[?1002l\\033[?1003l\\033[?1006l\\033[2J\\033[H\\033[38;2;240;240;240m\\033[48;2;127;127;127mAé中Z   Q\\033[0m\\033[10;1H'\r";
   await evaluate(`window.bcwebmux.write(${JSON.stringify(selectionScreen)})`);
   await waitCellColor(0, 0, [127, 127, 127], "selection fixture did not render");
   const selectionTouch = point(1, 0);
@@ -340,6 +340,40 @@ try {
   await waitFor(async () => evaluate("document.querySelector('#text-view').children.length > 0"), 1500, () => "text mirror rows were not populated");
   await evaluate("window.getSelection().removeAllRanges()");
   await waitFor(async () => evaluate("window.bcwebmux.selectionText() === null"), 1500, () => "browser selection was not cleared");
+  await evaluate(`(() => {
+    const cell = document.querySelector('#text-view .text-row[data-row="0"] [data-start="6"]');
+    const rect = cell.getBoundingClientRect();
+    cell.dispatchEvent(new PointerEvent("pointerdown", {
+      bubbles: true,
+      cancelable: true,
+      pointerId: 19,
+      pointerType: "touch",
+      isPrimary: true,
+      clientX: rect.left + rect.width / 2,
+      clientY: rect.top + rect.height / 2,
+      button: 0,
+      buttons: 1,
+    }));
+  })()`);
+  await waitFor(async () => evaluate("window.bcwebmux.selectionText() === ''"), 1500, () => "coarse whitespace selection did not select three spaces");
+  assert.equal(await evaluate(`(() => {
+    const selection = window.getSelection();
+    const range = selection?.rangeCount ? selection.getRangeAt(0) : null;
+    const start = range?.startContainer?.parentElement;
+    const end = range?.endContainer?.parentElement;
+    return range &&
+      start?.getAttribute("data-start") === "5" &&
+      range.startOffset === 0 &&
+      end?.getAttribute("data-end") === "8" &&
+      range.endOffset === 1;
+  })()`), true, "coarse whitespace browser selection did not match");
+  const whitespaceColors = await Promise.all([4, 5, 6, 7, 8].map(column => sampleCell(column, 0)));
+  assertGray(whitespaceColors[0], "coarse whitespace leading adjacent cell");
+  whitespaceColors.slice(1, 4).forEach((color, index) => assertDark(color, `coarse whitespace selected cell ${index + 5}`));
+  assertGray(whitespaceColors[4], "coarse whitespace trailing adjacent cell");
+  assert.equal(await evaluate("window.bcwebmux.state.txBytes"), txBeforeLongSelection, "coarse whitespace selection emitted PTY bytes");
+  await evaluate("window.getSelection().removeAllRanges()");
+  await waitFor(async () => evaluate("window.bcwebmux.selectionText() === null"), 1500, () => "coarse whitespace browser selection was not cleared");
   await evaluate(`(() => {
     const cell = document.querySelector('#text-view .text-row[data-row="0"] [data-start="0"]');
     const rect = cell.getBoundingClientRect();
