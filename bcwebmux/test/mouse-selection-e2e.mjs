@@ -726,11 +726,12 @@ try {
   assert.equal(await evaluate(`(() => {
     const selectionButton = document.querySelector("#selection-button");
     const softkeysToggle = document.querySelector("#softkeys-toggle");
-    const controls = document.querySelector("#terminal-controls");
-    const gap = parseFloat(getComputedStyle(controls).columnGap || getComputedStyle(controls).gap) || 0;
+    const actions = selectionButton.parentElement;
+    const gap = parseFloat(getComputedStyle(actions).columnGap || getComputedStyle(actions).gap) || 0;
     const selectionRect = selectionButton.getBoundingClientRect();
     const toggleRect = softkeysToggle.getBoundingClientRect();
-    return selectionButton.nextElementSibling === softkeysToggle &&
+    return actions.id === "terminal-actions" &&
+      selectionButton.nextElementSibling === softkeysToggle &&
       Boolean(softkeysToggle.querySelector("svg")) &&
       softkeysToggle.textContent.trim() === "" &&
       getComputedStyle(softkeysToggle).display !== "none" &&

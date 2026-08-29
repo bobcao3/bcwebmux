@@ -300,7 +300,7 @@ export class SessionDrawer {
         element.toggleAttribute("inert", covered)
       }
       const controls = doc.getElementById("terminal-controls")
-      if (controls) for (const child of controls.children) {
+      if (controls) for (const child of controls.querySelectorAll("button, [role='status']")) {
         if (child === toggleButton) continue
         child.inert = covered
         child.toggleAttribute("inert", covered)

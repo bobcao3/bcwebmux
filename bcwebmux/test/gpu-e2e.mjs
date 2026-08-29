@@ -805,6 +805,96 @@ try {
   assert.ok(visualPsnr.terminal >= 35, `terminal PSNR was ${visualPsnr.terminal} dB`);
   assert.ok(visualPsnr.telemetry >= 18, `telemetry PSNR was ${visualPsnr.telemetry} dB`);
   assert.ok(visualPsnr.bottomBar >= 32, `bottomBar PSNR was ${visualPsnr.bottomBar} dB`);
+  const longTitle = "BCWEBMUX-LONG-TITLE-" + "0123456789".repeat(12);
+  const longTitleLayoutResponse = await pageCdp.call("Runtime.evaluate", {
+    expression: `(async () => {
+      const primary = document.querySelector("#terminal-identity-primary");
+      if (!primary) throw new Error("long title layout element is missing: #terminal-identity-primary");
+      primary.textContent = ${JSON.stringify(longTitle)};
+      const ids = [
+        "terminal-controls",
+        "terminal-actions",
+        "terminal-identity",
+        "terminal-identity-primary",
+        "terminal-indicators",
+        "status",
+        "settings-button",
+      ];
+      const rect = element => ({
+        left: element.left,
+        top: element.top,
+        right: element.right,
+        bottom: element.bottom,
+        width: element.width,
+        height: element.height,
+      });
+      const diagnostics = {};
+      for (const id of ids) {
+        const element = document.querySelector("#" + id);
+        if (!element) throw new Error("long title layout element is missing: #" + id);
+        const style = getComputedStyle(element);
+        diagnostics[id] = {
+          rect: rect(element.getBoundingClientRect()),
+          scrollWidth: element.scrollWidth,
+          clientWidth: element.clientWidth,
+          style: {
+            display: style.display,
+            position: style.position,
+            overflow: style.overflow,
+            textOverflow: style.textOverflow,
+            whiteSpace: style.whiteSpace,
+            zIndex: style.zIndex,
+          },
+        };
+      }
+      diagnostics.fades = {
+        actions: (() => {
+          const style = getComputedStyle(document.querySelector("#terminal-actions"), "::after");
+          return { backgroundImage: style.backgroundImage, width: parseFloat(style.width) };
+        })(),
+        indicators: (() => {
+          const style = getComputedStyle(document.querySelector("#terminal-indicators"), "::before");
+          return { backgroundImage: style.backgroundImage, width: parseFloat(style.width) };
+        })(),
+      };
+      return diagnostics;
+    })()`,
+    awaitPromise: true,
+    returnByValue: true,
+  });
+  if (longTitleLayoutResponse.exceptionDetails) {
+    throw new Error(longTitleLayoutResponse.exceptionDetails.exception?.description || "long title layout evaluation failed");
+  }
+  const longTitleLayout = longTitleLayoutResponse.result.value;
+  const controlsLayout = longTitleLayout["terminal-controls"].rect;
+  const identityLayout = longTitleLayout["terminal-identity"].rect;
+  const actionsLayout = longTitleLayout["terminal-actions"].rect;
+  const primaryLayout = longTitleLayout["terminal-identity-primary"];
+  const indicatorsLayout = longTitleLayout["terminal-indicators"].rect;
+  const center = rect => ({ x: (rect.left + rect.right) / 2, y: (rect.top + rect.bottom) / 2 });
+  const controlsCenter = center(controlsLayout);
+  const identityCenter = center(identityLayout);
+  assert.ok(Math.abs(identityCenter.x - controlsCenter.x) <= 1 && Math.abs(identityCenter.y - controlsCenter.y) <= 1, `long title identity/control centers differ: ${JSON.stringify(longTitleLayout)}`);
+  assert.ok(primaryLayout.scrollWidth > primaryLayout.clientWidth, `long title did not overflow: ${JSON.stringify(primaryLayout)}`);
+  assert.equal(primaryLayout.style.overflow, "hidden");
+  assert.equal(primaryLayout.style.textOverflow, "clip");
+  assert.equal(primaryLayout.style.whiteSpace, "nowrap");
+  for (const edge of ["left", "right", "top", "bottom"]) {
+    assert.ok(Math.abs(identityLayout[edge] - controlsLayout[edge]) <= 1, `long title identity ${edge} does not match controls: ${JSON.stringify(longTitleLayout)}`);
+  }
+  assert.ok(actionsLayout.right < indicatorsLayout.left, `long title actions do not precede indicators: ${JSON.stringify(longTitleLayout)}`);
+  assert.ok(Number(longTitleLayout["terminal-actions"].style.zIndex) > Number(longTitleLayout["terminal-identity"].style.zIndex));
+  assert.ok(Number(longTitleLayout["terminal-indicators"].style.zIndex) > Number(longTitleLayout["terminal-identity"].style.zIndex));
+  for (const name of ["actions", "indicators"]) {
+    assert.match(longTitleLayout.fades[name].backgroundImage, /linear-gradient/);
+    assert.ok(longTitleLayout.fades[name].width >= 20);
+  }
+  for (const id of ["status", "settings-button"]) {
+    const item = longTitleLayout[id].rect;
+    assert.ok(item.left >= controlsLayout.left && item.right <= controlsLayout.right &&
+      item.top >= controlsLayout.top && item.bottom <= controlsLayout.bottom,
+    `long title ${id} is outside controls: ${JSON.stringify(longTitleLayout)}`);
+  }
   const presentedResponse = await pageCdp.call("Runtime.evaluate", {
     expression: `(async () => {
       const bytes = Uint8Array.from(atob(${JSON.stringify(screenshot.data)}), character => character.charCodeAt(0));
@@ -1049,6 +1139,16 @@ try {
   assert.ok(mobileGrow.rows > mobileResize.rows, "mobile grow did not increase rows");
   assert.equal(mobileGrow.viewportMode, "active");
   assert.equal(mobileGrow.scrollOffset + mobileGrow.scrollLength, mobileGrow.scrollTotal);
+  await pageCdp.call("Emulation.setDeviceMetricsOverride", {
+    width: Math.min(420, viewportWidth),
+    height: viewportHeight,
+    deviceScaleFactor: nativeViewport.devicePixelRatio,
+    mobile: true,
+  });
+  await pageCdp.call("Runtime.evaluate", {
+    expression: "new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))",
+    awaitPromise: true,
+  });
   const mobileInputResponse = await pageCdp.call("Runtime.evaluate", {
     expression: `(() => {
       const input = document.querySelector("#input");
@@ -1058,10 +1158,22 @@ try {
       const textView = document.querySelector("#text-view");
       const selectionButton = document.querySelector("#selection-button");
       const surface = document.querySelector("#surface");
+      const controls = document.querySelector("#terminal-controls");
+      const identity = document.querySelector("#terminal-identity");
+      const primary = document.querySelector("#terminal-identity-primary");
+      const indicators = document.querySelector("#terminal-indicators");
+      const status = document.querySelector("#status");
+      const settingsButton = document.querySelector("#settings-button");
+      primary.textContent = ${JSON.stringify(longTitle)};
       const inputRect = input.getBoundingClientRect();
       const screenRect = screen.getBoundingClientRect();
       const viewportRect = viewport.getBoundingClientRect();
       const textViewRect = textView.getBoundingClientRect();
+      const controlsRect = controls.getBoundingClientRect();
+      const identityRect = identity.getBoundingClientRect();
+      const indicatorsRect = indicators.getBoundingClientRect();
+      const statusRect = status.getBoundingClientRect();
+      const settingsButtonRect = settingsButton.getBoundingClientRect();
       const center = document.elementFromPoint(
         screenRect.left + screenRect.width / 2,
         screenRect.top + screenRect.height / 2,
@@ -1092,6 +1204,18 @@ try {
         screenRect: rect(screenRect),
         viewportRect: rect(viewportRect),
         textViewRect: rect(textViewRect),
+        controlsRect: rect(controlsRect),
+        identityRect: rect(identityRect),
+        indicatorsRect: rect(indicatorsRect),
+        statusRect: rect(statusRect),
+        settingsButtonRect: rect(settingsButtonRect),
+        primaryScrollWidth: primary.scrollWidth,
+        primaryClientWidth: primary.clientWidth,
+        primaryStyle: {
+          overflow: getComputedStyle(primary).overflow,
+          textOverflow: getComputedStyle(primary).textOverflow,
+          whiteSpace: getComputedStyle(primary).whiteSpace,
+        },
         centerTextViewId: center?.closest("#text-view")?.id || null,
         centerElementClass: center?.className || null,
       };
@@ -1120,6 +1244,33 @@ try {
     assert.ok(Math.abs(mobileInput.inputRect[edge] - mobileInput.viewportRect[edge]) <= 1, `${edge} does not match viewport ${JSON.stringify(mobileInput)}`);
   }
   assert.equal(mobileInput.centerTextViewId, null);
+  const mobileControlsCenter = center(mobileInput.controlsRect);
+  const mobileIdentityCenter = center(mobileInput.identityRect);
+  assert.ok(
+    Math.abs(mobileIdentityCenter.x - mobileControlsCenter.x) <= 1 &&
+    Math.abs(mobileIdentityCenter.y - mobileControlsCenter.y) <= 1,
+    `mobile title identity/control centers differ: ${JSON.stringify(mobileInput)}`,
+  );
+  for (const edge of ["left", "right", "top", "bottom"]) {
+    assert.ok(
+      Math.abs(mobileInput.identityRect[edge] - mobileInput.controlsRect[edge]) <= 1,
+      `mobile title identity ${edge} does not match controls: ${JSON.stringify(mobileInput)}`,
+    );
+  }
+  assert.ok(mobileInput.primaryScrollWidth > mobileInput.primaryClientWidth);
+  assert.equal(mobileInput.primaryStyle.overflow, "hidden");
+  assert.equal(mobileInput.primaryStyle.textOverflow, "clip");
+  assert.equal(mobileInput.primaryStyle.whiteSpace, "nowrap");
+  for (const name of ["statusRect", "settingsButtonRect"]) {
+    const item = mobileInput[name];
+    assert.ok(
+      item.left >= mobileInput.controlsRect.left &&
+      item.right <= mobileInput.controlsRect.right &&
+      item.top >= mobileInput.controlsRect.top &&
+      item.bottom <= mobileInput.controlsRect.bottom,
+      `mobile ${name} is outside controls: ${JSON.stringify(mobileInput)}`,
+    );
+  }
   const clientErrorResponse = await pageCdp.call("Runtime.evaluate", {
     expression: `(() => {
       const panel = document.querySelector("#client-error");
@@ -1152,7 +1303,7 @@ try {
   }
   const exceptions = pageCdp.events.filter(event => event.method === "Runtime.exceptionThrown");
   assert.deepEqual(exceptions, [], JSON.stringify(exceptions));
-  console.log(JSON.stringify({ ...value, presentedPixel, visualPsnr, gpuDevice: gpuDeviceText, mobileInput }));
+  console.log(JSON.stringify({ ...value, presentedPixel, visualPsnr, longTitleLayout, gpuDevice: gpuDeviceText, mobileInput }));
 } finally {
   pageCdp?.close();
   browserCdp?.close();

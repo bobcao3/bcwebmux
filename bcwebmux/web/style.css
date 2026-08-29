@@ -123,15 +123,54 @@ body {
 }
 
 #terminal-controls {
+  position: relative;
   grid-row: 2;
   z-index: 8;
   display: flex;
+  justify-content: space-between;
   align-items: center;
-  justify-content: flex-end;
-  gap: 10px;
   height: auto;
   padding: 2px max(4px, env(safe-area-inset-left)) calc(2px + var(--bottom-safe-inset)) max(4px, env(safe-area-inset-right));
   background: var(--color-surface);
+}
+
+#terminal-actions,
+#terminal-indicators {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  background: var(--color-surface);
+}
+
+#terminal-actions {
+  justify-content: flex-start;
+}
+
+#terminal-actions::after,
+#terminal-indicators::before {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 24px;
+  content: "";
+  pointer-events: none;
+}
+
+#terminal-actions::after {
+  left: 100%;
+  background: linear-gradient(to right, var(--color-surface), transparent);
+}
+
+#terminal-indicators {
+  justify-content: flex-end;
+}
+
+#terminal-indicators::before {
+  right: 100%;
+  background: linear-gradient(to right, transparent, var(--color-surface));
 }
 
 #status {
@@ -149,6 +188,7 @@ body {
 
 #settings-button {
   display: grid;
+  flex: 0 0 40px;
   width: 40px;
   height: 40px;
   padding: 9px;
@@ -178,6 +218,7 @@ body {
 
 #selection-button,
 #softkeys-toggle {
+  flex: 0 0 40px;
   width: 40px;
   height: 40px;
   padding: 9px;
@@ -194,8 +235,11 @@ body {
 }
 
 #terminal-identity {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
   display: flex;
-  flex: 1 1 auto;
+  width: 100%;
   min-width: 0;
   flex-direction: column;
   justify-content: center;
@@ -207,7 +251,7 @@ body {
 #terminal-identity-primary,
 #terminal-identity-secondary {
   overflow: hidden;
-  text-overflow: ellipsis;
+  text-overflow: clip;
   white-space: nowrap;
 }
 
