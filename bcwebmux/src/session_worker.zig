@@ -20,6 +20,7 @@ const c = @cImport({
 });
 
 pub const packet_capacity = 64 * 1024 + 1;
+const output_coalescing_interval_ms = 1;
 var worker_terminate_signal: std.atomic.Value(bool) = .init(false);
 
 fn workerTerminateSignalHandler(_: std.posix.SIG) callconv(.c) void {
@@ -242,11 +243,7 @@ pub fn run(shell: [:0]const u8, cols: u16, rows: u16, limits: manifest.Limits) !
         }
 
         if (!drained_for_resize and (descriptors[1].revents & (c.POLLIN | c.POLLHUP | c.POLLERR)) != 0) {
-            const count = c.read(master, packet[1..].ptr, packet.len - 1);
-            if (count > 0) {
-                packet[0] = @intFromEnum(Kind.output);
-                if (!sendPacket(channel, packet[0 .. @as(usize, @intCast(count)) + 1])) return;
-            }
+            if (!drainAvailableOutput(channel, master, &packet)) return;
         }
 
         const waited = c.waitpid(pid, &child_status, c.WNOHANG);
@@ -305,23 +302,51 @@ fn drainAvailableOutput(channel: c_int, master: c_int, packet: *[packet_capacity
     const flags = c.fcntl(master, c.F_GETFL);
     if (flags < 0 or c.fcntl(master, c.F_SETFL, flags | c.O_NONBLOCK) < 0) return false;
     defer _ = c.fcntl(master, c.F_SETFL, flags);
-    while (true) {
-        const count = c.read(master, packet[1..].ptr, packet.len - 1);
-        if (count <= 0) return true;
-        packet[0] = @intFromEnum(Kind.output);
-        if (!sendPacket(channel, packet[0 .. @as(usize, @intCast(count)) + 1])) return false;
+
+    var length: usize = 0;
+    var waited_for_output = false;
+    read_loop: while (true) {
+        const count = c.read(master, packet[1 + length ..].ptr, packet.len - 1 - length);
+        if (count > 0) {
+            length += @intCast(count);
+            if (length == packet.len - 1) {
+                packet[0] = @intFromEnum(Kind.output);
+                if (!sendPacket(channel, packet[0 .. length + 1])) return false;
+                length = 0;
+                waited_for_output = false;
+            }
+            continue :read_loop;
+        } else if (count == -1 and std.c.errno(count) == .INTR) {
+            continue;
+        } else if (count == -1 and std.c.errno(count) == .AGAIN) {
+            if (length == 0) return true;
+            if (!waited_for_output) {
+                waited_for_output = true;
+                var wait = [_]c.struct_pollfd{
+                    .{ .fd = master, .events = c.POLLIN, .revents = 0 },
+                };
+                while (true) {
+                    const waited = c.poll(&wait, wait.len, output_coalescing_interval_ms);
+                    if (waited < 0 and std.c.errno(waited) == .INTR) continue;
+                    if (waited > 0) continue :read_loop;
+                    break;
+                }
+            }
+            packet[0] = @intFromEnum(Kind.output);
+            if (!sendPacket(channel, packet[0 .. length + 1])) return false;
+            return true;
+        } else {
+            if (length != 0) {
+                packet[0] = @intFromEnum(Kind.output);
+                if (!sendPacket(channel, packet[0 .. length + 1])) return false;
+            }
+            return true;
+        }
     }
 }
 
 fn drainOutput(channel: c_int, master: c_int, packet: *[packet_capacity]u8) void {
-    const flags = c.fcntl(master, c.F_GETFL);
-    if (flags < 0 or c.fcntl(master, c.F_SETFL, flags | c.O_NONBLOCK) < 0) return;
-    while (true) {
-        const count = c.read(master, packet[1..].ptr, packet.len - 1);
-        if (count <= 0) return;
-        packet[0] = @intFromEnum(Kind.output);
-        if (!sendPacket(channel, packet[0 .. @as(usize, @intCast(count)) + 1])) return;
-    }
+    _ = drainAvailableOutput(channel, master, packet);
 }
 
 fn drainChannel(channel: c_int, packet: *[packet_capacity]u8) void {

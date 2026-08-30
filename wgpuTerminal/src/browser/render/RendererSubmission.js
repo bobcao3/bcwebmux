@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Cheng Cao
 
 const SUBMISSION_SIZE = 112;
-const FRAME_SIZE = 68;
+const FRAME_SIZE = 80;
 const strictDecoder = new TextDecoder("utf-8", { fatal: true });
 
 function validateRange(memoryLength, ptr, length, label) {
@@ -19,12 +19,17 @@ function validateRecords(memoryLength, ptr, count, size, label) {
   validateRange(memoryLength, ptr, count * size, label);
 }
 
-export function parseRendererSubmission(renderer, memory, submissionPtr) {
+export function parseRendererSubmission(renderer, terminal, memory, submissionPtr) {
   if (!renderer.initialized) throw new Error("GPU terminal is not initialized");
+  if (renderer.activeTerminal !== terminal) throw new Error("invalid renderer terminal");
+  const glyphPartition = renderer.glyphPartition(terminal);
+  if (!glyphPartition) throw new Error("missing renderer glyph partition");
+  const { baseSlot: committedGlyphPartitionBase, slotCapacity: committedGlyphPartitionCapacity,
+    generation: committedGlyphPartitionGeneration } = glyphPartition;
   if (!(memory instanceof ArrayBuffer)) throw new Error("invalid renderer memory");
   validateRange(memory.byteLength, submissionPtr, SUBMISSION_SIZE, "header");
   const header = new DataView(memory, submissionPtr, SUBMISSION_SIZE);
-  if (header.getUint32(0, true) !== 0x5355424d || header.getUint32(4, true) !== 3 ||
+  if (header.getUint32(0, true) !== 0x5355424d || header.getUint32(4, true) !== 4 ||
       header.getUint32(8, true) !== SUBMISSION_SIZE || header.getUint32(12, true) !== 0) {
     throw new Error("invalid renderer submission");
   }
@@ -56,6 +61,21 @@ export function parseRendererSubmission(renderer, memory, submissionPtr) {
   validateRange(memory.byteLength, framePtr, frameLen, "frame");
   const frame = new DataView(memory, framePtr, frameLen);
   validateRange(memory.byteLength, cellsPtr, cellsCount * renderer.cellSize, "cells");
+  const cells = new DataView(memory, cellsPtr, cellsCount * renderer.cellSize);
+  for (let index = 0; index < cellsCount; index += 1) {
+    const base = index * renderer.cellSize;
+    const glyph = cells.getUint32(base, true);
+    if (glyph !== 0) {
+      const glyphSlot = glyph - 1;
+      const meta = cells.getUint32(base + 4, true);
+      if (glyphSlot < committedGlyphPartitionBase ||
+          glyphSlot >= committedGlyphPartitionBase + committedGlyphPartitionCapacity ||
+          ((meta & 0x00010000) !== 0 &&
+           glyphSlot + 1 >= committedGlyphPartitionBase + committedGlyphPartitionCapacity)) {
+        throw new Error("invalid renderer cell glyph");
+      }
+    }
+  }
   validateRecords(memory.byteLength, dirtyRangesPtr, dirtyRangesCount, 8, "dirty");
   const dirtyRanges = new DataView(memory, dirtyRangesPtr, dirtyRangesCount * 8);
   validateRecords(memory.byteLength, stylesPtr + stylesFirst * renderer.styleSize, stylesCount, renderer.styleSize, "styles");
@@ -68,7 +88,7 @@ export function parseRendererSubmission(renderer, memory, submissionPtr) {
   const bitmapUploadPixels = new Uint8Array(memory, bitmapUploadPixelsPtr, bitmapUploadPixelsLen);
   validateRange(memory.byteLength, canvasTextPtr, canvasTextLen, "Canvas text");
   validateRange(memory.byteLength, textBytesPtr, textBytesLen, "text bytes");
-  if (frame.getUint32(0, true) !== 0x46574342 || frame.getUint32(4, true) !== 3) {
+  if (frame.getUint32(0, true) !== 0x46574342 || frame.getUint32(4, true) !== 4) {
     throw new Error("invalid renderer frame");
   }
   const cols = frame.getUint32(8, true);
@@ -92,8 +112,16 @@ export function parseRendererSubmission(renderer, memory, submissionPtr) {
   }
   const viewportModeValue = frame.getUint32(60, true);
   if (viewportModeValue > 2) throw new Error("invalid renderer viewport mode");
-  const atlasSlots = frame.getUint32(64, true);
-  if (atlasSlots > renderer.maxGlyphs) throw new Error(`terminal glyph atlas exceeds ${renderer.maxGlyphs} glyphs`);
+  const glyphPartitionBase = frame.getUint32(64, true);
+  const glyphPartitionCapacity = frame.getUint32(68, true);
+  const glyphPartitionGeneration = frame.getUint32(72, true);
+  const glyphSlotsUsed = frame.getUint32(76, true);
+  if (glyphPartitionBase !== committedGlyphPartitionBase ||
+      glyphPartitionCapacity !== committedGlyphPartitionCapacity ||
+      glyphPartitionGeneration !== committedGlyphPartitionGeneration ||
+      glyphSlotsUsed > glyphPartitionCapacity) {
+    throw new Error("invalid renderer glyph partition");
+  }
   for (let index = 0; index < bitmapUploadsCount; index += 1) {
     const base = index * 16;
     const firstSlot = bitmapUploads.getUint32(base, true);
@@ -102,8 +130,10 @@ export function parseRendererSubmission(renderer, memory, submissionPtr) {
     const bytesPerRow = bitmapUploads.getUint32(base + 12, true);
     const width = slotCount * renderer.atlas.tileWidth;
     const byteLength = bytesPerRow * renderer.atlas.tileHeight;
-    if (renderer.atlas.format !== "r8unorm" || slotCount === 0 || firstSlot >= atlasSlots ||
-        slotCount > atlasSlots - firstSlot || slotCount > renderer.atlas.columns - (firstSlot % renderer.atlas.columns) ||
+    if (slotCount === 0 ||
+        firstSlot < glyphPartitionBase ||
+        slotCount > glyphPartitionBase + glyphSlotsUsed - firstSlot ||
+        slotCount > renderer.atlas.columns - (firstSlot % renderer.atlas.columns) ||
         bytesPerRow !== width || pixelOffset > bitmapUploadPixelsLen ||
         byteLength > bitmapUploadPixelsLen - pixelOffset) {
       throw new Error("invalid renderer bitmap upload");
@@ -116,7 +146,9 @@ export function parseRendererSubmission(renderer, memory, submissionPtr) {
     const spanCells = canvasRequests.getUint32(base + 8, true);
     const offset = canvasRequests.getUint32(base + 12, true);
     const length = canvasRequests.getUint32(base + 16, true);
-    if (slot >= atlasSlots || slotCount === 0 || slotCount > atlasSlots - slot || spanCells === 0 ||
+    if (slot < glyphPartitionBase || slotCount === 0 ||
+        slotCount > glyphPartitionBase + glyphSlotsUsed - slot ||
+        slotCount !== spanCells || spanCells === 0 ||
         offset > canvasTextLen || length > canvasTextLen - offset) {
       throw new Error("invalid renderer Canvas request");
     }
@@ -157,7 +189,10 @@ export function parseRendererSubmission(renderer, memory, submissionPtr) {
     scrollOffset: frame.getUint32(52, true),
     scrollLength: frame.getUint32(56, true),
     viewportMode: ["active", "top", "pinned"][viewportModeValue],
-    atlasSlots,
+    glyphPartitionBase,
+    glyphPartitionCapacity,
+    glyphPartitionGeneration,
+    glyphSlotsUsed,
   };
 }
 

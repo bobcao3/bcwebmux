@@ -1,31 +1,32 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Cheng Cao
 
-import { GlyphAtlas } from "./GlyphAtlas.js";
+const UNIFORM_BUFFER_SIZE = 68;
 
-const UNIFORM_BUFFER_SIZE = 72;
+function validateFrameCapacity(renderer, cells, styles, cellSize, styleSize) {
+  const limit = Math.min(renderer.device.limits.maxBufferSize, renderer.device.limits.maxStorageBufferBindingSize);
+  if (cells * cellSize > limit || styles * styleSize > limit || cells * 4 > limit) {
+    throw new Error("frame capacity exceeds GPU buffer limits");
+  }
+}
 
-export function initialize(renderer, cellSource, grain, grainSize, maxCellsValue, maxGlyphsValue, maxStylesValue, styleSize, atlasSlots, cellSize) {
+export function initialize(renderer, cellSource, grain, grainSize, maxCellsValue, maxStylesValue, styleSize, cellSize) {
   if (renderer.initialized) {
-    const matches = maxCellsValue === renderer.maxCells && maxGlyphsValue === renderer.maxGlyphs &&
-      maxStylesValue === renderer.maxStyles && styleSize === renderer.styleSize &&
-      cellSize === renderer.cellSize && grainSize === 64 && grain.length === grainSize * grainSize;
-    if (!matches) throw new Error("terminal core renderer ABI mismatch");
+    const matches = styleSize === renderer.styleSize && cellSize === renderer.cellSize &&
+      grainSize === 64 && grain.length === grainSize * grainSize;
+    if (!matches) throw new Error("terminal renderer ABI mismatch");
+    ensureFrameCapacity(renderer, maxCellsValue);
     return 1;
   }
+  if (!renderer.atlas || !renderer.glyphPartitions) throw new Error("glyph atlas was not registered");
   if (!(grain instanceof Int8Array) || grainSize !== 64 || grain.length !== grainSize * grainSize) {
     throw new Error("invalid grain texture");
   }
-  if (maxCellsValue <= 0 || maxGlyphsValue <= 0 || maxStylesValue <= 0 ||
-      styleSize !== 12 || atlasSlots <= 0 || atlasSlots > maxGlyphsValue || cellSize !== 8) {
+  if (maxCellsValue <= 0 || maxStylesValue <= 0 || styleSize !== 12 || cellSize !== 8) {
     throw new Error("invalid GPU initialization constants");
   }
-  renderer.maxCells = maxCellsValue;
-  renderer.maxGlyphs = maxGlyphsValue;
-  renderer.maxStyles = maxStylesValue;
-  renderer.styleSize = styleSize;
-  renderer.atlasRequiredSlots = atlasSlots;
-  renderer.cellSize = cellSize;
+  validateFrameCapacity(renderer, maxCellsValue, maxStylesValue, cellSize, styleSize);
+  Object.assign(renderer, { maxCells: maxCellsValue, maxStyles: maxStylesValue, styleSize, cellSize });
   const device = renderer.device;
   renderer.context.configure({
     device,
@@ -33,17 +34,6 @@ export function initialize(renderer, cellSource, grain, grainSize, maxCellsValue
     alphaMode: "opaque",
     usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_DST,
   });
-  const font = getComputedStyle(renderer.canvas.parentElement);
-  renderer.atlas = new GlyphAtlas(
-    device,
-    font,
-    atlasSlots,
-    renderer.maxGlyphs,
-    renderer.textRenderer === "kb-canvas" ? "rgba8unorm" : "r8unorm",
-    renderer.physicalCellWidth,
-    renderer.physicalCellHeight,
-    renderer.physicalFontSize,
-  );
   renderer.uniformBuffer = device.createBuffer({ size: UNIFORM_BUFFER_SIZE, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
   renderer.cellBuffer = device.createBuffer({ size: maxCellsValue * cellSize, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
   renderer.styleBuffer = device.createBuffer({ size: maxStylesValue * styleSize, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
@@ -72,13 +62,66 @@ export function initialize(renderer, cellSource, grain, grainSize, maxCellsValue
     fragment: { module: cellModule, entryPoint: "fragment", targets: [{ format: renderer.format }] },
     primitive: { topology: "triangle-list" },
   });
-  rebuildCellBundle(renderer);
   renderer.initialized = true;
+  rebuildCellBundle(renderer);
   return 1;
 }
 
+export function ensureFrameCapacity(renderer, cellCapacity) {
+  if (!Number.isSafeInteger(cellCapacity) || cellCapacity <= 0) {
+    throw new Error("invalid frame capacity");
+  }
+  if (!renderer.initialized) return false;
+  const styleCapacity = Math.min(65536, cellCapacity + 1);
+  if (renderer.maxCells >= cellCapacity && renderer.maxStyles >= styleCapacity) return false;
+  const maxCells = Math.max(renderer.maxCells, cellCapacity);
+  const maxStyles = Math.max(renderer.maxStyles, styleCapacity);
+  validateFrameCapacity(renderer, maxCells, maxStyles, renderer.cellSize, renderer.styleSize);
+  const device = renderer.device;
+  let cellBuffer = null;
+  let styleBuffer = null;
+  let selectionBuffer = null;
+  try {
+    cellBuffer = device.createBuffer({ size: maxCells * renderer.cellSize, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+    styleBuffer = device.createBuffer({ size: maxStyles * renderer.styleSize, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+    selectionBuffer = device.createBuffer({ size: maxCells * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+  } catch (error) {
+    cellBuffer?.destroy();
+    styleBuffer?.destroy();
+    selectionBuffer?.destroy();
+    throw error;
+  }
+  const oldCellBuffer = renderer.cellBuffer;
+  const oldStyleBuffer = renderer.styleBuffer;
+  const oldSelectionBuffer = renderer.selectionBuffer;
+  const oldMaxCells = renderer.maxCells;
+  const oldMaxStyles = renderer.maxStyles;
+  renderer.cellBuffer = cellBuffer;
+  renderer.styleBuffer = styleBuffer;
+  renderer.selectionBuffer = selectionBuffer;
+  renderer.maxCells = maxCells;
+  renderer.maxStyles = maxStyles;
+  try {
+    rebuildCellBundle(renderer);
+  } catch (error) {
+    renderer.cellBuffer = oldCellBuffer;
+    renderer.styleBuffer = oldStyleBuffer;
+    renderer.selectionBuffer = oldSelectionBuffer;
+    renderer.maxCells = oldMaxCells;
+    renderer.maxStyles = oldMaxStyles;
+    cellBuffer.destroy();
+    styleBuffer.destroy();
+    selectionBuffer.destroy();
+    throw error;
+  }
+  oldCellBuffer.destroy();
+  oldStyleBuffer.destroy();
+  oldSelectionBuffer.destroy();
+  return true;
+}
+
 export function rebuildCellBundle(renderer) {
-  renderer.cellBindGroup = renderer.device.createBindGroup({
+  const cellBindGroup = renderer.device.createBindGroup({
     layout: renderer.cellPipeline.getBindGroupLayout(0),
     entries: [
       { binding: 0, resource: { buffer: renderer.uniformBuffer } },
@@ -91,20 +134,11 @@ export function rebuildCellBundle(renderer) {
   });
   const encoder = renderer.device.createRenderBundleEncoder({ colorFormats: [renderer.format] });
   encoder.setPipeline(renderer.cellPipeline);
-  encoder.setBindGroup(0, renderer.cellBindGroup);
+  encoder.setBindGroup(0, cellBindGroup);
   encoder.drawIndirect(renderer.drawIndirectBuffer, 0);
-  renderer.cellBundle = encoder.finish();
-}
-
-export function setPhysicalCellMetrics(renderer, width, height, fontSize) {
-  if (!Number.isInteger(width) || !Number.isInteger(height) || !Number.isInteger(fontSize) ||
-      width <= 0 || height <= 0 || fontSize <= 0) {
-    throw new Error("invalid physical cell metrics");
-  }
-  renderer.physicalCellWidth = width;
-  renderer.physicalCellHeight = height;
-  renderer.physicalFontSize = fontSize;
-  if (renderer.initialized && renderer.atlas.setPhysicalMetrics(width, height, fontSize)) rebuildCellBundle(renderer);
+  const cellBundle = encoder.finish();
+  renderer.cellBindGroup = cellBindGroup;
+  renderer.cellBundle = cellBundle;
 }
 
 export function setGrainStrength(renderer, value) {
@@ -118,84 +152,43 @@ export function setGrainStrength(renderer, value) {
 export function resize(renderer, widthValue, heightValue) {
   const width = Math.round(Number(widthValue));
   const height = Math.round(Number(heightValue));
-  const maxDimension = renderer.device.limits.maxTextureDimension2D;
-  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0 ||
-      width > maxDimension || height > maxDimension) {
+  const maximum = renderer.device.limits.maxTextureDimension2D;
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0 || width > maximum || height > maximum) {
     throw new Error("invalid GPU viewport dimensions");
   }
+  const pixelScaleX = width / Math.max(1, renderer.canvas.clientWidth);
+  const pixelScaleY = height / Math.max(1, renderer.canvas.clientHeight);
+  if (renderer.canvas.width === width && renderer.canvas.height === height && renderer.offscreen) {
+    renderer.viewportWidth = width;
+    renderer.viewportHeight = height;
+    renderer.pixelScaleX = pixelScaleX;
+    renderer.pixelScaleY = pixelScaleY;
+    return;
+  }
+  let offscreen = null;
+  let offscreenView = null;
+  try {
+    offscreen = renderer.device.createTexture({
+      size: [width, height],
+      format: renderer.format,
+      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
+    });
+    offscreenView = offscreen.createView();
+  } catch (error) {
+    offscreen?.destroy();
+    throw error;
+  }
+  const oldOffscreen = renderer.offscreen;
   renderer.viewportWidth = width;
   renderer.viewportHeight = height;
-  renderer.pixelScaleX = width / Math.max(1, renderer.canvas.clientWidth);
-  renderer.pixelScaleY = height / Math.max(1, renderer.canvas.clientHeight);
-  if (renderer.canvas.width === width && renderer.canvas.height === height && renderer.offscreen) return;
+  renderer.pixelScaleX = pixelScaleX;
+  renderer.pixelScaleY = pixelScaleY;
   renderer.canvas.width = width;
   renderer.canvas.height = height;
-  renderer.offscreen?.destroy();
-  renderer.offscreen = renderer.device.createTexture({
-    size: [width, height],
-    format: renderer.format,
-    usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
-  });
-  renderer.offscreenView = renderer.offscreen.createView();
+  renderer.offscreen = offscreen;
+  renderer.offscreenView = offscreenView;
+  oldOffscreen?.destroy();
   if (renderer.rows) renderer.draw();
-}
-
-export function reloadFont(renderer, fontFamily) {
-  if (!renderer.initialized) throw new Error("GPU terminal is not initialized");
-  renderer.atlas.reloadFont(fontFamily);
-  rebuildCellBundle(renderer);
-  renderer.fontReloads += 1;
-}
-
-export function resetForCore(renderer, fontFamily) {
-  if (!renderer.initialized) throw new Error("GPU terminal is not initialized");
-  if (renderer.blinkTimer) {
-    clearTimeout(renderer.blinkTimer);
-    renderer.blinkTimer = 0;
-  }
-  const pendingTextureCopies = renderer.atlas.takePendingTextureCopies();
-  for (const copy of pendingTextureCopies) copy.source.destroy();
-  renderer.atlas.reloadFont(fontFamily);
-  rebuildCellBundle(renderer);
-  Object.assign(renderer.submissionMetadata, {
-    cols: 0,
-    rows: 0,
-    viewportMode: "active",
-    scrollTotal: 0,
-    scrollOffset: 0,
-    scrollLength: 0,
-    textRowsPtr: 0,
-    textCellsPtr: 0,
-    textBytesPtr: 0,
-    textBytesLen: 0,
-    textChanged: false,
-  });
-  renderer.submissionMemory = null;
-  renderer.submissionCellsPtr = 0;
-  renderer.submissionDirtyRangesPtr = 0;
-  renderer.submissionDirtyRangesCount = 0;
-  renderer.submissionStylesPtr = 0;
-  renderer.submissionStylesFirst = 0;
-  renderer.submissionStylesCount = 0;
-  renderer.submissionSelectionsPtr = 0;
-  renderer.submissionCanvasRequestsPtr = 0;
-  renderer.submissionCanvasRequestsCount = 0;
-  renderer.cols = 0;
-  renderer.rows = 0;
-  renderer.cursorFlags = 0;
-  renderer.drawnCellCount = 0;
-  renderer.atlasRequiredSlots = 0;
-  renderer.indirectData[1] = 0;
-  renderer.indirectDirty = true;
-  renderer.coreSwitches += 1;
-}
-
-export function setTextRenderer(renderer, textRenderer) {
-  if (textRenderer !== "kb-stb" && textRenderer !== "kb-canvas") throw new Error("invalid text renderer");
-  renderer.textRenderer = textRenderer;
-  if (renderer.initialized && renderer.atlas.setFormat(textRenderer === "kb-canvas" ? "rgba8unorm" : "r8unorm")) {
-    rebuildCellBundle(renderer);
-  }
 }
 
 export async function readPixels(renderer) {
@@ -203,23 +196,14 @@ export async function readPixels(renderer) {
   const width = renderer.canvas.width;
   const height = renderer.canvas.height;
   const bytesPerRow = Math.ceil(width * 4 / 256) * 256;
-  const buffer = renderer.device.createBuffer({
-    size: bytesPerRow * height,
-    usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
-  });
+  const buffer = renderer.device.createBuffer({ size: bytesPerRow * height, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST });
   const encoder = renderer.device.createCommandEncoder();
-  encoder.copyTextureToBuffer(
-    { texture: renderer.offscreen },
-    { buffer, bytesPerRow, rowsPerImage: height },
-    [width, height, 1],
-  );
+  encoder.copyTextureToBuffer({ texture: renderer.offscreen }, { buffer, bytesPerRow, rowsPerImage: height }, [width, height, 1]);
   renderer.device.queue.submit([encoder.finish()]);
   await buffer.mapAsync(GPUMapMode.READ);
   const source = new Uint8Array(buffer.getMappedRange());
   const data = new Uint8Array(width * height * 4);
-  for (let y = 0; y < height; y += 1) {
-    data.set(source.subarray(y * bytesPerRow, y * bytesPerRow + width * 4), y * width * 4);
-  }
+  for (let y = 0; y < height; y += 1) data.set(source.subarray(y * bytesPerRow, y * bytesPerRow + width * 4), y * width * 4);
   buffer.unmap();
   buffer.destroy();
   return { width, height, format: renderer.format, data };
@@ -227,13 +211,8 @@ export async function readPixels(renderer) {
 
 export function dispose(renderer) {
   if (renderer.error === "disposed") return;
-  if (renderer.blinkTimer) {
-    clearTimeout(renderer.blinkTimer);
-    renderer.blinkTimer = 0;
-  }
-  const pendingTextureCopies = renderer.atlas?.takePendingTextureCopies?.() ?? [];
-  for (const copy of pendingTextureCopies) copy.source?.destroy?.();
-  renderer.atlas?.texture?.destroy?.();
+  if (renderer.blinkTimer) clearTimeout(renderer.blinkTimer);
+  renderer.atlas?.dispose?.();
   renderer.offscreen?.destroy?.();
   renderer.frameUploadBuffer?.destroy?.();
   renderer.uniformBuffer?.destroy?.();

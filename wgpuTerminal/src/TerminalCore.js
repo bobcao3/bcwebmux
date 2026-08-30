@@ -125,6 +125,9 @@ export class TerminalCore {
     this._wasm = instance.exports;
     this._wasm.term_bootstrap();
     if (this._wasm.term_init(cols, rows) !== 1) throw new Error("terminal core initialization failed");
+    if ((this._host?._installGlyphPartition(this) ?? 1) !== 1) {
+      throw new Error("terminal glyph partition installation failed");
+    }
     this._state.cols = cols;
     this._state.rows = rows;
     this.setTheme(this.options.theme);
@@ -309,7 +312,7 @@ export class TerminalCore {
     return result;
   }
 
-  resize(layout, atlasColumns) {
+  resize(layout) {
     if (!this._wasm) return 0;
     const result = this._wasm.term_resize(
       layout.cols,
@@ -319,7 +322,6 @@ export class TerminalCore {
       layout.cellWidth,
       layout.cellHeight,
       layout.fontSize,
-      atlasColumns,
     );
     if (result === 1) {
       this._state.cols = layout.cols;
@@ -328,7 +330,7 @@ export class TerminalCore {
     return result;
   }
 
-  setRenderMetrics(layout, atlasColumns) {
+  setRenderMetrics(layout) {
     if (!this._wasm) throw new Error("terminal core is not open");
     return this._wasm.term_set_render_metrics(
       layout.cellWidth,
@@ -336,7 +338,6 @@ export class TerminalCore {
       layout.cellWidth,
       layout.cellHeight,
       layout.fontSize,
-      atlasColumns,
     );
   }
 
@@ -347,6 +348,7 @@ export class TerminalCore {
     if (!Number.isInteger(cols) || !Number.isInteger(rows) || cols <= 0 || rows <= 0) {
       throw new TypeError("terminal core dimensions must be positive integers");
     }
+    this._host?._prepareTerminalFrame(this, cols * rows);
     const result = this._wasm.term_resize_canonical(
       cols,
       rows,
@@ -356,6 +358,7 @@ export class TerminalCore {
     if (result === 1) {
       this._state.cols = cols;
       this._state.rows = rows;
+      this._schedule(true);
     }
     return result;
   }
@@ -407,14 +410,14 @@ export class TerminalCore {
     new Uint8Array(this._wasm.memory.buffer, ptr, bytes.length).set(bytes);
     if (this._wasm.term_snapshot_restore(bytes.length) !== 1) throw new Error("terminal snapshot restore failed");
     this._pendingRxAt = 0;
-    this._wasm.term_invalidate_render_cache();
+    this._wasm.term_invalidate_frame_cache();
     if (this._host) this._host._coreRestored(this);
     else this._schedule(true);
   }
 
   invalidateForAttach() {
     if (!this._wasm) throw new Error("terminal core is not open");
-    this._wasm.term_invalidate_render_cache();
+    this._wasm.term_invalidate_frame_cache();
     this._wasm.term_invalidate_text_view();
   }
 
@@ -444,6 +447,9 @@ export class TerminalCore {
     if (!this._wasm) return false;
     this._wasm.term_deinit();
     if (this._wasm.term_init(this._state.cols, this._state.rows) !== 1) throw new Error("terminal core reset failed");
+    if ((this._host?._installGlyphPartition(this) ?? 1) !== 1) {
+      throw new Error("terminal glyph partition installation failed");
+    }
     this.setTheme(this.options.theme);
     this.setRenderer(this.options.renderer);
     this.setFont(this.options.font);

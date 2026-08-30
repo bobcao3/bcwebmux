@@ -9,9 +9,15 @@ import {
 } from "./TerminalCoreHost.js";
 import { EventEmitter } from "./common/EventEmitter.js";
 import {
-  createRenderBackend,
   normalizeRenderBackend,
+  acquireRenderBackend,
+  releaseRenderBackend,
 } from "./browser/render/RenderBackend.js";
+import {
+  ABSOLUTE_GLYPH_CACHE_MAX_BYTES,
+  TERMINAL_CELL_PROTOCOL_LIMIT,
+  normalizeByteLimit,
+} from "./browser/render/GlyphAtlasLimits.js";
 import { TerminalTextView } from "./browser/selection/TerminalTextView.js";
 import { TerminalView } from "./browser/TerminalView.js";
 import { FrameScheduler } from "./browser/FrameScheduler.js";
@@ -54,6 +60,11 @@ export class Terminal {
       font: normalizeFont(options.font),
       theme: options.theme || DEFAULT_THEME,
       grainStrength: Number.isFinite(Number(options.grainStrength)) ? Number(options.grainStrength) : 4,
+      glyphCacheMaxBytes: normalizeByteLimit(
+        options.glyphCacheMaxBytes,
+        ABSOLUTE_GLYPH_CACHE_MAX_BYTES,
+        "glyph cache byte limit",
+      ),
       elements: options.elements,
       terminalElement: options.terminalElement,
       inputDebug: Boolean(options.inputDebug),
@@ -82,6 +93,7 @@ export class Terminal {
     this._coarsePointerListener = null;
     this._windowListeners = [];
     this._fontChangeGeneration = 0;
+    this._pendingFont = null;
     this._activeTextRenderer = this.options.renderer;
     this._selectionMode = false;
     this._selectionFallbackFrame = null;
@@ -199,7 +211,7 @@ export class Terminal {
       getWasm: () => this._wasm,
       getRenderer: () => this._renderer,
       getInputController: () => this._inputController,
-      resizeTerminal: (layout, atlasColumns) => this._resizeActiveCore(layout, atlasColumns),
+      resizeTerminal: (layout) => this._resizeActiveCore(layout),
       onResize: ({ cols, rows }) => {
         this._state.cols = cols;
         this._state.rows = rows;
@@ -212,13 +224,19 @@ export class Terminal {
     });
     const initialPixelViewport = this._viewportController.latestPixelViewport;
     const initialLayout = this._viewportController.physicalLayout(initialPixelViewport);
-    this._renderer = await createRenderBackend(
+    this._renderer = await acquireRenderBackend(this,
       this._view.screen,
       initialPixelViewport,
       this.options.renderer,
       this.options.renderBackend,
+      this.options.glyphCacheMaxBytes,
     );
-    this._renderer.setPhysicalCellMetrics(initialLayout.cellWidth, initialLayout.cellHeight, initialLayout.fontSize);
+    this._renderer.setPhysicalCellMetrics(
+      initialLayout.cellWidth,
+      initialLayout.cellHeight,
+      initialLayout.fontSize,
+      initialLayout.cols,
+    );
     this._renderer.setGrainStrength(this.options.grainStrength);
 
     const core = new TerminalCore({
@@ -230,11 +248,17 @@ export class Terminal {
       clipboardWrite: this.options.clipboardWrite,
     });
     this._cores.add(core);
+    this._registerTerminal(core, initialLayout);
     this._renderingCore = core;
     try {
       await core.open({ cols: initialLayout.cols, rows: initialLayout.rows, host: this });
       this._core = core;
       this._wasm = core.wasm;
+      this._renderer.selectTerminal(core);
+    } catch (error) {
+      this._releaseTerminal(core);
+      this._cores.delete(core);
+      throw error;
     } finally {
       this._renderingCore = null;
     }
@@ -319,28 +343,94 @@ export class Terminal {
     this._installWindowListeners();
   }
 
-  _isCoreActive(core) {
-    return core === this._core || core === this._renderingCore;
+  _registerTerminal(core, layout) {
+    const visibleCells = layout.cols * layout.rows;
+    if (!Number.isSafeInteger(visibleCells) || visibleCells <= 0 || visibleCells > TERMINAL_CELL_PROTOCOL_LIMIT) {
+      throw new RangeError("terminal viewport cell count is invalid");
+    }
+    const plan = this._renderer.registerTerminal(core, visibleCells, layout.cols);
+    this._ensureFrameCapacity(visibleCells);
+    this._installGlyphPartitions();
+    return plan;
   }
 
-  _resizeActiveCore(layout, atlasColumns) {
-    const core = this._renderingCore ?? this._core;
-    if (core?.wasm) {
-      const result = this.options.canonicalGeometry
-        ? core.setRenderMetrics(layout, atlasColumns)
-        : core.resize(layout, atlasColumns);
-      if (result !== 1) throw new Error("terminal core resize failed");
+  _prepareTerminalFrame(core, visibleCells) {
+    if (!Number.isSafeInteger(visibleCells) || visibleCells <= 0 || visibleCells > TERMINAL_CELL_PROTOCOL_LIMIT) {
+      throw new RangeError("terminal viewport cell count is invalid");
+    }
+    this._renderer.resizeTerminalPartition(core, visibleCells);
+    this._ensureFrameCapacity(visibleCells);
+    this._installGlyphPartitions();
+  }
+
+  _ensureFrameCapacity(visibleCells) {
+    if (!this._renderer.ensureFrameCapacity(visibleCells)) return false;
+    for (const core of this._cores) {
+      if (core.wasm) core.wasm.term_invalidate_frame_cache();
+    }
+    return true;
+  }
+
+  _installGlyphPartition(core) {
+    if (!core.wasm) return 1;
+    const partition = this._renderer?.glyphPartition(core);
+    if (!partition) return 0;
+    return core.wasm.term_set_glyph_partition(
+      partition.baseSlot,
+      partition.slotCapacity,
+      this._renderer.atlasColumns,
+      partition.generation,
+    );
+  }
+
+  _installGlyphPartitions() {
+    for (const core of this._cores) {
+      if (this._installGlyphPartition(core) !== 1) {
+        const error = new Error("terminal glyph partition installation failed");
+        this._renderer.error = error.message;
+        throw error;
+      }
     }
     return 1;
   }
 
-  _gpuInit(core, cellPtr, cellLen, grainPtr, grainLen, grainSize, maxCells, maxGlyphs, maxStyles, styleSize, atlasSlots, cellSize) {
+  _releaseTerminal(core) {
+    if (this._renderer?.glyphPartition(core)) {
+      this._renderer.releaseTerminal(core);
+      this._installGlyphPartitions();
+    }
+  }
+
+  _isCoreActive(core) {
+    return core === this._core || core === this._renderingCore;
+  }
+
+  _resizeActiveCore(layout) {
+    const core = this._renderingCore ?? this._core;
+    if (core?.wasm) {
+      const visibleCells = this.options.canonicalGeometry
+        ? Math.max(layout.cols * layout.rows, core.cols * core.rows)
+        : layout.cols * layout.rows;
+      this._prepareTerminalFrame(core, visibleCells);
+      const result = this.options.canonicalGeometry
+        ? core.setRenderMetrics(layout)
+        : core.resize(layout);
+      if (result !== 1) {
+        const error = "terminal core resize failed";
+        this._renderer.error = error;
+        throw new Error(error);
+      }
+    }
+    return 1;
+  }
+
+  _gpuInit(core, cellPtr, cellLen, grainPtr, grainLen, grainSize, maxCells, maxStyles, styleSize, cellSize) {
     if (!this._cores.has(core)) return 0;
     try {
       const memory = core.wasm.memory.buffer;
       const cellSource = decoder.decode(new Uint8Array(memory, cellPtr, cellLen));
       const grain = new Int8Array(memory, grainPtr, grainLen);
-      return this._renderer.initialize(cellSource, grain, grainSize, maxCells, maxGlyphs, maxStyles, styleSize, atlasSlots, cellSize);
+      return this._renderer.initialize(cellSource, grain, grainSize, maxCells, maxStyles, styleSize, cellSize);
     } catch (error) {
       console.error(error);
       this._errorEmitter.emit(error);
@@ -352,7 +442,7 @@ export class Terminal {
     if (!this._isCoreActive(core)) return 0;
     try {
       const memory = core.wasm.memory.buffer;
-      const metadata = this._renderer.submitWasm(memory, submissionPtr);
+      const metadata = this._renderer.submitWasm(core, memory, submissionPtr);
       this._submitFrameMetadata(metadata);
       this._viewportController.submitFrameMetadata(metadata);
       this._textView?.update(
@@ -367,6 +457,7 @@ export class Terminal {
       return 1;
     } catch (error) {
       console.error(error);
+      this._renderer.error = error.message;
       this._errorEmitter.emit(error);
       return 0;
     }
@@ -391,6 +482,7 @@ export class Terminal {
   }
 
   _coreDisposed(core) {
+    this._releaseTerminal(core);
     this._cores.delete(core);
     if (this._core === core) {
       this._viewportController?.cancelScrollGesture();
@@ -485,13 +577,17 @@ export class Terminal {
   }
 
   async setFont(fontOptions) {
+    const previousFont = this.options.font;
     const font = normalizeFont({ ...this.options.font, ...(fontOptions || {}) });
     if (font.canvasOnly && this._activeTextRenderer !== "kb-canvas") {
       throw new Error("Canvas-only font requires the kb-canvas renderer");
     }
-    this.options.font = font;
-    if (!this._terminalElement) return;
+    if (!this._terminalElement) {
+      this.options.font = font;
+      return font;
+    }
     const generation = ++this._fontChangeGeneration;
+    this._pendingFont = font;
     this._applyCssFont(font);
     try {
       await Promise.all(loadTerminalFonts(font));
@@ -501,10 +597,18 @@ export class Terminal {
       this._viewportController.remeasureCells();
       this._viewportController.resize(this._viewportController.latestPixelViewport);
       this._reloadRendererFont();
+      this.options.font = font;
+      if (generation === this._fontChangeGeneration) this._pendingFont = null;
       this._scheduler.schedule(true);
     } catch (error) {
       if (generation === this._fontChangeGeneration) {
-        try { this._reloadRendererFont(); } catch {}
+        this._applyCssFont(previousFont);
+        this.options.font = previousFont;
+        for (const core of this._cores) core.setFont(previousFont);
+        this._viewportController.remeasureCells();
+        this._viewportController.resize(this._viewportController.latestPixelViewport);
+        this._reloadRendererFont();
+        this._pendingFont = null;
         this._scheduler.schedule(true);
         this._errorEmitter.emit(error);
       }
@@ -514,16 +618,21 @@ export class Terminal {
 
   setRenderer(rendererName) {
     const normalized = rendererName === "kb-canvas" ? "kb-canvas" : "kb-stb";
-    if (normalized !== "kb-canvas" && this.options.font.canvasOnly) {
+    if (normalized !== "kb-canvas" && (this._pendingFont ?? this.options.font).canvasOnly) {
       throw new Error("Canvas-only font requires the kb-canvas renderer");
     }
+    if (!this._wasm || !this._renderer) {
+      this.options.renderer = normalized;
+      this._activeTextRenderer = normalized;
+      return normalized;
+    }
+    this._renderer.setTextRenderer(normalized);
+    this._installGlyphPartitions();
+    for (const core of this._cores) core.setRenderer(normalized);
     this.options.renderer = normalized;
     this._activeTextRenderer = normalized;
-    if (!this._wasm || !this._renderer) return;
-    for (const core of this._cores) core.setRenderer(normalized);
-    this._renderer.setTextRenderer(normalized);
-    this._reloadRendererFont();
     this._scheduler.schedule(true);
+    return normalized;
   }
 
   async createCore(options = {}) {
@@ -547,10 +656,43 @@ export class Terminal {
     this._renderer?.setGrainStrength(strength);
   }
 
+  setGlyphCacheMaxBytes(value) {
+    const normalized = normalizeByteLimit(
+      value,
+      ABSOLUTE_GLYPH_CACHE_MAX_BYTES,
+      "glyph cache byte limit",
+    );
+    if (!this._renderer) {
+      this.options.glyphCacheMaxBytes = normalized;
+      return normalized;
+    }
+    const oldBudget = this._renderer.glyphCacheMaxBytes;
+    this._renderer.glyphCacheMaxBytes = normalized;
+    try {
+      const layout = this._viewportController.physicalLayout(this._viewportController.latestPixelViewport);
+      this._renderer.reconfigureGlyphAtlas(
+        {
+          width: layout.cellWidth,
+          height: layout.cellHeight,
+          fontSize: layout.fontSize,
+          columns: layout.cols,
+        },
+        this._activeTextRenderer,
+        getComputedStyle(this._terminalElement).fontFamily,
+      );
+    } catch (error) {
+      this._renderer.glyphCacheMaxBytes = oldBudget;
+      throw error;
+    }
+    this._installGlyphPartitions();
+    this.options.glyphCacheMaxBytes = normalized;
+    return normalized;
+  }
+
   _reloadRendererFont() {
     if (!this._renderer) return;
     this._renderer.reloadFont(getComputedStyle(this._terminalElement).fontFamily);
-    for (const core of this._cores) core.wasm.term_invalidate_glyph_cache();
+    this._installGlyphPartitions();
   }
 
   write(data) {
@@ -792,7 +934,7 @@ export class Terminal {
     this._core = null;
     this._renderingCore = null;
     this._wasm = null;
-    this._renderer?.dispose?.();
+    releaseRenderBackend(this, this._renderer);
     this._view?.dispose();
     this._renderer = null;
     this._view = null;

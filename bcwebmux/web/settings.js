@@ -4,6 +4,9 @@
 const STORAGE_KEY = "bcwebmux.settings.v1";
 const DEFAULT_PROFILE = "github-dark-high-contrast";
 const COLOR_FIELDS = ["background", "foreground", "surface", "border", "accent", "muted", "success", "danger"];
+const FONT_SIZE_MIN = 8;
+const FONT_SIZE_MAX = 32;
+const GLYPH_CACHE_MAX_MIB = 256;
 export const FONT_OPTIONS = Object.freeze({
   "jetbrains-mono": { name: "JetBrains Mono Nerd Font", cssFamily: "JetBrains Mono Nerd Font", wasmId: 0 },
   "fira-code": {
@@ -71,6 +74,7 @@ const DEFAULT_SETTINGS = Object.freeze({
   fontSize: 15,
   ligatures: true,
   grainStrength: 4,
+  glyphCacheMaxMiB: GLYPH_CACHE_MAX_MIB,
   perfMode: "simple",
   renderer: "kb-stb",
 });
@@ -139,13 +143,16 @@ function loadSettings() {
     const selected = saved.selected === "custom" || BUILTIN_PROFILES[saved.selected] ? saved.selected : DEFAULT_PROFILE;
     const fontFamily = Object.hasOwn(FONT_OPTIONS, saved.fontFamily) ? saved.fontFamily : DEFAULT_SETTINGS.fontFamily;
     const fontSize = Number.isInteger(saved.fontSize)
-      ? Math.min(32, Math.max(8, saved.fontSize))
+      ? Math.min(FONT_SIZE_MAX, Math.max(FONT_SIZE_MIN, saved.fontSize))
       : DEFAULT_SETTINGS.fontSize;
     const ligatures = typeof saved.ligatures === "boolean" ? saved.ligatures : DEFAULT_SETTINGS.ligatures;
     const grainStrengthValue = Number(saved.grainStrength);
     const grainStrength = Number.isFinite(grainStrengthValue)
       ? Math.min(32, Math.max(0, Math.round(grainStrengthValue)))
       : DEFAULT_SETTINGS.grainStrength;
+    const glyphCacheMaxMiB = Number.isInteger(saved.glyphCacheMaxMiB)
+      ? Math.min(GLYPH_CACHE_MAX_MIB, Math.max(1, saved.glyphCacheMaxMiB))
+      : DEFAULT_SETTINGS.glyphCacheMaxMiB;
     const perfMode = ["off", "simple", "detailed"].includes(saved.perfMode) ? saved.perfMode : DEFAULT_SETTINGS.perfMode;
     let renderer = ["kb-stb", "kb-canvas"].includes(saved.renderer) ? saved.renderer : DEFAULT_SETTINGS.renderer;
     if (isCanvasOnlyFont(FONT_OPTIONS[fontFamily])) renderer = "kb-canvas";
@@ -155,7 +162,8 @@ function loadSettings() {
       return [id, migrateFontFallbacks ? migrateFontFamilies(fallbacks) : fallbacks];
     }));
     return {
-      fontFamily, fontSize, ligatures, grainStrength, perfMode, renderer, fontFallbackVersion: FONT_FALLBACK_VERSION,
+      fontFamily, fontSize, ligatures, grainStrength, glyphCacheMaxMiB,
+      perfMode, renderer, fontFallbackVersion: FONT_FALLBACK_VERSION,
       fontFallbacks, selected, custom,
     };
   } catch {
@@ -171,6 +179,7 @@ function saveSettings(settings) {
       fontSize: settings.fontSize,
       ligatures: settings.ligatures,
       grainStrength: settings.grainStrength,
+      glyphCacheMaxMiB: settings.glyphCacheMaxMiB,
       fontFallbackVersion: settings.fontFallbackVersion,
       fontFallbacks: Object.fromEntries(Object.entries(settings.fontFallbacks)
         .map(([id, fallbacks]) => [id, [...fallbacks]])),
@@ -222,6 +231,9 @@ export function initializeSettings() {
   const fontSettingsForm = document.querySelector("#font-settings-form");
   const grainStrength = document.querySelector("#grain-strength");
   const grainStrengthValue = document.querySelector("#grain-strength-value");
+  const fontSizeValue = document.querySelector("#font-size-value");
+  const fontSizeDecrease = document.querySelector("#font-size-decrease");
+  const fontSizeIncrease = document.querySelector("#font-size-increase");
   const rendererStbOption = fontSettingsForm.elements.renderer.querySelector('option[value="kb-stb"]');
   const perfModeInputs = document.querySelectorAll('input[name="perfMode"]');
   const tablist = dialog.querySelector('[role="tablist"]');
@@ -239,6 +251,17 @@ export function initializeSettings() {
   const syncGrainStrength = () => {
     grainStrength.value = settings.grainStrength;
     grainStrengthValue.textContent = `${settings.grainStrength} / 255`;
+  };
+  const syncFontSize = () => {
+    fontSizeValue.textContent = `${settings.fontSize}px`;
+    fontSizeDecrease.disabled = settings.fontSize <= FONT_SIZE_MIN;
+    fontSizeIncrease.disabled = settings.fontSize >= FONT_SIZE_MAX;
+  };
+  const applyFontSettings = () => {
+    const font = resolveFont(settings);
+    applyDocumentFont(font);
+    saveSettings(settings);
+    onFontChange(font);
   };
 
   const activate = (id, persist = true) => {
@@ -323,7 +346,7 @@ export function initializeSettings() {
     syncGrainStrength();
     fontSettingsForm.elements.fontFamily.value = settings.fontFamily;
     fontSettingsForm.elements.fontFallbacks.value = settings.fontFallbacks[settings.fontFamily].join("\n");
-    fontSettingsForm.elements.fontSize.value = settings.fontSize;
+    syncFontSize();
     fontSettingsForm.elements.ligatures.checked = settings.ligatures;
     syncRendererControl();
     fontSettingsForm.elements.renderer.value = settings.renderer;
@@ -367,11 +390,21 @@ export function initializeSettings() {
   });
   fontSettingsForm.elements.fontFamily.value = settings.fontFamily;
   fontSettingsForm.elements.fontFallbacks.value = settings.fontFallbacks[settings.fontFamily].join("\n");
-  fontSettingsForm.elements.fontSize.value = settings.fontSize;
+  syncFontSize();
   fontSettingsForm.elements.ligatures.checked = settings.ligatures;
   fontSettingsForm.elements.renderer.value = settings.renderer;
   syncRendererControl();
   syncGrainStrength();
+  fontSizeDecrease.addEventListener("click", () => {
+    settings.fontSize = Math.max(FONT_SIZE_MIN, settings.fontSize - 1);
+    syncFontSize();
+    applyFontSettings();
+  });
+  fontSizeIncrease.addEventListener("click", () => {
+    settings.fontSize = Math.min(FONT_SIZE_MAX, settings.fontSize + 1);
+    syncFontSize();
+    applyFontSettings();
+  });
   fontSettingsForm.addEventListener("change", event => {
     const requestedRenderer = ["kb-stb", "kb-canvas"].includes(fontSettingsForm.elements.renderer.value)
       ? fontSettingsForm.elements.renderer.value
@@ -403,13 +436,7 @@ export function initializeSettings() {
       );
       fontSettingsForm.elements.fontFallbacks.value = settings.fontFallbacks[activeId].join("\n");
     }
-    settings.fontSize = Number.isInteger(Number(fontSettingsForm.elements.fontSize.value))
-      ? Math.min(32, Math.max(8, Number(fontSettingsForm.elements.fontSize.value)))
-      : DEFAULT_SETTINGS.fontSize;
-    const font = resolveFont(settings);
-    applyDocumentFont(font);
-    saveSettings(settings);
-    onFontChange(font);
+    applyFontSettings();
   });
   grainStrength.addEventListener("input", () => {
     const value = Number(grainStrength.value);
@@ -439,6 +466,7 @@ export function initializeSettings() {
     get profile() { return resolveProfile(settings); },
     get font() { return resolveFont(settings); },
     get grainStrength() { return settings.grainStrength; },
+    get glyphCacheMaxMiB() { return settings.glyphCacheMaxMiB; },
     get perfMode() { return settings.perfMode; },
     get renderer() { return settings.renderer; },
     setOnChange(callback) { onChange = callback || (() => {}); },

@@ -54,6 +54,17 @@ pub fn bootstrap(self: *Self) void {
     self.font_data = [_]?[]u8{null} ** 4;
 }
 
+pub fn deinit(self: *Self) void {
+    for (self.face_ready, 0..) |ready, index| {
+        if (ready) c.kbts_FreeFont(&self.faces[index].shape);
+    }
+    for (self.font_data) |data| {
+        if (data) |value| alloc.free(value);
+    }
+    if (self.context) |context| c.kbts_DestroyShapeContext(context);
+    self.bootstrap();
+}
+
 pub fn cAlloc(len: usize) ?*anyopaque {
     const total = std.math.add(usize, len, 16) catch return null;
     const allocation = alloc.alignedAlloc(u8, .@"16", total) catch return null;
@@ -111,8 +122,12 @@ fn ensureFace(self: *Self, style: FontStyle) !*Face {
 fn initFace(face: *Face, data: []const u8) !void {
     if (data.len > std.math.maxInt(c_int)) return error.FontTooLarge;
     face.shape = c.kbts_FontFromMemory(@ptrCast(@constCast(data.ptr)), @intCast(data.len), 0, &kbAllocator, null);
-    if (face.shape.Error != c.KBTS_LOAD_FONT_ERROR_NONE) return error.ShapeFontInitFailed;
+    if (face.shape.Error != c.KBTS_LOAD_FONT_ERROR_NONE) {
+        c.kbts_FreeFont(&face.shape);
+        return error.ShapeFontInitFailed;
+    }
     const offset = c.stbtt_GetFontOffsetForIndex(data.ptr, 0);
+    errdefer c.kbts_FreeFont(&face.shape);
     if (offset < 0 or c.stbtt_InitFont(&face.raster, data.ptr, offset) == 0)
         return error.RasterFontInitFailed;
 }

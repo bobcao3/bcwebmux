@@ -45,6 +45,14 @@ pub fn bootstrap(self: *Self) void {
     self.upload_pixels = .empty;
 }
 
+pub fn deinit(self: *Self) void {
+    self.tiles.deinit(alloc);
+    self.packed_uploads.deinit(alloc);
+    self.pixels.deinit(alloc);
+    self.upload_pixels.deinit(alloc);
+    self.bootstrap();
+}
+
 pub fn setMetrics(self: *Self, cell_width: u16, cell_height: u16, columns: u16) void {
     self.font_cell_width = cell_width;
     self.font_cell_height = cell_height;
@@ -85,7 +93,7 @@ pub fn pack(self: *Self) !void {
     if (self.tiles.items.len == 0) return;
     if (self.atlas_columns == 0) return error.BitmapBatchFull;
 
-    const tile_width = std.math.mul(usize, @intCast(self.font_cell_width), 2) catch return error.BitmapBatchFull;
+    const tile_width: usize = @intCast(self.font_cell_width);
     const cell_height: usize = @intCast(self.font_cell_height);
     const columns: u32 = @intCast(self.atlas_columns);
     var expanded_size: usize = 0;

@@ -22,14 +22,16 @@ export async function createCore(host, options = {}) {
   const layout = host._viewportController.physicalLayout(pixelViewport);
   host._cores.add(core);
   try {
+    host._registerTerminal(core, layout);
     await core.open({ cols: layout.cols, rows: layout.rows, host });
     if ((host.options.canonicalGeometry
-      ? core.setRenderMetrics(layout, host._renderer.atlasColumns)
-      : core.resize(layout, host._renderer.atlasColumns)) !== 1) {
+      ? core.setRenderMetrics(layout)
+      : core.resize(layout)) !== 1) {
       throw new Error("terminal core resize failed");
     }
     return core;
   } catch (error) {
+    host._releaseTerminal(core);
     host._cores.delete(core);
     core.dispose();
     throw error;
@@ -53,18 +55,20 @@ export function attachCore(host, core) {
   host._cores.add(core);
   const pixelViewport = host._viewportController.latestPixelViewport;
   const layout = host._viewportController.physicalLayout(pixelViewport);
-  const atlasColumns = host._renderer.atlasColumns;
-  const fontFamily = getComputedStyle(host._terminalElement).fontFamily;
   if (host._selectionMode) host.exitSelectionMode({ restoreFocus: false });
   host._renderingCore = core;
   try {
-    host._renderer.resetForCore(fontFamily);
+    if (!wasOwned) host._registerTerminal(core, layout);
+    host._prepareTerminalFrame(core, host.options.canonicalGeometry
+      ? Math.max(layout.cols * layout.rows, core.cols * core.rows)
+      : layout.cols * layout.rows);
+    host._renderer.selectTerminal(core);
     core.setRenderer(host.options.renderer);
     core.setFont(host.options.font);
     core.invalidateForAttach();
     if ((host.options.canonicalGeometry
-      ? core.setRenderMetrics(layout, atlasColumns)
-      : core.resize(layout, atlasColumns)) !== 1) throw new Error("terminal core resize failed");
+      ? core.setRenderMetrics(layout)
+      : core.resize(layout)) !== 1) throw new Error("terminal core resize failed");
     if (core.renderFrame() !== 1) throw new Error("terminal core render failed");
     host._core = core;
     host._wasm = core.wasm;
@@ -75,17 +79,18 @@ export function attachCore(host, core) {
     host._core = previousCore;
     host._wasm = previousWasm;
     try {
-      host._renderer.resetForCore(fontFamily);
+      host._renderer.selectTerminal(previousCore);
       previousCore.setRenderer(host.options.renderer);
       previousCore.setFont(host.options.font);
       previousCore.invalidateForAttach();
       if ((host.options.canonicalGeometry
-        ? previousCore.setRenderMetrics(layout, atlasColumns)
-        : previousCore.resize(layout, atlasColumns)) !== 1) throw new Error("previous core resize failed");
+        ? previousCore.setRenderMetrics(layout)
+        : previousCore.resize(layout)) !== 1) throw new Error("previous core resize failed");
       if (previousCore.renderFrame() !== 1) throw new Error("previous core render failed");
     } catch {}
     host._renderingCore = null;
     if (!wasOwned) {
+      host._releaseTerminal(core);
       host._cores.delete(core);
       core._clearHost(host);
     }

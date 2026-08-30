@@ -9,9 +9,20 @@ import {
 import {
   initializeWebGl,
   resizeWebGl,
+  ensureFrameCapacityWebGl,
   readWebGlPixels,
   disposeWebGl,
 } from "./WebGlTerminalResources.js";
+import {
+  registerTerminal,
+  resizeTerminalPartition,
+  releaseTerminal,
+  glyphPartition,
+  reconfigureGlyphAtlas,
+  setTextRenderer,
+  selectTerminal as selectTerminalGlyphAtlas,
+} from "../GlyphAtlasRuntime.js";
+import { WebGlGlyphAtlas } from "./WebGlGlyphAtlas.js";
 
 function uploadIntegerRecords(gl, texture, textureWidth, first, count, components, format, source) {
   if (count === 0) return;
@@ -33,7 +44,7 @@ function uploadIntegerRecords(gl, texture, textureWidth, first, count, component
 }
 
 export class WebGlTerminal {
-  static async create(canvas, pixelViewport, textRenderer) {
+  static async create(canvas, pixelViewport, textRenderer, glyphCacheMaxBytes) {
     const gl = canvas.getContext("webgl2", {
       alpha: false,
       antialias: false,
@@ -46,15 +57,24 @@ export class WebGlTerminal {
       stencil: false,
     });
     if (!gl) throw new Error("WebGL2 context unavailable");
-    const terminal = new WebGlTerminal(canvas, gl, textRenderer);
-    terminal.resize(pixelViewport.width, pixelViewport.height);
-    return terminal;
+    let terminal = null;
+    try {
+      terminal = new WebGlTerminal(canvas, gl, textRenderer, glyphCacheMaxBytes);
+      terminal.resize(pixelViewport.width, pixelViewport.height);
+      return terminal;
+    } catch (error) {
+      if (terminal) terminal.dispose();
+      else gl.getExtension("WEBGL_lose_context")?.loseContext();
+      throw error;
+    }
   }
 
-  constructor(canvas, gl, textRenderer) {
+  constructor(canvas, gl, textRenderer, glyphCacheMaxBytes) {
     this.canvas = canvas;
     this.gl = gl;
+    this.glyphAtlasMaxDimension = gl.getParameter(gl.MAX_TEXTURE_SIZE);
     this.textRenderer = textRenderer;
+    this.glyphCacheMaxBytes = glyphCacheMaxBytes;
     const debug = gl.getExtension("WEBGL_debug_renderer_info");
     this.adapterInfo = {
       vendor: debug ? gl.getParameter(debug.UNMASKED_VENDOR_WEBGL) : gl.getParameter(gl.VENDOR),
@@ -64,7 +84,6 @@ export class WebGlTerminal {
     };
     this.adapterFallback = /swiftshader|llvmpipe|software/i.test(Object.values(this.adapterInfo).join(" "));
     this.maxCells = 0;
-    this.maxGlyphs = 0;
     this.maxStyles = 0;
     this.styleSize = 0;
     this.cellSize = 0;
@@ -78,7 +97,10 @@ export class WebGlTerminal {
     this.physicalCellHeight = 1;
     this.physicalFontSize = 1;
     this.grainStrength = 4;
-    this.atlasRequiredSlots = 0;
+    this.glyphPartitions = null;
+    this.glyphSlotsUsed = 0;
+    this.activeTerminal = null;
+    this.atlas = null;
     this.background = 0x111111;
     this.foreground = 0xeeeeee;
     this.cursorX = 0xffff;
@@ -132,30 +154,59 @@ export class WebGlTerminal {
     canvas.addEventListener("webglcontextrestored", this.contextRestoredListener);
   }
 
-  initialize(cellSource, grain, grainSize, maxCells, maxGlyphs, maxStyles, styleSize, atlasSlots, cellSize) {
+  initialize(cellSource, grain, grainSize, maxCells, maxStyles, styleSize, cellSize) {
     return initializeWebGl(
       this,
       cellSource,
       grain,
       grainSize,
       maxCells,
-      maxGlyphs,
       maxStyles,
       styleSize,
-      atlasSlots,
       cellSize,
     );
   }
 
-  setPhysicalCellMetrics(width, height, fontSize) {
+  registerTerminal(terminal, visibleCells, preferredColumns) {
+    return registerTerminal(this, terminal, visibleCells, preferredColumns);
+  }
+
+  resizeTerminalPartition(terminal, visibleCells) {
+    return resizeTerminalPartition(this, terminal, visibleCells);
+  }
+
+  releaseTerminal(terminal) {
+    return releaseTerminal(this, terminal);
+  }
+
+  glyphPartition(terminal) {
+    return glyphPartition(this, terminal);
+  }
+
+  reconfigureGlyphAtlas(metrics, textRenderer, fontFamily, activeVisibleSlots) {
+    return reconfigureGlyphAtlas(this, metrics, textRenderer, fontFamily, activeVisibleSlots);
+  }
+
+  createGlyphAtlas(geometry, metrics) {
+    const parent = this.canvas.parentElement;
+    const { width, height, fontSize } = metrics;
+    return new WebGlGlyphAtlas(this.gl, getComputedStyle(parent), geometry, width, height, fontSize);
+  }
+
+  setPhysicalCellMetrics(width, height, fontSize, columns, activeVisibleSlots) {
     if (!Number.isInteger(width) || !Number.isInteger(height) || !Number.isInteger(fontSize) ||
-        width <= 0 || height <= 0 || fontSize <= 0) {
+        !Number.isInteger(columns) || width <= 0 || height <= 0 || fontSize <= 0 || columns <= 0) {
       throw new Error("invalid physical cell metrics");
     }
-    this.physicalCellWidth = width;
-    this.physicalCellHeight = height;
-    this.physicalFontSize = fontSize;
-    this.atlas?.setPhysicalMetrics(width, height, fontSize);
+    if (width === this.physicalCellWidth && height === this.physicalCellHeight &&
+        fontSize === this.physicalFontSize) return null;
+    return reconfigureGlyphAtlas(
+      this,
+      { width, height, fontSize, columns },
+      this.textRenderer,
+      undefined,
+      activeVisibleSlots,
+    );
   }
 
   setGrainStrength(value) {
@@ -170,52 +221,31 @@ export class WebGlTerminal {
     return resizeWebGl(this, width, height);
   }
 
+  ensureFrameCapacity(cellCapacity) {
+    return ensureFrameCapacityWebGl(this, cellCapacity);
+  }
+
   reloadFont(fontFamily) {
     if (!this.initialized) throw new Error("GPU terminal is not initialized");
-    this.atlas.reloadFont(fontFamily);
+    const plan = reconfigureGlyphAtlas(
+      this,
+      {
+        width: this.physicalCellWidth,
+        height: this.physicalCellHeight,
+        fontSize: this.physicalFontSize,
+        columns: this.glyphPartitions.preferredColumns,
+      },
+      this.textRenderer,
+      fontFamily,
+    );
     this.fontReloads += 1;
+    return plan;
   }
 
-  resetForCore(fontFamily) {
-    if (!this.initialized) throw new Error("GPU terminal is not initialized");
-    if (this.blinkTimer) clearTimeout(this.blinkTimer);
-    this.blinkTimer = 0;
-    this.atlas.reloadFont(fontFamily);
-    Object.assign(this.submissionMetadata, {
-      cols: 0,
-      rows: 0,
-      viewportMode: "active",
-      scrollTotal: 0,
-      scrollOffset: 0,
-      scrollLength: 0,
-      textRowsPtr: 0,
-      textCellsPtr: 0,
-      textBytesPtr: 0,
-      textBytesLen: 0,
-      textChanged: false,
-    });
-    this.submissionMemory = null;
-    this.submissionCellsPtr = 0;
-    this.submissionDirtyRangesPtr = 0;
-    this.submissionDirtyRangesCount = 0;
-    this.submissionStylesPtr = 0;
-    this.submissionStylesFirst = 0;
-    this.submissionStylesCount = 0;
-    this.submissionSelectionsPtr = 0;
-    this.submissionCanvasRequestsPtr = 0;
-    this.submissionCanvasRequestsCount = 0;
-    this.cols = 0;
-    this.rows = 0;
-    this.cursorFlags = 0;
-    this.drawnCellCount = 0;
-    this.atlasRequiredSlots = 0;
-    this.coreSwitches += 1;
-  }
+  selectTerminal(terminal) { return selectTerminalGlyphAtlas(this, terminal); }
 
   setTextRenderer(textRenderer) {
-    if (textRenderer !== "kb-stb" && textRenderer !== "kb-canvas") throw new Error("invalid text renderer");
-    this.textRenderer = textRenderer;
-    this.atlas?.setFormat(textRenderer === "kb-canvas" ? "rgba8unorm" : "r8unorm");
+    return setTextRenderer(this, textRenderer);
   }
 
   get atlasColumns() {
@@ -223,10 +253,10 @@ export class WebGlTerminal {
     return this.atlas.columns;
   }
 
-  submitWasm(memory, submissionPtr) {
-    const parsed = parseRendererSubmission(this, memory, submissionPtr);
+  submitWasm(terminal, memory, submissionPtr) {
+    const parsed = parseRendererSubmission(this, terminal, memory, submissionPtr);
+    this.glyphSlotsUsed = parsed.glyphSlotsUsed;
     const metadata = applyRendererSubmission(this, parsed);
-    this.atlas.ensureCapacity(parsed.atlasSlots);
     for (let index = 0; index < parsed.bitmapUploadsCount; index += 1) {
       const offset = index * 16;
       this.atlas.uploadBitmap(
@@ -288,7 +318,6 @@ export class WebGlTerminal {
         new Uint32Array(memory, parsed.selectionsPtr + firstRow * 4, rowCount),
       );
     }
-    this.atlasRequiredSlots = parsed.atlasSlots;
     this.drawnCellCount = parsed.frameCells;
     this.draw();
     this.updateBlinkTimer();
@@ -317,7 +346,6 @@ export class WebGlTerminal {
     gl.uniform1ui(this.uniforms.tile_width, this.atlas.tileWidth);
     gl.uniform1ui(this.uniforms.tile_height, this.atlas.tileHeight);
     gl.uniform1ui(this.uniforms.blink_on, Math.floor(performance.now() / 500) % 2 === 0 ? 1 : 0);
-    gl.uniform1ui(this.uniforms.canvas_atlas, this.atlas.format === "rgba8unorm" ? 1 : 0);
     gl.uniform1ui(this.uniforms.style_texture_width, this.styleTextureWidth);
     gl.uniform1ui(this.uniforms.selection_texture_width, this.selectionTextureWidth);
     gl.activeTexture(gl.TEXTURE0);
@@ -391,11 +419,10 @@ export class WebGlTerminal {
       rasterPasses: this.rasterPasses,
       cacheHits: this.cacheHits,
       cacheMisses: this.cacheMisses,
-      atlasGlyphs: this.atlas.nextSlot,
-      atlasFormat: this.atlas.format,
+      glyphSlotsUsed: this.glyphSlotsUsed,
       grainStrength: this.grainStrength,
       atlasCapacity: this.atlas.capacity,
-      atlasRequiredSlots: this.atlasRequiredSlots,
+      atlasRequiredSlots: this.glyphPartitions?.reservedSlots ?? 0,
       viewportWidth: this.viewportWidth,
       viewportHeight: this.viewportHeight,
       physicalCellWidth: this.physicalCellWidth,

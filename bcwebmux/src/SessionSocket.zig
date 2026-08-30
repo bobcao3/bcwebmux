@@ -13,6 +13,74 @@ const Self = @This();
 const zero_id: Session.Id = .{0} ** 16;
 const event_prefix_length = 32;
 const checkpoint_chunk_prefix_length = 16;
+const output_stream_preamble = "bcwebmux persistent PTY zstd stream preamble; discard before output\n";
+
+const OutputCompressor = struct {
+    ctx: *c.ZSTD_CCtx,
+    needs_preamble: bool = true,
+
+    fn init() !OutputCompressor {
+        const ctx = c.ZSTD_createCCtx() orelse return error.ZstdContextCreationFailed;
+        errdefer _ = c.ZSTD_freeCCtx(ctx);
+        var result = c.ZSTD_CCtx_setParameter(ctx, c.ZSTD_c_compressionLevel, 1);
+        if (c.ZSTD_isError(result) != 0) return error.ZstdParameterFailed;
+        result = c.ZSTD_CCtx_setParameter(ctx, c.ZSTD_c_windowLog, 17);
+        if (c.ZSTD_isError(result) != 0) return error.ZstdParameterFailed;
+        result = c.ZSTD_CCtx_setParameter(ctx, c.ZSTD_c_checksumFlag, 0);
+        if (c.ZSTD_isError(result) != 0) return error.ZstdParameterFailed;
+        return .{ .ctx = ctx };
+    }
+
+    fn reset(self: *OutputCompressor) !void {
+        const result = c.ZSTD_CCtx_reset(self.ctx, c.ZSTD_reset_session_only);
+        if (c.ZSTD_isError(result) != 0) return error.ZstdResetFailed;
+        self.needs_preamble = true;
+    }
+
+    fn deinit(self: *OutputCompressor) void {
+        _ = c.ZSTD_freeCCtx(self.ctx);
+    }
+
+    fn compressFlush(self: *OutputCompressor, allocator: std.mem.Allocator, bytes: []const u8) ![]u8 {
+        var combined: ?[]u8 = null;
+        defer if (combined) |value| allocator.free(value);
+        var input_bytes = bytes;
+        if (self.needs_preamble) {
+            const combined_length = std.math.add(usize, output_stream_preamble.len, bytes.len) catch return error.ZstdInputTooLarge;
+            const value = try allocator.alloc(u8, combined_length);
+            @memcpy(value[0..output_stream_preamble.len], output_stream_preamble);
+            @memcpy(value[output_stream_preamble.len..], bytes);
+            combined = value;
+            input_bytes = value;
+        }
+        var output = try allocator.alloc(u8, @max(@as(usize, 64), c.ZSTD_compressBound(bytes.len)));
+        errdefer allocator.free(output);
+        var input = c.ZSTD_inBuffer{ .src = input_bytes.ptr, .size = input_bytes.len, .pos = 0 };
+        var written: usize = 0;
+        while (true) {
+            if (written == output.len) {
+                const next_capacity = std.math.mul(usize, output.len, 2) catch return error.ZstdOutputTooLarge;
+                if (next_capacity <= output.len) return error.ZstdOutputTooLarge;
+                output = try allocator.realloc(output, next_capacity);
+            }
+            var destination = c.ZSTD_outBuffer{
+                .dst = output.ptr + written,
+                .size = output.len - written,
+                .pos = 0,
+            };
+            const input_before = input.pos;
+            const result = c.ZSTD_compressStream2(self.ctx, &destination, &input, c.ZSTD_e_flush);
+            if (c.ZSTD_isError(result) != 0) return error.ZstdCompressionFailed;
+            written += destination.pos;
+            if (input.pos == input.size and result == 0) {
+                const complete = try allocator.realloc(output, written);
+                self.needs_preamble = false;
+                return complete;
+            }
+            if (input.pos == input_before and destination.pos == 0) return error.ZstdNoProgress;
+        }
+    }
+};
 
 const ErrorCode = enum(u16) {
     protocol_error = 1,
@@ -57,6 +125,7 @@ client_id: Session.Id = zero_id,
 state_mutex: std.Io.Mutex = .init,
 send_mutex: std.Io.Mutex = .init,
 attachments: [manifest.max_connection_attachments]ConnectionAttachment = [_]ConnectionAttachment{.{}} ** manifest.max_connection_attachments,
+output_compressors: [manifest.max_connection_attachments]OutputCompressor,
 sender_sequence: u64 = 0,
 receiver_sequence: u64 = 0,
 last_pong_ms: i64,
@@ -81,6 +150,15 @@ pub fn init(
         .registry = registry,
         .websocket = websocket,
         .connection_id = connection_id,
+        .output_compressors = blk: {
+            var compressors: [manifest.max_connection_attachments]OutputCompressor = undefined;
+            var initialized: usize = 0;
+            errdefer for (compressors[0..initialized]) |*compressor| compressor.deinit();
+            while (initialized < compressors.len) : (initialized += 1) {
+                compressors[initialized] = try OutputCompressor.init();
+            }
+            break :blk compressors;
+        },
         .last_pong_ms = now,
         .last_ping_ms = now,
         .revision_seen = registry.currentRevision(),
@@ -88,6 +166,7 @@ pub fn init(
 }
 
 pub fn serve(self: *Self) !void {
+    defer self.deinitOutputCompressors();
     defer self.stopAndDetach();
     try self.negotiate();
     var publisher = try self.io.concurrent(publishLoop, .{self});
@@ -177,7 +256,11 @@ fn receiveAttach(self: *Self, frame: protocol.Frame) !void {
     defer replay.deinit();
     const index = self.reserveAttachment(frame.session_id, replay.key, credit, replay.lease.epoch) catch |err| {
         _ = self.registry.realtimeDetach(frame.session_id, replay.key) catch {};
-        return self.sendError(.attachment_limit, false, frame.request_id, frame.session_id, frame.attachment_id, replay.key.epoch, @errorName(err));
+        const code: ErrorCode = switch (err) {
+            error.ConnectionAttachmentLimit => .attachment_limit,
+            else => .internal,
+        };
+        return self.sendError(code, false, frame.request_id, frame.session_id, frame.attachment_id, replay.key.epoch, @errorName(err));
     };
     errdefer self.detachIndex(index);
     const replay_credit_cost = replayCreditCost(&replay);
@@ -374,7 +457,7 @@ fn sendEvent(self: *Self, index: usize, key: Session.AttachmentKey, session_id: 
     switch (event.kind) {
         .output => {
             try self.consumeCredit(index, key, output.len + protocol.header_length + event_prefix_length);
-            const compressed = try compress(self.allocator, output);
+            const compressed = try self.compressOutput(index, key, output);
             defer self.allocator.free(compressed);
             protocol.writeU32LE(&prefix, 4, @intCast(output.len));
             protocol.writeU32LE(&prefix, 8, event.crc32c);
@@ -571,6 +654,7 @@ fn reserveAttachment(self: *Self, session_id: Session.Id, key: Session.Attachmen
     defer self.state_mutex.unlock(self.io);
     for (&self.attachments, 0..) |*slot, index| {
         if (!slot.active) {
+            try self.output_compressors[index].reset();
             slot.* = .{ .active = true, .session_id = session_id, .key = key, .credit = credit, .lease_seen = lease_epoch };
             return index;
         }
@@ -608,6 +692,13 @@ fn consumeCredit(self: *Self, index: usize, key: Session.AttachmentKey, amount: 
     if (!self.attachments[index].active or !std.meta.eql(self.attachments[index].key, key)) return error.StaleAttachment;
     if (self.attachments[index].credit < amount) return error.FlowControlExhausted;
     self.attachments[index].credit -= amount;
+}
+
+fn compressOutput(self: *Self, index: usize, key: Session.AttachmentKey, bytes: []const u8) ![]u8 {
+    self.state_mutex.lockUncancelable(self.io);
+    defer self.state_mutex.unlock(self.io);
+    if (!self.attachments[index].active or !std.meta.eql(self.attachments[index].key, key)) return error.StaleAttachment;
+    return self.output_compressors[index].compressFlush(self.allocator, bytes);
 }
 
 fn addCredit(self: *Self, index: usize, amount: usize) void {
@@ -655,6 +746,10 @@ fn markExitSent(self: *Self, index: usize, epoch: u64) void {
 fn stopAndDetach(self: *Self) void {
     self.stopped.store(true, .release);
     for (0..self.attachments.len) |index| self.detachIndex(index);
+}
+
+fn deinitOutputCompressors(self: *Self) void {
+    for (&self.output_compressors) |*compressor| compressor.deinit();
 }
 
 fn acceptSequence(self: *Self, sequence: u64) !void {

@@ -26,16 +26,12 @@ export fn term_set_renderer(renderer_raw: u32) i32 {
     return terminal.term_set_renderer(renderer_raw);
 }
 
-export fn term_invalidate_glyph_cache() void {
-    terminal.term_invalidate_glyph_cache();
-}
-
 export fn term_invalidate_text_view() void {
     terminal.term_invalidate_text_view();
 }
 
-export fn term_invalidate_render_cache() void {
-    terminal.term_invalidate_render_cache();
+export fn term_invalidate_frame_cache() void {
+    terminal.term_invalidate_frame_cache();
 }
 
 export fn term_set_text_view_enabled(enabled_raw: u32) i32 {
@@ -82,12 +78,16 @@ export fn term_feed(len: u32) i32 {
     return terminal.term_feed(len);
 }
 
-export fn term_resize(cols: u16, rows: u16, cell_width: u16, cell_height: u16, glyph_cell_width: u16, glyph_cell_height: u16, glyph_font_size_px: u16, atlas_columns: u16) i32 {
-    return terminal.term_resize(cols, rows, cell_width, cell_height, glyph_cell_width, glyph_cell_height, glyph_font_size_px, atlas_columns);
+export fn term_resize(cols: u16, rows: u16, cell_width: u16, cell_height: u16, glyph_cell_width: u16, glyph_cell_height: u16, glyph_font_size_px: u16) i32 {
+    return terminal.term_resize(cols, rows, cell_width, cell_height, glyph_cell_width, glyph_cell_height, glyph_font_size_px);
 }
 
-export fn term_set_render_metrics(cell_width: u16, cell_height: u16, glyph_cell_width: u16, glyph_cell_height: u16, glyph_font_size_px: u16, atlas_columns: u16) i32 {
-    return terminal.term_set_render_metrics(cell_width, cell_height, glyph_cell_width, glyph_cell_height, glyph_font_size_px, atlas_columns);
+export fn term_set_render_metrics(cell_width: u16, cell_height: u16, glyph_cell_width: u16, glyph_cell_height: u16, glyph_font_size_px: u16) i32 {
+    return terminal.term_set_render_metrics(cell_width, cell_height, glyph_cell_width, glyph_cell_height, glyph_font_size_px);
+}
+
+export fn term_set_glyph_partition(base_slot: u32, slot_capacity: u32, atlas_columns: u16, generation: u32) i32 {
+    return terminal.term_set_glyph_partition(base_slot, slot_capacity, atlas_columns, generation);
 }
 
 export fn term_resize_canonical(cols: u16, rows: u16, cell_width: u16, cell_height: u16) i32 {

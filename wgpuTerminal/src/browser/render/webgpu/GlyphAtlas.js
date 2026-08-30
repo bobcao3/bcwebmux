@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Cheng Cao
 
+import { extractCanvasAlpha } from "../CanvasAlphaMask.js";
+
 function createRasterCanvas() {
   const canvas = document.createElement("canvas");
   canvas.width = 1;
@@ -9,97 +11,91 @@ function createRasterCanvas() {
 }
 
 export class GlyphAtlas {
-  constructor(device, font, requiredSlots, maxSlots, format, cellWidth, cellHeight, fontSize) {
+  constructor(device, font, geometry, cellWidth, cellHeight, fontSize) {
     this.device = device;
-    this.font = font;
-    this.maxSlots = maxSlots;
-    this.format = format;
-    if (format !== "r8unorm" && format !== "rgba8unorm") throw new Error("invalid glyph atlas format");
-    this.tileWidth = Math.max(2, Math.round(cellWidth) * 2);
-    this.tileHeight = Math.max(2, Math.round(cellHeight));
-    const maxDimension = device.limits.maxTextureDimension2D;
-    const maxColumns = Math.floor(maxDimension / this.tileWidth);
-    const maxRows = Math.floor(maxDimension / this.tileHeight);
-    this.columns = Math.max(Math.min(256, maxColumns), Math.ceil(maxSlots / maxRows));
-    if (maxColumns < 1 || maxRows < 1 || this.columns > maxColumns || maxSlots > this.columns * maxRows) {
-      throw new Error("glyph atlas capacity exceeded");
-    }
     this.fontFamily = font.fontFamily;
-    this.fontSize = Math.max(1, Math.round(fontSize));
-    this.baseline = Math.min(this.tileHeight - 1, Math.round((this.tileHeight - this.fontSize) * 0.5 + this.fontSize * 0.82));
     this.runCanvas = createRasterCanvas();
     this.runContext = this.runCanvas.getContext("2d", { alpha: true, willReadFrequently: true });
     this.runContext.textBaseline = "alphabetic";
     this.runContext.fillStyle = "white";
     this.runContext.textRendering = "geometricPrecision";
     this.nextSlot = 0;
+    this.canvasMask = new Uint8Array(0);
     this.pendingTextureCopies = [];
-    this.rows = Math.max(1, Math.ceil(requiredSlots / this.columns));
-    this.texture = this.device.createTexture({
-      size: [this.columns * this.tileWidth, this.rows * this.tileHeight],
-      format: this.format,
-      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.COPY_SRC | GPUTextureUsage.RENDER_ATTACHMENT,
-    });
-    if (this.rows * this.columns < requiredSlots) throw new Error("glyph atlas capacity exceeded");
+    const candidate = this.prepareLayout(geometry, cellWidth, cellHeight, fontSize, true);
+    this.commitLayout(candidate);
   }
 
   get capacity() {
     return this.columns * this.rows;
   }
 
-  setFormat(format) {
-    if (format !== "r8unorm" && format !== "rgba8unorm") throw new Error("invalid glyph atlas format");
-    if (format === this.format) return false;
-    for (const copy of this.pendingTextureCopies) copy.source.destroy();
-    this.pendingTextureCopies = [];
-    this.texture.destroy();
-    this.format = format;
-    this.nextSlot = 0;
-    this.texture = this.device.createTexture({
-      size: [this.columns * this.tileWidth, this.rows * this.tileHeight],
-      format: this.format,
-      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.COPY_SRC | GPUTextureUsage.RENDER_ATTACHMENT,
+  prepareLayout(geometry, cellWidth, cellHeight, fontSize, reset) {
+    if (!geometry || !Number.isInteger(geometry.columns) || !Number.isInteger(geometry.rows) ||
+        geometry.columns <= 0 || geometry.rows <= 0) {
+      throw new Error("invalid glyph atlas geometry");
+    }
+    if (!Number.isFinite(cellWidth) || !Number.isFinite(cellHeight) || !Number.isFinite(fontSize) ||
+        cellWidth <= 0 || cellHeight <= 0 || fontSize <= 0) {
+      throw new Error("invalid physical cell metrics");
+    }
+    const tileWidth = Math.round(cellWidth);
+    const tileHeight = Math.round(cellHeight);
+    const roundedFontSize = Math.max(1, Math.round(fontSize));
+    if (tileWidth <= 0 || tileHeight <= 0) throw new Error("invalid physical cell metrics");
+    const texture = this.device.createTexture({
+      size: [geometry.columns * tileWidth, geometry.rows * tileHeight],
+      format: "r8unorm",
+      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.COPY_SRC,
     });
-    return true;
+    return {
+      columns: geometry.columns,
+      rows: geometry.rows,
+      tileWidth,
+      tileHeight,
+      fontSize: roundedFontSize,
+      baseline: Math.min(tileHeight - 1, Math.round((tileHeight - roundedFontSize) * 0.5 + roundedFontSize * 0.82)),
+      texture,
+      preserve: !reset && geometry.columns === this.columns && tileWidth === this.tileWidth &&
+        tileHeight === this.tileHeight,
+    };
   }
 
-  ensureCapacity(requiredSlots) {
-    if (requiredSlots <= this.capacity) return false;
-    const maxRows = Math.floor(this.device.limits.maxTextureDimension2D / this.tileHeight);
-    const rows = Math.ceil(Math.max(requiredSlots, Math.ceil(this.capacity * 1.5)) / this.columns);
-    if (rows > maxRows || requiredSlots > this.maxSlots) throw new Error("glyph atlas capacity exceeded");
+  commitLayout(candidate) {
+    if (this.pendingTextureCopies.length !== 0) throw new Error("glyph atlas texture copies pending");
     const oldTexture = this.texture;
-    const oldWidth = this.columns * this.tileWidth;
-    const oldHeight = this.rows * this.tileHeight;
-    this.rows = Math.max(1, rows);
-    this.texture = this.device.createTexture({
-      size: [oldWidth, this.rows * this.tileHeight],
-      format: this.format,
-      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.COPY_SRC | GPUTextureUsage.RENDER_ATTACHMENT,
-    });
-    if (this.nextSlot > 0) {
+    const oldRows = this.rows;
+    const oldColumns = this.columns;
+    const oldTileWidth = this.tileWidth;
+    const oldTileHeight = this.tileHeight;
+    const preservingGrowth = candidate.preserve && candidate.rows > oldRows && this.nextSlot > 0 && oldTexture;
+    this.columns = candidate.columns;
+    this.rows = candidate.rows;
+    this.tileWidth = candidate.tileWidth;
+    this.tileHeight = candidate.tileHeight;
+    this.fontSize = candidate.fontSize;
+    this.baseline = candidate.baseline;
+    this.texture = candidate.texture;
+    if (preservingGrowth) {
       this.pendingTextureCopies.push({
         source: oldTexture,
         destination: this.texture,
-        width: oldWidth,
-        height: oldHeight,
+        width: oldColumns * oldTileWidth,
+        height: oldRows * oldTileHeight,
       });
     } else {
       oldTexture?.destroy();
+      if (!candidate.preserve) this.nextSlot = 0;
     }
-    return true;
   }
 
   setCanvasRun(firstSlot, slotCount, spanCells, text, flags) {
-    if (this.format !== "rgba8unorm") throw new Error("canvas glyph runs require rgba8unorm atlas format");
     if (!Number.isInteger(firstSlot) || !Number.isInteger(slotCount) || !Number.isInteger(spanCells) ||
         firstSlot < 0 || slotCount <= 0 || spanCells <= 0 ||
-        (slotCount !== 1 && slotCount !== spanCells) || firstSlot + slotCount > this.capacity) {
+        slotCount !== spanCells || firstSlot + slotCount > this.capacity) {
       throw new Error("invalid glyph atlas run");
     }
-    if (slotCount === 1 && spanCells > 2) throw new Error("invalid glyph atlas run");
-    const cellWidth = this.tileWidth / 2;
-    const runWidth = spanCells * cellWidth;
+    const runWidth = spanCells * this.tileWidth;
     if (runWidth > this.runCanvas.width || this.tileHeight > this.runCanvas.height) {
       this.runCanvas.width = Math.max(this.runCanvas.width, runWidth);
       this.runCanvas.height = Math.max(this.runCanvas.height, this.tileHeight);
@@ -117,74 +113,39 @@ export class GlyphAtlas {
     this.runContext.fillText(text, 0, this.baseline);
     for (let index = 0; index < slotCount; index += 1) {
       const slot = firstSlot + index;
-      const width = slotCount === 1 ? spanCells * cellWidth : cellWidth;
-      this.device.queue.copyExternalImageToTexture(
-        { source: this.runCanvas, origin: [index * cellWidth, 0] },
+      const mask = extractCanvasAlpha(
+        this.runContext,
+        index * this.tileWidth,
+        0,
+        this.tileWidth,
+        this.tileHeight,
+        this.canvasMask,
+      );
+      this.canvasMask = mask.storage;
+      this.device.queue.writeTexture(
         {
           texture: this.texture,
           origin: [(slot % this.columns) * this.tileWidth, Math.floor(slot / this.columns) * this.tileHeight, 0],
-          premultipliedAlpha: false,
         },
-        [width, this.tileHeight, 1],
+        mask.pixels,
+        { bytesPerRow: this.tileWidth, rowsPerImage: this.tileHeight },
+        [this.tileWidth, this.tileHeight, 1],
       );
     }
     this.nextSlot = Math.max(this.nextSlot, firstSlot + slotCount);
     return firstSlot + slotCount;
   }
 
-  reloadFont(fontFamily) {
-    if (typeof fontFamily !== "string" || fontFamily.trim() === "") throw new Error("invalid glyph font family");
-    this.fontFamily = fontFamily;
-    this.nextSlot = 0;
-    this.runCanvas = new OffscreenCanvas(1, 1);
-    this.runContext = this.runCanvas.getContext("2d", { alpha: true, willReadFrequently: true });
-    this.runContext.textBaseline = "alphabetic";
-    this.runContext.fillStyle = "white";
-    this.runContext.textRendering = "geometricPrecision";
-  }
-
-  setPhysicalMetrics(cellWidth, cellHeight, fontSize) {
-    if (!Number.isInteger(cellWidth) || !Number.isInteger(cellHeight) || !Number.isInteger(fontSize) ||
-        cellWidth <= 0 || cellHeight <= 0 || fontSize <= 0) {
-      throw new Error("invalid physical cell metrics");
-    }
-    const maxDimension = this.device.limits.maxTextureDimension2D;
-    const tileWidth = cellWidth * 2;
-    const tileHeight = cellHeight;
-    if (tileWidth === this.tileWidth && tileHeight === this.tileHeight && fontSize === this.fontSize) return false;
-    const maxColumns = Math.floor(maxDimension / tileWidth);
-    const maxRows = Math.floor(maxDimension / tileHeight);
-    const columns = Math.max(Math.min(256, maxColumns), Math.ceil(this.maxSlots / maxRows));
-    if (maxColumns < 1 || maxRows < 1 || columns > maxColumns || this.maxSlots > columns * maxRows) {
-      throw new Error("glyph atlas capacity exceeded");
-    }
-    const oldTexture = this.texture;
-    for (const copy of this.pendingTextureCopies) copy.source.destroy();
-    this.pendingTextureCopies = [];
-    this.tileWidth = tileWidth;
-    this.tileHeight = tileHeight;
-    this.columns = columns;
-    this.fontSize = fontSize;
-    this.baseline = Math.min(this.tileHeight - 1, Math.round((this.tileHeight - this.fontSize) * 0.5 + this.fontSize * 0.82));
-    this.rows = Math.max(1, Math.ceil(Math.min(256, this.maxSlots) / this.columns));
-    this.texture = this.device.createTexture({
-      size: [this.columns * this.tileWidth, this.rows * this.tileHeight],
-      format: this.format,
-      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.COPY_SRC | GPUTextureUsage.RENDER_ATTACHMENT,
-    });
-    this.runCanvas = new OffscreenCanvas(1, 1);
-    this.runContext = this.runCanvas.getContext("2d", { alpha: true, willReadFrequently: true });
-    this.runContext.textBaseline = "alphabetic";
-    this.runContext.fillStyle = "white";
-    this.runContext.textRendering = "geometricPrecision";
-    this.nextSlot = 0;
-    oldTexture?.destroy();
-    return true;
-  }
-
   takePendingTextureCopies() {
     const copies = this.pendingTextureCopies;
     this.pendingTextureCopies = [];
     return copies;
+  }
+
+  dispose() {
+    for (const copy of this.pendingTextureCopies) copy.source.destroy();
+    this.pendingTextureCopies = [];
+    this.texture?.destroy();
+    this.texture = null;
   }
 }

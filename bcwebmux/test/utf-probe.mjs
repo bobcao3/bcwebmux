@@ -1,6 +1,20 @@
 // Probe the shipped kb-stb WASM renderer with UTF-8 input (CJK + emoji + ASCII).
-// Stubs the WebGPU host imports and captures glyph bitmaps + cell metadata.
+// Stubs the GPU host imports and captures glyph bitmaps + cell metadata.
+import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
+
+const fontBytes = await Promise.all([
+  readFile(new URL("../zig-out/web/fonts/JetBrainsMonoNerdFontMono-Regular.ttf", import.meta.url)),
+  readFile(new URL("../zig-out/web/fonts/JetBrainsMonoNerdFontMono-Bold.ttf", import.meta.url)),
+  readFile(new URL("../zig-out/web/fonts/JetBrainsMonoNerdFontMono-Italic.ttf", import.meta.url)),
+  readFile(new URL("../zig-out/web/fonts/JetBrainsMonoNerdFontMono-BoldItalic.ttf", import.meta.url)),
+]);
+function font(style) {
+  if (!Number.isSafeInteger(style) || style < 0 || style >= fontBytes.length) {
+    throw new Error(`invalid font style: ${style}`);
+  }
+  return fontBytes[style];
+}
 
 const wasmBytes = await readFile(new URL("../zig-out/web/terminal.wasm", import.meta.url));
 const { instance } = await WebAssembly.instantiate(wasmBytes, {
@@ -8,13 +22,31 @@ const { instance } = await WebAssembly.instantiate(wasmBytes, {
     pty_write(ptr, len) { return 1; },
     set_title() {},
     ring_bell() {},
+    font_size(style) { return font(style).byteLength; },
+    font_copy(style, ptr, len) {
+      const bytes = font(style);
+      if (!Number.isSafeInteger(ptr) || !Number.isSafeInteger(len) ||
+          ptr < 0 || len !== bytes.byteLength) {
+        throw new Error("invalid font copy range");
+      }
+      const memory = new Uint8Array(instance.exports.memory.buffer);
+      if (ptr > memory.byteLength - len) {
+        throw new Error("font copy out of bounds");
+      }
+      memory.set(bytes, ptr);
+      return 1;
+    },
+    user_write() { return 1; },
+    terminal_reply() { return 1; },
+    clipboard_write() { return 1; },
+    desktop_notification() {},
     gpu_text_backend() { return 0; }, // kb-stb
     gpu_init() { return 1; },
     gpu_submit(submissionPtr) {
       const mem = instance.exports.memory.buffer;
       const submission = new DataView(mem, submissionPtr, 112);
       if (submission.getUint32(0, true) !== 0x5355424d ||
-          submission.getUint32(4, true) !== 2 ||
+          submission.getUint32(4, true) !== 4 ||
           submission.getUint32(8, true) !== 112) {
         throw new Error("invalid GPU submission");
       }
@@ -35,13 +67,13 @@ const { instance } = await WebAssembly.instantiate(wasmBytes, {
         const pixelOffset = requests.getUint32(off + 8, true);
         const bytesPerRow = requests.getUint32(off + 12, true);
         for (let slotIndex = 0; slotIndex < slotCount; slotIndex++) {
-          const mask = new Uint8Array(16 * 16);
+          const mask = new Uint8Array(8 * 16);
           for (let y = 0; y < 16; y++) {
-            const rowOffset = pixelOffset + y * bytesPerRow + slotIndex * 16;
-            mask.set(pixels.subarray(rowOffset, rowOffset + 16), y * 16);
+            const rowOffset = pixelOffset + y * bytesPerRow + slotIndex * 8;
+            mask.set(pixels.subarray(rowOffset, rowOffset + 8), y * 8);
           }
           const slot = firstSlot + slotIndex;
-          bitmaps.push({ slot, width: 16, height: 16, mask, nonZero: mask.reduce((a, b) => a + (b > 0 ? 1 : 0), 0) });
+          bitmaps.push({ slot, width: 8, height: 16, mask, nonZero: mask.reduce((a, b) => a + (b > 0 ? 1 : 0), 0) });
         }
       }
       const frame = new DataView(mem, framePtr, frameLen);
@@ -116,22 +148,31 @@ function report(label, codepoints = []) {
 
 // ASCII
 e.term_init(40, 10);
-e.term_resize(40, 10, 8, 16, 8, 16, 15, 256);
+e.term_set_glyph_partition(0, 400, 40, 1);
+e.term_resize(40, 10, 8, 16, 8, 16, 15);
 cellList.length = 0; bitmaps.length = 0; frames.length = 0;
 feed("\x1b[2J\x1b[HABC");
 if (e.term_frame() !== 1) console.log("term_frame failed for ASCII");
+assert.equal(bitmaps.length, 3);
+assert.ok(bitmaps.every(b => b.width === 8 && b.height === 16));
 report("ASCII 'ABC'");
 
 // CJK
 cellList.length = 0; bitmaps.length = 0; frames.length = 0;
 feed("\x1b[2J\x1b[H中");
 if (e.term_frame() !== 1) console.log("term_frame failed for CJK");
+assert.equal(bitmaps.length, 2);
+assert.equal(bitmaps[1].slot, bitmaps[0].slot + 1);
+assert.ok(bitmaps.every(b => b.width === 8 && b.height === 16));
 report("CJK '中' (U+4E2D)");
 
 // Emoji
 cellList.length = 0; bitmaps.length = 0; frames.length = 0;
 feed("\x1b[2J\x1b[H😀");
 if (e.term_frame() !== 1) console.log("term_frame failed for emoji");
+assert.equal(bitmaps.length, 2);
+assert.equal(bitmaps[1].slot, bitmaps[0].slot + 1);
+assert.ok(bitmaps.every(b => b.width === 8 && b.height === 16));
 report("Emoji '😀' (U+1F600)");
 
 // Mixed ASCII+CJK

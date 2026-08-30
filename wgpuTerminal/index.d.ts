@@ -26,11 +26,10 @@ export interface GpuTerminalStatsDraft {
   rasterPasses: number;
   cacheHits: number;
   cacheMisses: number;
-  atlasGlyphs: number;
-  atlasFormat: "r8unorm" | "rgba8unorm";
   grainStrength: number;
   atlasCapacity: number;
   atlasRequiredSlots: number;
+  glyphSlotsUsed: number;
   viewportWidth: number;
   viewportHeight: number;
   physicalCellWidth: number;
@@ -98,6 +97,7 @@ export interface TerminalOptions {
   font?: Partial<TerminalFont>;
   theme?: TerminalTheme;
   grainStrength?: number;
+  glyphCacheMaxBytes?: number;
   elements?: TerminalViewElements;
   terminalElement?: HTMLElement;
   inputDebug?: boolean;
@@ -176,7 +176,7 @@ export declare class TerminalCore implements IDisposable {
   setTheme(theme: TerminalTheme): void;
   setFont(font: Partial<TerminalFont>): void;
   setRenderer(renderer: TerminalRenderer): void;
-  setRenderMetrics(layout: { cellWidth: number; cellHeight: number; fontSize: number }, atlasColumns: number): number;
+  setRenderMetrics(layout: { cellWidth: number; cellHeight: number; fontSize: number }): number;
   resizeCanonical(options: { cols: number; rows: number; cellWidthPx?: number; cellHeightPx?: number }): number;
   setReplayMode(enabled: boolean): number;
   getSelection(): string | null;
@@ -224,6 +224,7 @@ export declare class Terminal implements IDisposable {
   setFont(font: Partial<TerminalFont>): Promise<void>;
   setRenderer(renderer: TerminalRenderer): void;
   setGrainStrength(value: number): void;
+  setGlyphCacheMaxBytes(value: number): number;
   setSoftModifiers(value: number): void;
   clearSoftModifiers(): void;
   sendKey(code: string, key: string, modifiers?: number): number;

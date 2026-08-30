@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Cheng Cao
 
-import { decompress } from "./fzstd.js";
+import { Decompress } from "./fzstd.js";
 import { appendCheckpoint, beginCheckpoint, ensureShadow, finishCheckpoint, resetCheckpointTransaction, rollbackShadow } from "./SessionCheckpoint.js";
 import {
   ABI_DIGEST,
@@ -46,6 +46,7 @@ const INITIAL_RECONNECT_MS = 250;
 const MAX_RECONNECT_MS = 5000;
 const RTT_INTERVAL_MS = 1000;
 const textDecoder = new TextDecoder();
+const OUTPUT_STREAM_PREAMBLE = new TextEncoder().encode("bcwebmux persistent PTY zstd stream preamble; discard before output\n");
 
 export class SessionTransport {
   #url;
@@ -159,6 +160,10 @@ export class SessionTransport {
       previousWasHostActive: false,
       frozen: [],
       frozenBytes: 0,
+      outputDecoder: null,
+      outputDecodeTarget: null,
+      outputDecodeOffset: 0,
+      outputPreambleOffset: 0,
       claim: options.claim !== false,
       preserveCore: options.preserveCore !== false,
       resolve: null,
@@ -300,6 +305,7 @@ export class SessionTransport {
     this.#requireRecord(record, frame);
     if (frame.payload.byteLength !== 80 || frame.attachmentEpoch === 0n || record.attachRequestId === 0n || frame.requestId !== record.attachRequestId || frame.payload[18] !== 0 || frame.payload[19] !== 0 || frame.payload.subarray(36, 48).some(byte => byte !== 0)) throw new Error("invalid ATTACH_BEGIN");
     acceptAttachmentEpoch(record, frame);
+    this.#resetOutputDecoder(record);
     record.generation = frame.payload.slice(0, 16);
     const mode = frame.payload[16];
     record.metadata.state = stateName(frame.payload[17]);
@@ -374,11 +380,10 @@ export class SessionTransport {
     if (eventSeq !== record.eventSeq + 1n || outputOffset !== record.outputOffset || wireLength !== payload.byteLength - 32) throw new Error("terminal event gap");
     const body = payload.subarray(32);
     if (kind === 0) {
-      if (flags !== COMPRESSED_FLAG) throw new Error("output event is not independently compressed");
+      if (flags !== COMPRESSED_FLAG) throw new Error("output event is not stream-compressed");
       if (rawLength > MAX_EVENT_RAW_BYTES) throw new Error("output event is too large");
-      if (!this.#eventScratch || this.#eventScratch.byteLength < rawLength) this.#eventScratch = new Uint8Array(rawLength)
-      const raw = decompress(body, this.#eventScratch.subarray(0, rawLength))
-      if (raw.byteLength !== rawLength || crc32c(raw) !== crc) throw new Error("corrupt output event");
+      const raw = this.#decodeOutput(record, body, rawLength);
+      if (crc32c(raw) !== crc) throw new Error("corrupt output event");
       if (record === this.#activeRecord && this.#terminal) this.#terminal.write(raw);
       else record.core.write(raw);
       record.outputOffset += BigInt(raw.byteLength);
@@ -580,6 +585,41 @@ export class SessionTransport {
     for (const event of frozen) this.#applyEvent(record, event.flags, event.payload);
   }
 
+  #resetOutputDecoder(record) {
+    record.outputDecodeTarget = null;
+    record.outputDecodeOffset = 0;
+    record.outputPreambleOffset = 0;
+    record.outputDecoder = new Decompress(chunk => {
+      const target = record.outputDecodeTarget;
+      if (!target) throw new Error("output decoded outside a decode operation");
+      let offset = 0;
+      while (offset < chunk.byteLength && record.outputPreambleOffset < OUTPUT_STREAM_PREAMBLE.byteLength) {
+        if (chunk[offset] !== OUTPUT_STREAM_PREAMBLE[record.outputPreambleOffset]) throw new Error("invalid output stream preamble");
+        offset++;
+        record.outputPreambleOffset++;
+      }
+      const output = chunk.subarray(offset);
+      if (record.outputDecodeOffset + output.byteLength > target.byteLength) throw new Error("output decoder overflow");
+      target.set(output, record.outputDecodeOffset);
+      record.outputDecodeOffset += output.byteLength;
+    });
+  }
+
+  #decodeOutput(record, body, rawLength) {
+    if (!record.outputDecoder) throw new Error("output decoder is unavailable");
+    if (!this.#eventScratch || this.#eventScratch.byteLength < rawLength) this.#eventScratch = new Uint8Array(rawLength);
+    const target = this.#eventScratch.subarray(0, rawLength);
+    record.outputDecodeTarget = target;
+    record.outputDecodeOffset = 0;
+    try {
+      record.outputDecoder.push(body, false);
+      if (record.outputPreambleOffset !== OUTPUT_STREAM_PREAMBLE.byteLength || record.outputDecodeOffset !== rawLength) throw new Error("output decoder length mismatch");
+      return target;
+    } finally {
+      record.outputDecodeTarget = null;
+    }
+  }
+
   #socketClose(socket) {
     if (socket !== this.#socket) return;
     this.#socket = null;
@@ -624,6 +664,10 @@ export class SessionTransport {
   #removeRecord(record, error) {
     rememberStaleAttachment(this.#staleAttachmentIds, record);
     record.active = false;
+    record.outputDecoder = null;
+    record.outputDecodeTarget = null;
+    record.outputDecodeOffset = 0;
+    record.outputPreambleOffset = 0;
     markRecordDetached(record);
     resetCheckpointTransaction(record);
     this.#records.delete(record.attachmentId.toString());

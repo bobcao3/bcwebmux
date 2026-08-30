@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Cheng Cao
 
-import { WebGlGlyphAtlas } from "./WebGlGlyphAtlas.js";
-
 const VERTEX_SOURCE = `#version 300 es
 precision highp float;
 precision highp int;
@@ -13,9 +11,6 @@ uniform uint u_cell_width;
 uniform uint u_cell_height;
 uniform uint u_viewport_width;
 uniform uint u_viewport_height;
-uniform uint u_atlas_cols;
-uniform uint u_tile_width;
-uniform uint u_tile_height;
 uniform uint u_style_texture_width;
 uniform uint u_selection_texture_width;
 uniform highp usampler2D u_styles;
@@ -27,7 +22,6 @@ flat out uvec2 v_cell_coord;
 flat out uvec2 v_colors;
 flat out uvec2 v_flags_glyph;
 flat out uint v_selected;
-flat out uvec2 v_tile_origin;
 flat out uvec2 v_pixel_origin;
 
 vec3 rgb(uint value) {
@@ -61,11 +55,6 @@ void main() {
   uint selection_start = selection & 0xffffu;
   uint selection_end = (selection >> 16u) & 0x7fffu;
   bool selected = selection_active && x <= selection_end && x + width > selection_start;
-  uvec2 tile_origin = uvec2(0u);
-  if (glyph != 0u) {
-    uint slot = glyph - 1u;
-    tile_origin = uvec2(slot % u_atlas_cols, slot / u_atlas_cols) * uvec2(u_tile_width, u_tile_height);
-  }
   uvec2 origin = uvec2(x * u_cell_width, y * u_cell_height);
   uvec2 end = uvec2((x + width) * u_cell_width, (y + 1u) * u_cell_height);
   uvec2 size = end - origin;
@@ -89,7 +78,6 @@ void main() {
   v_colors = uvec2(fg, bg);
   v_flags_glyph = uvec2(style.b, glyph);
   v_selected = selected ? 1u : 0u;
-  v_tile_origin = tile_origin;
   v_pixel_origin = origin;
 }
 `;
@@ -99,12 +87,15 @@ precision highp float;
 precision highp int;
 
 uniform uint u_default_fg;
+uniform uint u_cell_width;
+uniform uint u_atlas_cols;
+uniform uint u_tile_width;
+uniform uint u_tile_height;
 uniform uint u_cursor_x;
 uniform uint u_cursor_y;
 uniform uint u_cursor_flags;
 uniform uint u_cursor_style;
 uniform uint u_blink_on;
-uniform uint u_canvas_atlas;
 uniform float u_grain_strength;
 uniform sampler2D u_atlas;
 uniform sampler2D u_grain;
@@ -115,7 +106,6 @@ flat in uvec2 v_cell_coord;
 flat in uvec2 v_colors;
 flat in uvec2 v_flags_glyph;
 flat in uint v_selected;
-flat in uvec2 v_tile_origin;
 flat in uvec2 v_pixel_origin;
 out vec4 output_color;
 
@@ -161,8 +151,13 @@ void main() {
   }
   bool text_visible = glyph != 0u && ((flags & 128u) == 0u || u_blink_on != 0u);
   if (text_visible) {
-    vec4 atlas_texel = texelFetch(u_atlas, ivec2(v_tile_origin + uvec2(v_local)), 0);
-    float coverage = (u_canvas_atlas != 0u ? atlas_texel.a : atlas_texel.r) * ((flags & 4u) != 0u ? 0.62 : 1.0);
+    uint subcell = uint(v_local.x) / u_cell_width;
+    uint absolute_slot = glyph - 1u + subcell;
+    uvec2 tile_origin = uvec2(absolute_slot % u_atlas_cols, absolute_slot / u_atlas_cols) *
+      uvec2(u_tile_width, u_tile_height);
+    uvec2 local_texel = uvec2(uint(v_local.x) % u_cell_width, uint(v_local.y));
+    vec4 atlas_texel = texelFetch(u_atlas, ivec2(tile_origin + local_texel), 0);
+    float coverage = atlas_texel.r * ((flags & 4u) != 0u ? 0.62 : 1.0);
     result = mix(result, rgb(fg), coverage);
   }
   output_color = vec4(result, 1.0);
@@ -209,42 +204,39 @@ function createTexture(gl, internalFormat, width, height) {
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
   gl.texStorage2D(gl.TEXTURE_2D, 1, internalFormat, width, height);
+  if (gl.getError() !== gl.NO_ERROR) {
+    gl.deleteTexture(texture);
+    throw new Error("WebGL texture allocation failed");
+  }
   return texture;
 }
 
-export function initializeWebGl(renderer, cellSource, grain, grainSize, maxCells, maxGlyphs, maxStyles, styleSize, atlasSlots, cellSize) {
+export function initializeWebGl(renderer, cellSource, grain, grainSize, maxCells, maxStyles, styleSize, cellSize) {
+  if (!renderer.atlas || !renderer.glyphPartitions) {
+    throw new Error("GPU glyph resources are unavailable");
+  }
   if (renderer.initialized) {
-    const matches = maxCells === renderer.maxCells && maxGlyphs === renderer.maxGlyphs &&
-      maxStyles === renderer.maxStyles && styleSize === renderer.styleSize &&
-      cellSize === renderer.cellSize && grainSize === 64 && grain.length === grainSize * grainSize;
-    if (!matches) throw new Error("terminal core renderer ABI mismatch");
+    if (styleSize !== 12 || cellSize !== 8 || !cellSource.includes("alias Lowp = f32;") ||
+        !(grain instanceof Int8Array) || grainSize !== 64 || grain.length !== grainSize * grainSize) {
+      throw new Error("terminal core renderer ABI mismatch");
+    }
+    ensureFrameCapacityWebGl(renderer, maxCells);
     return 1;
   }
   if (!(grain instanceof Int8Array) || grainSize !== 64 || grain.length !== grainSize * grainSize) {
     throw new Error("invalid grain texture");
   }
-  if (maxCells <= 0 || maxGlyphs <= 0 || maxStyles <= 0 || styleSize !== 12 ||
-      atlasSlots <= 0 || atlasSlots > maxGlyphs || cellSize !== 8 || !cellSource.includes("alias Lowp = f32;")) {
+  if (maxCells <= 0 || maxStyles <= 0 || styleSize !== 12 ||
+      cellSize !== 8 || !cellSource.includes("alias Lowp = f32;")) {
     throw new Error("invalid GPU initialization constants");
   }
-  Object.assign(renderer, { maxCells, maxGlyphs, maxStyles, styleSize, cellSize, atlasRequiredSlots: atlasSlots });
+  Object.assign(renderer, { maxCells, maxStyles, styleSize, cellSize });
   const gl = renderer.gl;
   const maxDimension = gl.getParameter(gl.MAX_TEXTURE_SIZE);
   renderer.styleTextureWidth = Math.min(maxStyles, maxDimension);
   renderer.styleTextureHeight = Math.ceil(maxStyles / renderer.styleTextureWidth);
   renderer.selectionTextureWidth = Math.min(maxCells, maxDimension);
   renderer.selectionTextureHeight = Math.ceil(maxCells / renderer.selectionTextureWidth);
-  const font = getComputedStyle(renderer.canvas.parentElement);
-  renderer.atlas = new WebGlGlyphAtlas(
-    gl,
-    font,
-    atlasSlots,
-    maxGlyphs,
-    renderer.textRenderer === "kb-canvas" ? "rgba8unorm" : "r8unorm",
-    renderer.physicalCellWidth,
-    renderer.physicalCellHeight,
-    renderer.physicalFontSize,
-  );
   renderer.program = createProgram(gl);
   renderer.vertexArray = gl.createVertexArray();
   renderer.cellBuffer = gl.createBuffer();
@@ -264,7 +256,7 @@ export function initializeWebGl(renderer, cellSource, grain, grainSize, maxCells
   for (const name of [
     "cols", "cell_width", "cell_height", "viewport_width", "viewport_height", "default_fg",
     "cursor_x", "cursor_y", "cursor_flags", "cursor_style", "atlas_cols", "grain_strength",
-    "tile_width", "tile_height", "blink_on", "canvas_atlas", "style_texture_width",
+    "tile_width", "tile_height", "blink_on", "style_texture_width",
     "selection_texture_width", "atlas", "styles", "selections", "grain",
   ]) {
     const location = gl.getUniformLocation(renderer.program, `u_${name}`);
@@ -284,6 +276,63 @@ export function initializeWebGl(renderer, cellSource, grain, grainSize, maxCells
   gl.bindVertexArray(null);
   renderer.initialized = true;
   return 1;
+}
+
+export function ensureFrameCapacityWebGl(renderer, cellCapacity) {
+  if (!Number.isSafeInteger(cellCapacity) || cellCapacity <= 0) {
+    throw new Error("invalid GPU cell capacity");
+  }
+  const styleCapacity = Math.min(65536, cellCapacity + 1);
+  if (!renderer.initialized) return false;
+  if (cellCapacity <= renderer.maxCells && styleCapacity <= renderer.maxStyles) return false;
+  const gl = renderer.gl;
+  const maxCells = Math.max(renderer.maxCells, cellCapacity);
+  const maxStyles = Math.max(renderer.maxStyles, styleCapacity);
+  const maximum = gl.getParameter(gl.MAX_TEXTURE_SIZE);
+  const styleTextureWidth = Math.min(maxStyles, maximum);
+  const styleTextureHeight = Math.ceil(maxStyles / styleTextureWidth);
+  const selectionTextureWidth = Math.min(maxCells, maximum);
+  const selectionTextureHeight = Math.ceil(maxCells / selectionTextureWidth);
+  if (styleTextureHeight > maximum || selectionTextureHeight > maximum) {
+    throw new Error("GPU texture dimensions exceed maximum");
+  }
+  let cellBuffer = null;
+  let styleTexture = null;
+  let selectionTexture = null;
+  try {
+    cellBuffer = gl.createBuffer();
+    if (!cellBuffer) throw new Error("WebGL cell buffer allocation failed");
+    gl.bindBuffer(gl.ARRAY_BUFFER, cellBuffer);
+    gl.bufferData(gl.ARRAY_BUFFER, maxCells * renderer.cellSize, gl.DYNAMIC_DRAW);
+    styleTexture = createTexture(gl, gl.RGB32UI, styleTextureWidth, styleTextureHeight);
+    selectionTexture = createTexture(gl, gl.R32UI, selectionTextureWidth, selectionTextureHeight);
+  } catch (error) {
+    gl.deleteBuffer(cellBuffer);
+    gl.deleteTexture(styleTexture);
+    gl.deleteTexture(selectionTexture);
+    throw error;
+  }
+  gl.bindVertexArray(renderer.vertexArray);
+  gl.bindBuffer(gl.ARRAY_BUFFER, cellBuffer);
+  gl.vertexAttribIPointer(0, 2, gl.UNSIGNED_INT, renderer.cellSize, 0);
+  gl.vertexAttribDivisor(0, 1);
+  gl.bindVertexArray(null);
+  const oldCellBuffer = renderer.cellBuffer;
+  const oldStyleTexture = renderer.styleTexture;
+  const oldSelectionTexture = renderer.selectionTexture;
+  renderer.maxCells = maxCells;
+  renderer.maxStyles = maxStyles;
+  renderer.styleTextureWidth = styleTextureWidth;
+  renderer.styleTextureHeight = styleTextureHeight;
+  renderer.selectionTextureWidth = selectionTextureWidth;
+  renderer.selectionTextureHeight = selectionTextureHeight;
+  renderer.cellBuffer = cellBuffer;
+  renderer.styleTexture = styleTexture;
+  renderer.selectionTexture = selectionTexture;
+  gl.deleteBuffer(oldCellBuffer);
+  gl.deleteTexture(oldStyleTexture);
+  gl.deleteTexture(oldSelectionTexture);
+  return true;
 }
 
 export function resizeWebGl(renderer, widthValue, heightValue) {

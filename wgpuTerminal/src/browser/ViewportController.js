@@ -5,6 +5,14 @@ import { RowAdjustment } from "./RowAdjustment.js";
 import { SemanticScrollbar } from "./SemanticScrollbar.js";
 import { ScrollGestureController } from "./ScrollGestureController.js";
 
+function devicePixelRatio() {
+  const ratio = window.devicePixelRatio;
+  if (!Number.isFinite(ratio) || ratio <= 0) {
+    throw new Error("invalid device pixel ratio");
+  }
+  return ratio;
+}
+
 export class ViewportController {
   constructor(options) {
     this.terminalElement = options.terminalElement;
@@ -70,7 +78,7 @@ export class ViewportController {
       };
     }
     const rect = this.screen.getBoundingClientRect();
-    const scale = window.devicePixelRatio || 1;
+    const scale = devicePixelRatio();
     return {
       width: Math.max(1, Math.round(rect.width * scale)),
       height: Math.max(1, Math.round(rect.height * scale)),
@@ -80,9 +88,10 @@ export class ViewportController {
   physicalLayout(pixelViewport = this.latestPixelViewport) {
     const scaleX = pixelViewport.width / Math.max(1, this.screen.clientWidth);
     const scaleY = pixelViewport.height / Math.max(1, this.screen.clientHeight);
-    const cellWidth = Math.max(1, Math.min(pixelViewport.width, Math.round(this.measuredMetrics.width * scaleX)));
-    const cellHeight = Math.max(1, Math.min(pixelViewport.height, Math.round(this.measuredMetrics.height * scaleY)));
-    const fontSize = Math.max(1, Math.round(parseFloat(getComputedStyle(this.terminalElement).fontSize) * scaleY));
+    const rasterScale = devicePixelRatio();
+    const cellWidth = Math.max(1, Math.min(pixelViewport.width, Math.round(this.measuredMetrics.width * rasterScale)));
+    const cellHeight = Math.max(1, Math.min(pixelViewport.height, Math.round(this.measuredMetrics.height * rasterScale)));
+    const fontSize = Math.max(1, Math.round(parseFloat(getComputedStyle(this.terminalElement).fontSize) * rasterScale));
     const cols = Math.max(1, Math.floor(pixelViewport.width / cellWidth));
     const rows = Math.max(1, Math.floor(pixelViewport.height / cellHeight));
     if (cols * cellWidth > pixelViewport.width || rows * cellHeight > pixelViewport.height) {
@@ -124,15 +133,18 @@ export class ViewportController {
     const layout = this.physicalLayout(pixelViewport);
     this.cssCellMetrics.width = layout.cellWidth / layout.scaleX;
     this.cssCellMetrics.height = layout.cellHeight / layout.scaleY;
-    renderer.setPhysicalCellMetrics(layout.cellWidth, layout.cellHeight, layout.fontSize);
+    renderer.setPhysicalCellMetrics(
+      layout.cellWidth,
+      layout.cellHeight,
+      layout.fontSize,
+      layout.cols,
+      layout.cols * layout.rows,
+    );
     renderer.resize(pixelViewport.width, pixelViewport.height);
-    this.terminalElement.style.setProperty("--cell-width", `${this.cssCellMetrics.width}px`);
-    this.terminalElement.style.setProperty("--cell-height", `${this.cssCellMetrics.height}px`);
-    this.viewport.style.setProperty("--cell-width", `${this.cssCellMetrics.width}px`);
-    this.viewport.style.setProperty("--cell-height", `${this.cssCellMetrics.height}px`);
+    this._applyCssCellMetrics();
     this.semanticScrollbar.render(this.adjustment);
     const result = this.resizeTerminal
-      ? this.resizeTerminal(layout, renderer.atlasColumns)
+      ? this.resizeTerminal(layout)
       : wasm.term_resize(
         layout.cols,
         layout.rows,
@@ -141,12 +153,18 @@ export class ViewportController {
         layout.cellWidth,
         layout.cellHeight,
         layout.fontSize,
-        renderer.atlasColumns,
       );
     if (result !== 1) throw new Error("terminal resize failed");
     this.onResize({ cols: layout.cols, rows: layout.rows });
     this.scheduleFrame();
     return layout;
+  }
+
+  _applyCssCellMetrics() {
+    this.terminalElement.style.setProperty("--cell-width", `${this.cssCellMetrics.width}px`);
+    this.terminalElement.style.setProperty("--cell-height", `${this.cssCellMetrics.height}px`);
+    this.viewport.style.setProperty("--cell-width", `${this.cssCellMetrics.width}px`);
+    this.viewport.style.setProperty("--cell-height", `${this.cssCellMetrics.height}px`);
   }
 
   submitFrameMetadata(metadata) {

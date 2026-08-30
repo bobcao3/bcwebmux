@@ -92,19 +92,21 @@ pub fn term_set_renderer(self: *Self, renderer_raw: u32) i32 {
     return 1;
 }
 
-pub fn term_invalidate_glyph_cache(self: *Self) void {
-    self.renderer.invalidateGlyphCache();
-    self.render_requested = true;
-}
-
 pub fn term_invalidate_text_view(self: *Self) void {
     self.renderer.invalidateTextView();
     self.render_requested = true;
 }
 
-pub fn term_invalidate_render_cache(self: *Self) void {
-    self.renderer.invalidateRenderCache();
+pub fn term_invalidate_frame_cache(self: *Self) void {
+    self.renderer.invalidateFrameCache();
     self.render_requested = true;
+}
+
+pub fn term_set_glyph_partition(self: *Self, base_slot: u32, slot_capacity: u32, atlas_columns: u16, generation: u32) i32 {
+    if (self.busy) return 0;
+    if (!self.renderer.setGlyphPartition(base_slot, slot_capacity, atlas_columns, generation)) return 0;
+    self.render_requested = true;
+    return 1;
 }
 
 pub fn term_set_text_view_enabled(self: *Self, enabled_raw: u32) i32 {
@@ -187,6 +189,7 @@ pub fn term_deinit(self: *Self) void {
     self.terminal = null;
     self.last_mouse_cell = null;
     self.freeSnapshotStaging();
+    self.renderer.deinit();
 }
 
 fn finishBusy(self: *Self) void {
@@ -275,20 +278,19 @@ pub fn term_feed(self: *Self, len: u32) i32 {
     return 1;
 }
 
-pub fn term_resize(self: *Self, cols: u16, rows: u16, cell_width: u16, cell_height: u16, glyph_cell_width: u16, glyph_cell_height: u16, glyph_font_size_px: u16, atlas_columns: u16) i32 {
+pub fn term_resize(self: *Self, cols: u16, rows: u16, cell_width: u16, cell_height: u16, glyph_cell_width: u16, glyph_cell_height: u16, glyph_font_size_px: u16) i32 {
     if (self.term_set_render_metrics(
         cell_width,
         cell_height,
         glyph_cell_width,
         glyph_cell_height,
         glyph_font_size_px,
-        atlas_columns,
     ) == 0) return 0;
     return self.term_resize_canonical(cols, rows, cell_width, cell_height);
 }
 
-pub fn term_set_render_metrics(self: *Self, cell_width: u16, cell_height: u16, glyph_cell_width: u16, glyph_cell_height: u16, glyph_font_size_px: u16, atlas_columns: u16) i32 {
-    if (self.busy or atlas_columns == 0) return 0;
+pub fn term_set_render_metrics(self: *Self, cell_width: u16, cell_height: u16, glyph_cell_width: u16, glyph_cell_height: u16, glyph_font_size_px: u16) i32 {
+    if (self.busy) return 0;
     self.busy = true;
     defer self.finishBusy();
     self.cell_width_px = @max(1, cell_width);
@@ -297,7 +299,6 @@ pub fn term_set_render_metrics(self: *Self, cell_width: u16, cell_height: u16, g
         @max(1, glyph_cell_width),
         @max(1, glyph_cell_height),
         @max(1, glyph_font_size_px),
-        atlas_columns,
     );
     return 1;
 }

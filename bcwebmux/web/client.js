@@ -337,6 +337,7 @@ const terminal = new Terminal({
   font: settings.font,
   theme: settings.profile,
   grainStrength: settings.grainStrength,
+  glyphCacheMaxBytes: settings.glyphCacheMaxMiB * 1024 * 1024,
   terminalElement,
   elements: {
     viewport: terminalViewport,
@@ -502,7 +503,7 @@ function updateTelemetry() {
   }
   lastGpuError = gpuError;
   if (document.hidden || mode === "off") return;
-  const atlasUsed = state.atlasGlyphs ?? 0;
+  const atlasUsed = state.glyphSlotsUsed ?? 0;
   const atlasCapacity = state.atlasCapacity ?? 0;
   const atlasPercent = atlasCapacity ? Math.round(atlasUsed * 100 / atlasCapacity) : 0;
   const cacheHits = state.cacheHits ?? 0;

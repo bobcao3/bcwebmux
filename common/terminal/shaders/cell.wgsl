@@ -21,7 +21,6 @@ struct Uniforms {
   tile_width: u32,
   tile_height: u32,
   blink_on: u32,
-  canvas_atlas: u32,
 }
 
 struct Cell {
@@ -46,7 +45,6 @@ struct VertexOutput {
   @location(6) @interpolate(flat) flags: u32,
   @location(7) @interpolate(flat) glyph: u32,
   @location(8) @interpolate(flat) selected: u32,
-  @location(9) @interpolate(flat) tile_origin: vec2<u32>,
 }
 
 @group(0) @binding(0) var<uniform> uniforms: Uniforms;
@@ -106,14 +104,6 @@ fn vertex(@builtin(vertex_index) vertex_index: u32, @builtin(instance_index) ins
   let selected = selection_active &&
     x <= selection_end &&
     x + width > selection_start;
-  var tile_origin = vec2<u32>(0u);
-  if (cell.glyph != 0u) {
-    let slot = cell.glyph - 1u;
-    tile_origin = vec2<u32>(
-      slot % uniforms.atlas_cols,
-      slot / uniforms.atlas_cols
-    ) * vec2<u32>(uniforms.tile_width, uniforms.tile_height);
-  }
   let origin = vec2<u32>(
     x * uniforms.cell_width,
     y * uniforms.cell_height
@@ -154,7 +144,6 @@ fn vertex(@builtin(vertex_index) vertex_index: u32, @builtin(instance_index) ins
   output.flags = style.flags;
   output.glyph = cell.glyph;
   output.selected = select(0u, 1u, selected);
-  output.tile_origin = tile_origin;
   if ((cell_data & 0x00020000u) == 0u) {
     output.position = vec4<f32>(2.0, 2.0, 0.0, 1.0);
   }
@@ -212,9 +201,18 @@ fn fragment(input: VertexOutput) -> @location(0) vec4<f32> {
   let glyph = input.glyph;
   let text_visible = glyph != 0u && ((flags & 128u) == 0u || uniforms.blink_on != 0u);
   if (text_visible) {
-    let local_texel = vec2<u32>(input.local);
-    let atlas_texel = textureLoad(atlas_texture, vec2<i32>(input.tile_origin + local_texel), 0);
-    let coverage = select(Lowp(atlas_texel.r), Lowp(atlas_texel.a), uniforms.canvas_atlas != 0u) * select(Lowp(1.0), Lowp(0.62), (flags & 4u) != 0u);
+    let subcell = u32(input.local.x) / uniforms.cell_width;
+    let absolute_slot = input.glyph - 1u + subcell;
+    let tile_origin = vec2<u32>(
+      absolute_slot % uniforms.atlas_cols,
+      absolute_slot / uniforms.atlas_cols
+    ) * vec2<u32>(uniforms.tile_width, uniforms.tile_height);
+    let local_texel = vec2<u32>(
+      u32(input.local.x) % uniforms.cell_width,
+      u32(input.local.y)
+    );
+    let atlas_texel = textureLoad(atlas_texture, vec2<i32>(tile_origin + local_texel), 0);
+    let coverage = Lowp(atlas_texel.r) * select(Lowp(1.0), Lowp(0.62), (flags & 4u) != 0u);
     result = mix(result, rgb(fg), coverage);
   }
   return vec4<f32>(vec3<f32>(result), 1.0);

@@ -414,6 +414,31 @@ try {
       document.getElementById(tab.getAttribute("aria-controls") || ""),
     ]));
     if (Object.values(panels).some(panel => !panel)) throw new Error("settings panels are missing");
+    tabs.FONT.click();
+    const fontSizeDecrease = panels.FONT.querySelector("#font-size-decrease");
+    const fontSizeValue = panels.FONT.querySelector("#font-size-value");
+    const fontSizeIncrease = panels.FONT.querySelector("#font-size-increase");
+    if (!fontSizeDecrease || !fontSizeValue || !fontSizeIncrease) throw new Error("font size stepper controls are missing");
+    if ([fontSizeDecrease, fontSizeValue, fontSizeIncrease].map(element => element.textContent.trim()).join(" ") !== "< 15px >") {
+      throw new Error("font size stepper text is invalid");
+    }
+    const fontSizeDecreaseRect = fontSizeDecrease.getBoundingClientRect();
+    const fontSizeValueRect = fontSizeValue.getBoundingClientRect();
+    const fontSizeIncreaseRect = fontSizeIncrease.getBoundingClientRect();
+    if (
+      fontSizeDecreaseRect.right > fontSizeValueRect.left ||
+      fontSizeValueRect.right > fontSizeIncreaseRect.left
+    ) throw new Error("font size stepper controls are not ordered");
+    fontSizeDecrease.click();
+    if (fontSizeValue.textContent.trim() !== "14px") throw new Error("font size decrease did not update value");
+    if (terminal.style.fontSize !== "14px") throw new Error("font size decrease did not update terminal font size");
+    fontSizeIncrease.click();
+    if (fontSizeValue.textContent.trim() !== "15px") throw new Error("font size increase did not restore value");
+    if (terminal.style.fontSize !== "15px") throw new Error("font size increase did not restore terminal font size");
+    if (JSON.parse(localStorage.getItem("bcwebmux.settings.v1")).fontSize !== 15) {
+      throw new Error("font size increase did not persist value");
+    }
+    tabs.COLOR.click();
     const grainStrength = panels.COLOR.querySelector("#grain-strength");
     const grainStrengthValue = panels.COLOR.querySelector("#grain-strength-value");
     if (!grainStrength || !grainStrengthValue) throw new Error("grain strength controls are missing");
@@ -663,14 +688,18 @@ try {
       throw new Error("Ctrl+B did not restore scroll position to bottom");
     }
     if (${requestedBackend === "webgl2"}) {
-      const previousAtlasCapacity = window.bcwebmux.state.atlasCapacity;
+      const previousAtlasRequiredSlots = window.bcwebmux.state.atlasRequiredSlots;
+      const previousGpuFrames = window.bcwebmux.state.gpuFrames;
       window.bcwebmux.write(${JSON.stringify(glyphAtlasCommand + "\r")});
       until = deadline(2500);
-      while (window.bcwebmux.state.atlasRequiredSlots <= previousAtlasCapacity && Date.now() < until) {
+      while (window.bcwebmux.state.gpuFrames <= previousGpuFrames && Date.now() < until) {
         await sleep(20);
       }
-      if (window.bcwebmux.state.atlasRequiredSlots <= previousAtlasCapacity) {
-        throw new Error("WebGL2 glyph atlas did not grow");
+      if (window.bcwebmux.state.gpuFrames <= previousGpuFrames) {
+        throw new Error("WebGL2 glyph atlas frame did not render");
+      }
+      if (window.bcwebmux.state.atlasRequiredSlots !== previousAtlasRequiredSlots) {
+        throw new Error("WebGL2 glyph atlas required slots grew");
       }
       if (window.bcwebmux.state.atlasCapacity < window.bcwebmux.state.atlasRequiredSlots) {
         throw new Error("WebGL2 glyph atlas capacity does not cover required slots");
@@ -965,15 +994,13 @@ try {
   assert.equal(state.gpuFallbackAdapter, false);
   assert.ok(state.gpuFrames >= 5);
   assert.ok(state.rasterPasses >= 5);
-  assert.equal(state.atlasFormat, "r8unorm");
-  assert.ok(Number.isInteger(state.atlasRequiredSlots) && state.atlasRequiredSlots >= 256);
-  assert.ok(state.atlasRequiredSlots >= state.atlasGlyphs);
+  assert.ok(Number.isInteger(state.atlasRequiredSlots) && state.atlasRequiredSlots >= state.cols * state.rows);
   assert.ok(state.atlasCapacity >= state.atlasRequiredSlots);
-  assert.ok(state.atlasGlyphs >= 1);
+  assert.ok(state.glyphSlotsUsed >= 1 && state.glyphSlotsUsed <= state.atlasCapacity);
   if (["kb-stb", "kb-canvas"].includes(state.textRenderer)) {
     assert.ok(state.cacheHits > 0);
     assert.ok(state.cacheMisses >= 0);
-    assert.ok(state.atlasGlyphs <= state.atlasRequiredSlots);
+    assert.ok(state.glyphSlotsUsed <= state.atlasRequiredSlots);
   }
   if (requestedBackend === "webgpu") {
     for (const name of ["gpuFrameMs", "queueDrainMs"]) {
@@ -987,7 +1014,6 @@ try {
     assert.equal(state.gpuFrameMs, null);
     assert.equal(state.queueDrainMs, null);
     assert.ok(state.drawCalls >= 5);
-    assert.ok(state.atlasRequiredSlots > 256);
     assert.ok(Object.values(state.gpuAdapter).some(Boolean), "WebGL2 adapter identity is empty");
   }
   assert.ok(value.readbacks >= 5);

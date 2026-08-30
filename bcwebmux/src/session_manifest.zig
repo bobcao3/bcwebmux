@@ -4,7 +4,7 @@
 pub const protocol = "bcw.sessions";
 pub const checkpoint_codec = "ghostty-snapshot";
 pub const ghostty_commit = "f4f9991d2c188b7c1f364ed9e44b92dd3356bb2a";
-pub const terminal_abi = "bcwebmux-ghostty-f4f9991-snapshot-8m-continuation-1m";
+pub const terminal_abi = "bcwebmux-ghostty-f4f9991-snapshot-8m-continuation-1m-glyph-cell-partitions-pty-zstd-stream";
 pub const terminal_config = "xterm-256color;grapheme-cluster=1;scrollback=8388608;continuation=1048576";
 pub const command_profile = "shell";
 pub const max_connection_attachments: usize = 8;
@@ -15,6 +15,7 @@ pub const event_batch_bytes: usize = 256 * 1024;
 pub const heartbeat_interval_ms: i64 = 5_000;
 pub const heartbeat_timeout_ms: i64 = 15_000;
 pub const publish_interval_ms: i64 = 10;
+pub const terminal_cell_protocol_limit: usize = 0xffff;
 
 pub const Limits = struct {
     max_live_sessions: usize = 16,
@@ -39,7 +40,8 @@ pub const Limits = struct {
 
 pub fn validGeometry(limits: Limits, cols: u16, rows: u16) bool {
     return cols >= limits.min_cols and cols <= limits.max_cols and
-        rows >= limits.min_rows and rows <= limits.max_rows;
+        rows >= limits.min_rows and rows <= limits.max_rows and
+        @as(usize, cols) * @as(usize, rows) <= terminal_cell_protocol_limit;
 }
 
 pub fn validCellGeometry(cell_width_px: u16, cell_height_px: u16) bool {

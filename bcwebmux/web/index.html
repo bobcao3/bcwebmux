@@ -203,9 +203,14 @@
           <textarea name="fontFallbacks" rows="6" spellcheck="false"></textarea>
           <small>One CSS font family per line, in priority order.</small>
         </label>
-        <label>Font size
-          <span><input type="number" id="font-size" name="fontSize" min="8" max="32" step="1"> px</span>
-        </label>
+        <div class="font-size-setting">
+          <span>Font size</span>
+          <div class="font-size-stepper" role="group" aria-label="Font size">
+            <button id="font-size-decrease" type="button" aria-label="Decrease font size" aria-controls="font-size-value">&lt;</button>
+            <output id="font-size-value" aria-live="polite" aria-atomic="true">15px</output>
+            <button id="font-size-increase" type="button" aria-label="Increase font size" aria-controls="font-size-value">&gt;</button>
+          </div>
+        </div>
         <label><input type="checkbox" name="ligatures"> Enable ligatures</label>
       </form>
     </section>

@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Cheng Cao
 
+import { extractCanvasAlpha } from "../CanvasAlphaMask.js";
+
 function createRasterCanvas(width = 1, height = 1) {
   const canvas = document.createElement("canvas");
   canvas.width = width;
@@ -18,25 +20,16 @@ function configureRasterContext(canvas) {
 }
 
 export class WebGlGlyphAtlas {
-  constructor(gl, font, requiredSlots, maxSlots, format, cellWidth, cellHeight, fontSize) {
+  constructor(gl, font, geometry, cellWidth, cellHeight, fontSize) {
     this.gl = gl;
-    this.maxSlots = maxSlots;
-    this.format = format;
     this.maxDimension = gl.getParameter(gl.MAX_TEXTURE_SIZE);
-    this.tileWidth = Math.max(2, Math.round(cellWidth) * 2);
-    this.tileHeight = Math.max(2, Math.round(cellHeight));
-    this.columns = this._columns(this.tileWidth, this.tileHeight);
-    this.rows = Math.max(1, Math.ceil(requiredSlots / this.columns));
-    if (this.rows * this.columns < requiredSlots) throw new Error("glyph atlas capacity exceeded");
     this.fontFamily = font.fontFamily;
-    this.fontSize = Math.max(1, Math.round(fontSize));
-    this.baseline = this._baseline();
     this.runCanvas = createRasterCanvas();
     this.runContext = configureRasterContext(this.runCanvas);
-    this.slotCanvas = createRasterCanvas();
-    this.slotContext = configureRasterContext(this.slotCanvas);
+    this.canvasMask = new Uint8Array(0);
+    this.texture = null;
     this.nextSlot = 0;
-    this.texture = this._createTexture(this.columns * this.tileWidth, this.rows * this.tileHeight);
+    this.commitLayout(this.prepareLayout(geometry, cellWidth, cellHeight, fontSize, true));
   }
 
   get capacity() {
@@ -45,16 +38,6 @@ export class WebGlGlyphAtlas {
 
   _baseline() {
     return Math.min(this.tileHeight - 1, Math.round((this.tileHeight - this.fontSize) * 0.5 + this.fontSize * 0.82));
-  }
-
-  _columns(tileWidth, tileHeight) {
-    const maxColumns = Math.floor(this.maxDimension / tileWidth);
-    const maxRows = Math.floor(this.maxDimension / tileHeight);
-    const columns = Math.max(Math.min(256, maxColumns), Math.ceil(this.maxSlots / maxRows));
-    if (maxColumns < 1 || maxRows < 1 || columns > maxColumns || this.maxSlots > columns * maxRows) {
-      throw new Error("glyph atlas capacity exceeded");
-    }
-    return columns;
   }
 
   _createTexture(width, height) {
@@ -66,53 +49,94 @@ export class WebGlGlyphAtlas {
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-    const internalFormat = this.format === "rgba8unorm" ? gl.RGBA8 : gl.R8;
-    gl.texStorage2D(gl.TEXTURE_2D, 1, internalFormat, width, height);
+    gl.texStorage2D(gl.TEXTURE_2D, 1, gl.R8, width, height);
     return texture;
   }
 
-  setFormat(format) {
-    if (format !== "r8unorm" && format !== "rgba8unorm") throw new Error("invalid glyph atlas format");
-    if (format === this.format) return false;
-    const gl = this.gl;
-    gl.deleteTexture(this.texture);
-    this.format = format;
-    this.nextSlot = 0;
-    this.texture = this._createTexture(this.columns * this.tileWidth, this.rows * this.tileHeight);
-    return true;
+  prepareLayout(geometry, cellWidth, cellHeight, fontSize, reset) {
+    if (!geometry || !Number.isInteger(geometry.columns) || !Number.isInteger(geometry.rows) ||
+        geometry.columns <= 0 || geometry.rows <= 0) {
+      throw new Error("invalid glyph atlas geometry");
+    }
+    if (!Number.isInteger(cellWidth) || !Number.isInteger(cellHeight) || !Number.isInteger(fontSize) ||
+        cellWidth <= 0 || cellHeight <= 0 || fontSize <= 0) {
+      throw new Error("invalid physical cell metrics");
+    }
+    const tileWidth = Math.max(1, Math.round(cellWidth));
+    const tileHeight = Math.max(1, Math.round(cellHeight));
+    const width = geometry.columns * tileWidth;
+    const height = geometry.rows * tileHeight;
+    if (width > this.maxDimension || height > this.maxDimension) {
+      throw new Error("glyph atlas capacity exceeded");
+    }
+    const texture = this._createTexture(width, height);
+    if (this.gl.getError() !== this.gl.NO_ERROR) {
+      this.gl.deleteTexture(texture);
+      throw new Error("WebGL glyph atlas allocation failed");
+    }
+    const preserve = !reset && this.texture &&
+      geometry.columns === this.columns &&
+      tileWidth === this.tileWidth &&
+      tileHeight === this.tileHeight;
+    return {
+      columns: geometry.columns,
+      rows: geometry.rows,
+      tileWidth,
+      tileHeight,
+      fontSize,
+      texture,
+      preserve,
+    };
   }
 
-  ensureCapacity(requiredSlots) {
-    if (requiredSlots <= this.capacity) return false;
-    const maxRows = Math.floor(this.maxDimension / this.tileHeight);
-    const rows = Math.ceil(Math.max(requiredSlots, Math.ceil(this.capacity * 1.5)) / this.columns);
-    if (rows > maxRows || requiredSlots > this.maxSlots) throw new Error("glyph atlas capacity exceeded");
+  commitLayout(candidate) {
     const gl = this.gl;
     const oldTexture = this.texture;
-    const oldWidth = this.columns * this.tileWidth;
-    const oldHeight = this.rows * this.tileHeight;
-    this.rows = Math.max(1, rows);
-    this.texture = this._createTexture(oldWidth, this.rows * this.tileHeight);
-    if (this.nextSlot > 0) {
+    if (candidate.preserve && oldTexture && candidate.rows >= this.rows && this.nextSlot > 0) {
       const framebuffer = gl.createFramebuffer();
-      if (!framebuffer) throw new Error("WebGL glyph atlas copy allocation failed");
+      if (!framebuffer) {
+        gl.deleteTexture(candidate.texture);
+        throw new Error("WebGL glyph atlas copy allocation failed");
+      }
       gl.bindFramebuffer(gl.READ_FRAMEBUFFER, framebuffer);
       gl.framebufferTexture2D(gl.READ_FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, oldTexture, 0);
       if (gl.checkFramebufferStatus(gl.READ_FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) {
+        gl.bindFramebuffer(gl.READ_FRAMEBUFFER, null);
         gl.deleteFramebuffer(framebuffer);
+        gl.deleteTexture(candidate.texture);
         throw new Error("WebGL glyph atlas copy framebuffer incomplete");
       }
-      gl.bindTexture(gl.TEXTURE_2D, this.texture);
-      gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 0, 0, oldWidth, oldHeight);
+      gl.bindTexture(gl.TEXTURE_2D, candidate.texture);
+      gl.copyTexSubImage2D(
+        gl.TEXTURE_2D, 0, 0, 0, 0, 0,
+        this.columns * this.tileWidth,
+        this.rows * this.tileHeight,
+      );
+      if (gl.getError() !== gl.NO_ERROR) {
+        gl.bindFramebuffer(gl.READ_FRAMEBUFFER, null);
+        gl.deleteFramebuffer(framebuffer);
+        gl.deleteTexture(candidate.texture);
+        throw new Error("WebGL glyph atlas copy failed");
+      }
       gl.bindFramebuffer(gl.READ_FRAMEBUFFER, null);
       gl.deleteFramebuffer(framebuffer);
     }
-    gl.deleteTexture(oldTexture);
-    return true;
+    this.columns = candidate.columns;
+    this.rows = candidate.rows;
+    this.tileWidth = candidate.tileWidth;
+    this.tileHeight = candidate.tileHeight;
+    this.fontSize = candidate.fontSize;
+    this.baseline = this._baseline();
+    this.texture = candidate.texture;
+    if (oldTexture) gl.deleteTexture(oldTexture);
+    if (!candidate.preserve) this.nextSlot = 0;
   }
 
   uploadBitmap(firstSlot, slotCount, pixels, pixelOffset, bytesPerRow) {
     const gl = this.gl;
+    if (firstSlot % this.columns + slotCount > this.columns) {
+      throw new Error("glyph atlas bitmap upload crosses a row");
+    }
     const width = slotCount * this.tileWidth;
     const length = bytesPerRow * this.tileHeight;
     const source = pixels.subarray(pixelOffset, pixelOffset + length);
@@ -133,15 +157,12 @@ export class WebGlGlyphAtlas {
   }
 
   setCanvasRun(firstSlot, slotCount, spanCells, text, flags) {
-    if (this.format !== "rgba8unorm") throw new Error("canvas glyph runs require rgba8unorm atlas format");
     if (!Number.isInteger(firstSlot) || !Number.isInteger(slotCount) || !Number.isInteger(spanCells) ||
         firstSlot < 0 || slotCount <= 0 || spanCells <= 0 ||
-        (slotCount !== 1 && slotCount !== spanCells) || firstSlot + slotCount > this.capacity) {
+        slotCount !== spanCells || firstSlot + slotCount > this.capacity) {
       throw new Error("invalid glyph atlas run");
     }
-    if (slotCount === 1 && spanCells > 2) throw new Error("invalid glyph atlas run");
-    const cellWidth = this.tileWidth / 2;
-    const runWidth = spanCells * cellWidth;
+    const runWidth = spanCells * this.tileWidth;
     if (this.runCanvas.width !== runWidth || this.runCanvas.height !== this.tileHeight) {
       this.runCanvas.width = runWidth;
       this.runCanvas.height = this.tileHeight;
@@ -152,76 +173,37 @@ export class WebGlGlyphAtlas {
     this.runContext.clearRect(0, 0, runWidth, this.tileHeight);
     this.runContext.font = `${italic} ${weight} ${Math.max(1, this.fontSize - 0.5)}px ${this.fontFamily}`;
     this.runContext.fillText(text, 0, this.baseline);
-    if (slotCount === 1) {
-      this._uploadCanvas(firstSlot, this.runCanvas);
-    } else {
-      if (this.slotCanvas.width !== cellWidth || this.slotCanvas.height !== this.tileHeight) {
-        this.slotCanvas.width = cellWidth;
-        this.slotCanvas.height = this.tileHeight;
-        this.slotContext = configureRasterContext(this.slotCanvas);
-      }
-      for (let index = 0; index < slotCount; index += 1) {
-        this.slotContext.clearRect(0, 0, cellWidth, this.tileHeight);
-        this.slotContext.drawImage(
-          this.runCanvas,
-          index * cellWidth,
-          0,
-          cellWidth,
-          this.tileHeight,
-          0,
-          0,
-          cellWidth,
-          this.tileHeight,
-        );
-        this._uploadCanvas(firstSlot + index, this.slotCanvas);
-      }
+    for (let index = 0; index < slotCount; index += 1) {
+      const mask = extractCanvasAlpha(
+        this.runContext,
+        index * this.tileWidth,
+        0,
+        this.tileWidth,
+        this.tileHeight,
+        this.canvasMask,
+      );
+      this.canvasMask = mask.storage;
+      this._uploadMask(firstSlot + index, mask.pixels);
     }
     this.nextSlot = Math.max(this.nextSlot, firstSlot + slotCount);
     return firstSlot + slotCount;
   }
 
-  _uploadCanvas(slot, canvas) {
+  _uploadMask(slot, pixels) {
     const gl = this.gl;
     gl.bindTexture(gl.TEXTURE_2D, this.texture);
     gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
-    gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
     gl.texSubImage2D(
       gl.TEXTURE_2D,
       0,
       (slot % this.columns) * this.tileWidth,
       Math.floor(slot / this.columns) * this.tileHeight,
-      gl.RGBA,
+      this.tileWidth,
+      this.tileHeight,
+      gl.RED,
       gl.UNSIGNED_BYTE,
-      canvas,
+      pixels,
     );
-  }
-
-  reloadFont(fontFamily) {
-    if (typeof fontFamily !== "string" || fontFamily.trim() === "") throw new Error("invalid glyph font family");
-    this.fontFamily = fontFamily;
-    this.nextSlot = 0;
-  }
-
-  setPhysicalMetrics(cellWidth, cellHeight, fontSize) {
-    if (!Number.isInteger(cellWidth) || !Number.isInteger(cellHeight) || !Number.isInteger(fontSize) ||
-        cellWidth <= 0 || cellHeight <= 0 || fontSize <= 0) {
-      throw new Error("invalid physical cell metrics");
-    }
-    const tileWidth = cellWidth * 2;
-    const tileHeight = cellHeight;
-    if (tileWidth === this.tileWidth && tileHeight === this.tileHeight && fontSize === this.fontSize) return false;
-    const columns = this._columns(tileWidth, tileHeight);
-    const gl = this.gl;
-    gl.deleteTexture(this.texture);
-    this.tileWidth = tileWidth;
-    this.tileHeight = tileHeight;
-    this.columns = columns;
-    this.fontSize = fontSize;
-    this.baseline = this._baseline();
-    this.rows = Math.max(1, Math.ceil(Math.min(256, this.maxSlots) / this.columns));
-    this.texture = this._createTexture(this.columns * this.tileWidth, this.rows * this.tileHeight);
-    this.nextSlot = 0;
-    return true;
   }
 
   dispose() {

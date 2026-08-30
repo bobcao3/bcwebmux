@@ -3,27 +3,34 @@
 
 import {
   initialize as initializeResources,
+  ensureFrameCapacity as ensureFrameCapacityResources,
   rebuildCellBundle as rebuildCellBundleResources,
-  setPhysicalCellMetrics as setPhysicalCellMetricsResources,
   setGrainStrength as setGrainStrengthResources,
   resize as resizeResources,
-  reloadFont as reloadFontResources,
-  resetForCore as resetForCoreResources,
-  setTextRenderer as setTextRendererResources,
   readPixels as readPixelsResources,
   dispose as disposeResources,
 } from "./GpuTerminalResources.js";
+import { GlyphAtlas } from "./GlyphAtlas.js";
+import {
+  registerTerminal as registerTerminalGlyphAtlas,
+  resizeTerminalPartition as resizeTerminalPartitionGlyphAtlas,
+  releaseTerminal as releaseTerminalGlyphAtlas,
+  glyphPartition as glyphPartitionGlyphAtlas,
+  reconfigureGlyphAtlas as reconfigureGlyphAtlasGlyphAtlas,
+  setTextRenderer as setTextRendererGlyphAtlas,
+  selectTerminal as selectTerminalGlyphAtlas,
+} from "../GlyphAtlasRuntime.js";
 import {
   parseRendererSubmission,
   decodeCanvasRequestText,
   applyRendererSubmission,
 } from "../RendererSubmission.js";
 
-const UNIFORM_BUFFER_SIZE = 72;
+const UNIFORM_BUFFER_SIZE = 68;
 
 // JS drives WebGPU, but WASM owns the data-driven frame/cell/bitmap buffers shared across this boundary. CSS/DPR is converted once to integer raw-pixel font/cell metrics, which are then the single source of truth for both WASM rasterization and GPU uniforms.
 export class GpuTerminal {
-  static async create(canvas, pixelViewport, textRenderer) {
+  static async create(canvas, pixelViewport, textRenderer, glyphCacheMaxBytes) {
     if (!navigator.gpu) throw new Error("WebGPU is unavailable; use an HTTPS or loopback origin with WebGPU support");
     const adapter = await navigator.gpu.requestAdapter({ powerPreference: "high-performance" });
     if (!adapter) throw new Error("WebGPU adapter unavailable");
@@ -31,16 +38,25 @@ export class GpuTerminal {
     const device = await adapter.requestDevice({
       requiredFeatures: shaderF16 ? ["shader-f16"] : [],
     });
-    const terminal = new GpuTerminal(canvas, device, adapter, textRenderer, shaderF16);
-    terminal.resize(pixelViewport.width, pixelViewport.height);
-    return terminal;
+    let terminal = null;
+    try {
+      terminal = new GpuTerminal(canvas, device, adapter, textRenderer, shaderF16, glyphCacheMaxBytes);
+      terminal.resize(pixelViewport.width, pixelViewport.height);
+      return terminal;
+    } catch (error) {
+      if (terminal) terminal.dispose();
+      else device.destroy();
+      throw error;
+    }
   }
 
-  constructor(canvas, device, adapter, textRenderer, shaderF16) {
+  constructor(canvas, device, adapter, textRenderer, shaderF16, glyphCacheMaxBytes) {
     this.canvas = canvas;
     this.device = device;
+    this.glyphAtlasMaxDimension = device.limits.maxTextureDimension2D;
     this.textRenderer = textRenderer;
     this.shaderF16 = shaderF16;
+    this.glyphCacheMaxBytes = glyphCacheMaxBytes;
     this.adapterInfo = {
       vendor: adapter.info?.vendor || "",
       architecture: adapter.info?.architecture || "",
@@ -65,10 +81,12 @@ export class GpuTerminal {
     this.physicalCellHeight = 1;
     this.physicalFontSize = 1;
     this.grainStrength = 4;
-    this.maxGlyphs = 0;
     this.maxStyles = 0;
     this.styleSize = 0;
-    this.atlasRequiredSlots = 0;
+    this.glyphPartitions = null;
+    this.glyphSlotsUsed = 0;
+    this.activeTerminal = null;
+    this.atlas = null;
     this.background = 0x111111;
     this.foreground = 0xeeeeee;
     this.cursorX = 0xffff;
@@ -124,24 +142,83 @@ export class GpuTerminal {
     this.device.addEventListener("uncapturederror", event => { if (this.error === null) this.error = event.error.message; });
   }
 
-  initialize(cellSource, grain, grainSize, maxCellsValue, maxGlyphsValue, maxStylesValue, styleSize, atlasSlots, cellSize) { return initializeResources(this, cellSource, grain, grainSize, maxCellsValue, maxGlyphsValue, maxStylesValue, styleSize, atlasSlots, cellSize); }
+  initialize(cellSource, grain, grainSize, maxCells, maxStyles, styleSize, cellSize) { return initializeResources(this, cellSource, grain, grainSize, maxCells, maxStyles, styleSize, cellSize); }
+
+  createGlyphAtlas(geometry, metrics) {
+    return new GlyphAtlas(
+      this.device,
+      getComputedStyle(this.canvas.parentElement),
+      geometry,
+      metrics.width,
+      metrics.height,
+      metrics.fontSize,
+    );
+  }
+
+  glyphAtlasChanged() {
+    if (!this.initialized) return;
+    try {
+      this.rebuildCellBundle();
+    } catch (error) {
+      this.error = error.message;
+      throw error;
+    }
+  }
+
+  registerTerminal(terminal, visibleCells, preferredColumns) { return registerTerminalGlyphAtlas(this, terminal, visibleCells, preferredColumns); }
+
+  ensureFrameCapacity(cellCapacity) { return ensureFrameCapacityResources(this, cellCapacity); }
+
+  resizeTerminalPartition(terminal, visibleCells) { return resizeTerminalPartitionGlyphAtlas(this, terminal, visibleCells); }
+
+  releaseTerminal(terminal) { return releaseTerminalGlyphAtlas(this, terminal); }
+
+  glyphPartition(terminal) { return glyphPartitionGlyphAtlas(this, terminal); }
+
+  reconfigureGlyphAtlas(metrics, textRenderer, fontFamily, activeVisibleSlots) { return reconfigureGlyphAtlasGlyphAtlas(this, metrics, textRenderer, fontFamily, activeVisibleSlots); }
 
   rebuildCellBundle() { return rebuildCellBundleResources(this); }
 
   ensureFrameUploadCapacity(size) {
     if (size <= this.frameUploadCapacity) return;
-    this.frameUploadBuffer?.destroy();
     const capacity = Math.ceil(Math.max(256, this.frameUploadCapacity * 2, size) / 256) * 256;
-    this.frameUploadBuffer = this.device.createBuffer({
+    const replacementBuffer = this.device.createBuffer({
       size: capacity,
       usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
     });
+    let replacementData;
+    let replacementBytes;
+    try {
+      replacementData = new ArrayBuffer(capacity);
+      replacementBytes = new Uint8Array(replacementData);
+    } catch (error) {
+      replacementBuffer.destroy();
+      throw error;
+    }
+    this.frameUploadBuffer?.destroy();
+    this.frameUploadBuffer = replacementBuffer;
     this.frameUploadCapacity = capacity;
-    this.frameUploadData = new ArrayBuffer(capacity);
-    this.frameUploadBytes = new Uint8Array(this.frameUploadData);
+    this.frameUploadData = replacementData;
+    this.frameUploadBytes = replacementBytes;
   }
 
-  setPhysicalCellMetrics(width, height, fontSize) { return setPhysicalCellMetricsResources(this, width, height, fontSize); }
+  setPhysicalCellMetrics(width, height, fontSize, columns, activeVisibleSlots) {
+    if (![width, height, fontSize, columns].every(value => Number.isInteger(value) && value > 0)) {
+      throw new Error("physical cell metrics and columns must be positive integers");
+    }
+    if (
+      this.physicalCellWidth === width
+      && this.physicalCellHeight === height
+      && this.physicalFontSize === fontSize
+    ) return null;
+    return reconfigureGlyphAtlasGlyphAtlas(
+      this,
+      { width, height, fontSize, columns },
+      this.textRenderer,
+      this.atlas?.fontFamily,
+      activeVisibleSlots,
+    );
+  }
 
   setGrainStrength(value) { return setGrainStrengthResources(this, value); }
 
@@ -150,35 +227,54 @@ export class GpuTerminal {
   flushAtlasGrowthCopies() {
     const copies = this.atlas.takePendingTextureCopies();
     if (copies.length === 0) return;
-    const encoder = this.device.createCommandEncoder();
-    for (const copy of copies) {
-      encoder.copyTextureToTexture(
-        { texture: copy.source },
-        { texture: copy.destination },
-        [copy.width, copy.height, 1],
-      );
+    try {
+      const encoder = this.device.createCommandEncoder();
+      for (const copy of copies) {
+        encoder.copyTextureToTexture(
+          { texture: copy.source },
+          { texture: copy.destination },
+          [copy.width, copy.height, 1],
+        );
+      }
+      this.device.queue.submit([encoder.finish()]);
+    } catch (error) {
+      this.atlas.pendingTextureCopies.unshift(...copies);
+      throw error;
     }
-    this.device.queue.submit([encoder.finish()]);
     for (const copy of copies) copy.source.destroy();
   }
 
-  reloadFont(fontFamily) { return reloadFontResources(this, fontFamily); }
+  reloadFont(fontFamily) {
+    if (!this.initialized) throw new Error("GPU terminal is not initialized");
+    const preferredColumns = this.glyphPartitions.preferredColumns;
+    const plan = this.reconfigureGlyphAtlas(
+      {
+        width: this.physicalCellWidth,
+        height: this.physicalCellHeight,
+        fontSize: this.physicalFontSize,
+        columns: preferredColumns,
+      },
+      this.textRenderer,
+      fontFamily,
+    );
+    this.fontReloads += 1;
+    return plan;
+  }
 
-  resetForCore(fontFamily) { return resetForCoreResources(this, fontFamily); }
+  selectTerminal(terminal) { return selectTerminalGlyphAtlas(this, terminal); }
 
-  setTextRenderer(textRenderer) { return setTextRendererResources(this, textRenderer); }
+  setTextRenderer(textRenderer) { return setTextRendererGlyphAtlas(this, textRenderer); }
 
   get atlasColumns() {
     if (!this.initialized) throw new Error("GPU terminal is not initialized");
     return this.atlas.columns;
   }
 
-  submitWasm(memory, submissionPtr) {
-    const parsed = parseRendererSubmission(this, memory, submissionPtr);
+  submitWasm(terminal, memory, submissionPtr) {
+    const parsed = parseRendererSubmission(this, terminal, memory, submissionPtr);
+    this.glyphSlotsUsed = parsed.glyphSlotsUsed;
     const metadata = applyRendererSubmission(this, parsed);
-    const atlasGrew = this.atlas.ensureCapacity(parsed.atlasSlots);
-    if (atlasGrew) this.rebuildCellBundle();
-    if (atlasGrew && (parsed.bitmapUploadsCount > 0 || parsed.canvasRequestsCount > 0)) this.flushAtlasGrowthCopies();
+    this.flushAtlasGrowthCopies();
     for (let index = 0; index < parsed.bitmapUploadsCount; index += 1) {
       const offset = index * 16;
       const firstSlot = parsed.bitmapUploads.getUint32(offset, true);
@@ -214,7 +310,6 @@ export class GpuTerminal {
         flags,
       );
     }
-    this.atlasRequiredSlots = parsed.atlasSlots;
     if (parsed.frameCells !== this.drawnCellCount) {
       this.drawnCellCount = parsed.frameCells;
       this.indirectData[1] = parsed.frameCells;
@@ -245,7 +340,6 @@ export class GpuTerminal {
     this.uniformU32[14] = this.atlas.tileWidth;
     this.uniformU32[15] = this.atlas.tileHeight;
     this.uniformU32[16] = Math.floor(performance.now() / 500) % 2 === 0 ? 1 : 0;
-    this.uniformU32[17] = this.atlas.format === "rgba8unorm" ? 1 : 0;
     const indirectOffset = this.indirectDirty ? UNIFORM_BUFFER_SIZE : null;
     let stagingSize = UNIFORM_BUFFER_SIZE;
     if (indirectOffset !== null) stagingSize += 16;
@@ -412,11 +506,10 @@ export class GpuTerminal {
       rasterPasses: this.rasterPasses,
       cacheHits: this.cacheHits,
       cacheMisses: this.cacheMisses,
-      atlasGlyphs: this.atlas.nextSlot,
-      atlasFormat: this.atlas.format,
+      glyphSlotsUsed: this.glyphSlotsUsed,
       grainStrength: this.grainStrength,
       atlasCapacity: this.atlas.capacity,
-      atlasRequiredSlots: this.atlasRequiredSlots,
+      atlasRequiredSlots: this.glyphPartitions?.reservedSlots ?? 0,
       viewportWidth: this.viewportWidth,
       viewportHeight: this.viewportHeight,
       physicalCellWidth: this.physicalCellWidth,
