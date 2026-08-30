@@ -47,10 +47,14 @@ class Cdp {
 }
 
 const [serverPath, webRoot] = process.argv.slice(2);
-assert.ok(serverPath && webRoot, "usage: terminal-core-smoke.mjs SERVER WEB_ROOT");
+assert.ok(serverPath && webRoot, "usage: terminal-core-integration.mjs SERVER WEB_ROOT");
+const deviceScaleFactor = Number(process.env.DEVICE_SCALE_FACTOR ?? "1.25");
+assert.ok(Number.isFinite(deviceScaleFactor) && deviceScaleFactor > 0, "DEVICE_SCALE_FACTOR must be a positive number");
+const backend = process.env.RENDER_BACKEND ?? "webgpu";
+assert.ok(backend === "webgl2" || backend === "webgpu", "RENDER_BACKEND must be webgl2 or webgpu");
 const serverPort = await freePort();
 const debugPort = await freePort();
-const profile = await mkdtemp(path.join(os.tmpdir(), "bcwebmux-terminal-core-"));
+const profile = await mkdtemp(path.join(os.tmpdir(), "bcwebmux-terminal-core-integration-"));
 const server = spawn(serverPath, ["--web-root", webRoot, "--port", String(serverPort)], {
   stdio: ["ignore", "pipe", "pipe"],
 });
@@ -63,13 +67,13 @@ let browserCdp;
 
 try {
   await waitFor(async () => {
-    const response = await fetch(`http://127.0.0.1:${serverPort}/terminal-core-smoke.html`).catch(() => null);
+    const response = await fetch(`http://127.0.0.1:${serverPort}/terminal-core/index.html?backend=${backend}`).catch(() => null);
     return response?.ok;
   }, 10000, () => `server failed to start\n${serverLog}`);
 
   chromium = spawn(process.env.CHROMIUM || "chromium", [
     "--headless=new",
-    "--force-device-scale-factor=1.25",
+    `--force-device-scale-factor=${deviceScaleFactor}`,
     "--window-size=1024,720",
     "--no-sandbox",
     "--disable-dev-shm-usage",
@@ -80,7 +84,7 @@ try {
     "--disable-background-networking",
     `--remote-debugging-port=${debugPort}`,
     `--user-data-dir=${profile}`,
-    `http://127.0.0.1:${serverPort}/terminal-core-smoke.html`,
+    `http://127.0.0.1:${serverPort}/terminal-core/index.html?backend=${backend}`,
   ], { stdio: ["ignore", "ignore", "pipe"] });
   let chromiumLog = "";
   chromium.stderr.on("data", (data) => { chromiumLog += data; });
@@ -89,8 +93,8 @@ try {
     const response = await fetch(`http://127.0.0.1:${debugPort}/json/list`).catch(() => null);
     if (!response?.ok) return null;
     const targets = await response.json();
-    return targets.find((item) => item.type === "page" && item.url.includes("terminal-core-smoke.html"));
-  }, 15000, () => `Chromium failed to expose smoke page\n${chromiumLog}`);
+    return targets.find((item) => item.type === "page" && item.url.includes(`terminal-core/index.html?backend=${backend}`));
+  }, 15000, () => `Chromium failed to expose test page\n${chromiumLog}`);
 
   const version = await (await fetch(`http://127.0.0.1:${debugPort}/json/version`)).json();
   browserCdp = await Cdp.connect(version.webSocketDebuggerUrl);
@@ -106,26 +110,42 @@ try {
   await pageCdp.call("Runtime.enable");
   await pageCdp.call("Page.enable");
   const response = await pageCdp.call("Runtime.evaluate", {
-    expression: "(async () => { const end = Date.now() + 10000; while (!window.terminalCoreSmoke && Date.now() < end) await new Promise((resolve) => setTimeout(resolve, 50)); if (!window.terminalCoreSmoke) throw new Error(\"terminal core smoke did not initialize\"); return await window.terminalCoreSmoke; })()",
+    expression: "(async () => { const end = Date.now() + 10000; while (!window.terminalCoreTest && Date.now() < end) await new Promise((resolve) => setTimeout(resolve, 50)); if (!window.terminalCoreTest) throw new Error(\"terminal core integration did not initialize\"); return await window.terminalCoreTest; })()",
     awaitPromise: true,
     returnByValue: true,
   });
   if (response.exceptionDetails) {
     const screenshot = await pageCdp.call("Page.captureScreenshot", { format: "png" }).catch(() => null);
     if (screenshot) {
-      const pathName = path.join(os.tmpdir(), `terminal-core-smoke-${Date.now()}.png`);
+      const pathName = path.join(os.tmpdir(), `terminal-core-integration-${Date.now()}.png`);
       await writeFile(pathName, Buffer.from(screenshot.data, "base64"));
       serverLog += `\nscreenshot: ${pathName}`;
     }
-    throw new Error(`${response.exceptionDetails.exception?.description || "terminal core smoke failed"}\n${serverLog}`);
+    throw new Error(`${response.exceptionDetails.exception?.description || "terminal core integration failed"}\n${serverLog}`);
   }
   const result = response.result.value;
+  assert.equal(result.backend, backend);
+  assert.ok(Math.abs(result.devicePixelRatio - deviceScaleFactor) < 0.01);
+  assert.equal(result.atlas.tileWidth, result.physicalCellWidth);
+  assert.equal(result.atlas.tileHeight, result.physicalCellHeight);
+  assert.equal(result.atlas.textureBytes, result.atlas.capacity * result.physicalCellWidth * result.physicalCellHeight);
   assert.equal(result.coreCount, 2);
+  const coreA = result.partitions.coreA;
+  const coreB = result.partitions.coreB;
+  assert.ok(
+    coreA.base + coreA.capacity <= coreB.base ||
+    coreB.base + coreB.capacity <= coreA.base,
+  );
+  assert.equal(result.partitions.temporary.base, result.partitions.replacement.base);
+  assert.equal(result.atlas.requiredSlots, coreA.capacity + coreB.capacity);
+  assert.ok(result.atlas.capacity >= result.atlas.requiredSlots);
+  assert.ok(result.atlas.cacheHits > 0);
   assert.ok(result.coreSwitches >= 14);
   assert.ok(result.gpuFrames >= result.coreSwitches);
   assert.ok(result.coreBMemoryBeforeRender < 20 * 1024 * 1024, JSON.stringify(result));
   assert.ok(result.coreBMemoryAfterRender > result.coreBMemoryBeforeRender, JSON.stringify(result));
-  assert.ok(result.colorA[0] > result.colorA[1] * 2 && result.colorA[0] > result.colorA[2] * 2, JSON.stringify(result.colorA));
+  assert.equal(result.budgetRollback, true);
+  assert.ok(result.colorA[0] > result.colorA[1] * 2 && result.colorA[0] > result.colorA[2] * 2, JSON.stringify(result));
   assert.ok(result.colorB[1] > result.colorB[0] * 2 && result.colorB[2] > result.colorB[0] * 2, JSON.stringify(result.colorB));
   assert.ok(result.redPixels >= 4);
   assert.match(result.textA, /A-WROTE-WHILE-INACTIVE/);

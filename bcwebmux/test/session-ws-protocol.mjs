@@ -6,7 +6,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import net from "node:net";
-import { decompress } from "fzstd";
+import { Decompress, decompress } from "fzstd";
 import * as Protocol from "../web/protocol.js";
 const execFileAsync = promisify(execFile),
   {
@@ -26,14 +26,17 @@ const execFileAsync = promisify(execFile),
     encodeResizePayload,
   } = Protocol,
   INITIAL_CREDIT = 33554432,
-  ABI_TEXT = "bcwebmux-ghostty-f4f9991-snapshot-8m-continuation-1m",
+  ABI_TEXT = "bcwebmux-ghostty-f4f9991-snapshot-8m-continuation-1m-glyph-cell-partitions-pty-zstd-stream",
   ABI_DIGEST = new Uint8Array(createHash("sha256").update(ABI_TEXT).digest()),
-  ABI_HEX = "eae8ea715aaaef63151ca349876179795e14ffcdec2054d09d6314bd9274b45e",
+  ABI_HEX = "58a138c7a389cb11458eeaca32bb21aedfb06b8ed396b84d816f49cb73acf644",
   encoder = new TextEncoder(),
   decoder = new TextDecoder(),
   serverPath = process.argv[2];
-assert.ok(serverPath, "usage: node test/session-ws-smoke.mjs SERVER");
+assert.ok(serverPath, "usage: node test/session-ws-protocol.mjs SERVER");
 assert.equal(Buffer.from(ABI_DIGEST).toString("hex"), ABI_HEX);
+const OUTPUT_STREAM_PREAMBLE = encoder.encode(
+  "bcwebmux persistent PTY zstd stream preamble; discard before output\n",
+);
 const crcTable = new Uint32Array(256);
 for (let i = 0; i < 256; i += 1) {
   let value = i;
@@ -113,6 +116,7 @@ class RawClient {
               ? new Uint8Array(event.data)
               : new Uint8Array(event.data),
           frame = decodeFrame(bytes);
+        frame.frameLength = bytes.byteLength;
         assert.equal(
           frame.connectionSequence,
           this.serverSequence + 1n,
@@ -270,6 +274,54 @@ class RawClient {
     );
     return attachment;
   }
+  resetOutputDecoder(attachment) {
+    attachment.outputDecoder = new Decompress((chunk) => {
+      const target = attachment.outputDecodeTarget;
+      if (!target)
+        throw Error(`${this.name} output decoder callback outside operation`);
+      let offset = 0;
+      while (
+        offset < chunk.byteLength &&
+        attachment.outputPreambleOffset < OUTPUT_STREAM_PREAMBLE.byteLength
+      ) {
+        assert.equal(
+          chunk[offset],
+          OUTPUT_STREAM_PREAMBLE[attachment.outputPreambleOffset],
+          `${this.name} output stream preamble`,
+        );
+        offset += 1;
+        attachment.outputPreambleOffset += 1;
+      }
+      if (offset === chunk.byteLength) return;
+      const body = chunk.subarray(offset),
+        end = attachment.outputDecodeOffset + body.byteLength;
+      if (end > target.byteLength)
+        throw Error(`${this.name} output decoder overflow`);
+      target.set(body, attachment.outputDecodeOffset);
+      attachment.outputDecodeOffset = end;
+    });
+    attachment.outputDecodeTarget = null;
+    attachment.outputDecodeOffset = 0;
+    attachment.outputPreambleOffset = 0;
+  }
+  decodeOutput(attachment, body, rawLength) {
+    if (!attachment.outputDecoder) this.resetOutputDecoder(attachment);
+    if (attachment.outputDecodeTarget)
+      throw Error(`${this.name} output decoder operation already active`);
+    const target = (attachment.outputDecodeTarget = new Uint8Array(rawLength));
+    attachment.outputDecodeOffset = 0;
+    try {
+      attachment.outputDecoder.push(body, false);
+      assert.equal(
+        attachment.outputPreambleOffset,
+        OUTPUT_STREAM_PREAMBLE.byteLength,
+      );
+      assert.equal(attachment.outputDecodeOffset, rawLength);
+      return target;
+    } finally {
+      attachment.outputDecodeTarget = null;
+    }
+  }
   dispatch(frame) {
     if (
       frame.type === FrameType.WELCOME ||
@@ -305,6 +357,7 @@ class RawClient {
         attachment.eventSeq = 0n;
         attachment.outputOffset = 0n;
       }
+      this.resetOutputDecoder(attachment);
       return;
     }
     if (frame.type === FrameType.CHECKPOINT_BEGIN) {
@@ -376,9 +429,13 @@ class RawClient {
         event = { kind, seq: eventSeq, outputOffset };
       if (kind === 0) {
         assert.equal(frame.flags, COMPRESSED_FLAG);
-        raw = decompress(body);
+        raw = this.decodeOutput(attachment, body, rawLength);
         assert.equal(raw.byteLength, rawLength);
         assert.equal(crc32c(raw), crc);
+        attachment.outputRawBytes += raw.byteLength;
+        attachment.outputCompressedBytes += body.byteLength;
+        attachment.outputEventCount += 1;
+        attachment.outputWireBytes += frame.frameLength;
         attachment.outputParts.push(raw.slice());
         event.output = raw.slice();
         attachment.outputOffset += BigInt(raw.byteLength);
@@ -482,6 +539,11 @@ class RawClient {
       events: [],
       inputAcks: new Map(),
       checkpointChunks: 0,
+      outputRawBytes: 0,
+      outputCompressedBytes: 0,
+      outputEventCount: 0,
+      outputWireBytes: 0,
+      outputPreambleOffset: 0,
       barrierCredit,
       live: false,
       exited: false,
@@ -521,6 +583,10 @@ class RawClient {
       events: [],
       inputAcks: new Map(),
       checkpointChunks: 0,
+      outputRawBytes: 0,
+      outputCompressedBytes: 0,
+      outputEventCount: 0,
+      outputWireBytes: 0,
       barrierCredit: 0,
     };
     this.attachments.set(attachment.id.toString(), attachment);
@@ -713,7 +779,7 @@ async function createSession(base, key) {
     },
     body: JSON.stringify({
       profile: "shell",
-      name: "WS smoke",
+      name: "WS protocol",
       geometry: { cols: 80, rows: 24 },
     }),
   });

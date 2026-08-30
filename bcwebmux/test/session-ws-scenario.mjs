@@ -3,6 +3,11 @@
 
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { fileURLToPath } from "node:url";
+
+function shellQuote(value) {
+  return `'${value.replaceAll("'", "'\\''")}'`;
+}
 
 export async function runSessionWebSocketScenario(serverPath, deps) {
   const {
@@ -32,7 +37,7 @@ export async function runSessionWebSocketScenario(serverPath, deps) {
     assert.equal(malformedError.errorCode, 1);
     assert.equal(malformedError.errorFatal, true);
     await malformed.close();
-    const createdResponse = await createSession(base, "ws-smoke-create");
+    const createdResponse = await createSession(base, "ws-protocol-create");
     assert.equal(createdResponse.status, 201);
     session = await createdResponse.json();
     assert.equal(session.state, "running");
@@ -106,6 +111,22 @@ export async function runSessionWebSocketScenario(serverPath, deps) {
     await observer.waitOutput(observerAttachment, "CURRENT-END");
     assert.ok(sameBytes(a2.outputSince(a2Attachment, aOutputStart), observer.outputSince(observerAttachment, observerOutputStart)), "observer output diverged");
 
+    const compressionRawStart = a2Attachment.outputRawBytes;
+    const compressionCompressedStart = a2Attachment.outputCompressedBytes;
+    const compressionWireStart = a2Attachment.outputWireBytes;
+    const compressionEventStart = a2Attachment.outputEventCount;
+    const sessionSocketPath = fileURLToPath(new URL("../src/SessionSocket.zig", import.meta.url));
+    assert.equal(await a2.input(a2Attachment, `for i in 1 2 3 4 5 6; do cat ${shellQuote(sessionSocketPath)}; done; printf 'PTY-COMP'\"RESSION-END\\n\"\n`), 0);
+    await a2.waitOutput(a2Attachment, "PTY-COMPRESSION-END");
+    await a2.waitQuiet(a2Attachment);
+    const compressionRawDelta = a2Attachment.outputRawBytes - compressionRawStart;
+    const compressionCompressedDelta = a2Attachment.outputCompressedBytes - compressionCompressedStart;
+    const compressionWireDelta = a2Attachment.outputWireBytes - compressionWireStart;
+    const compressionEventDelta = a2Attachment.outputEventCount - compressionEventStart;
+    const compressionBodyRatio = compressionRawDelta / compressionCompressedDelta;
+    const compressionRatio = compressionRawDelta / compressionWireDelta;
+    assert.ok(compressionRawDelta > 4096 && compressionWireDelta > 0 && compressionRatio >= 8, `PTY compression regression: raw=${compressionRawDelta}, compressed=${compressionCompressedDelta}, events=${compressionEventDelta}, bodyRatio=${compressionBodyRatio}, fullWireRatio=${compressionRatio}`);
+
     const resizeBefore = a2Attachment.eventSeq;
     const canonical = await a2.resize(a2Attachment, 100, 33);
     assert.equal(canonical.epoch, latestLease);
@@ -150,7 +171,7 @@ export async function runSessionWebSocketScenario(serverPath, deps) {
     assert.equal(await a2.input(a2Attachment, "sleep 1000\n"), 0);
     assert.equal(await a2.input(a2Attachment, new Uint8Array(64 * 1024).fill(0x78)), 0);
     const terminateResponse = await fetch(`${base}/api/sessions/${session.id}/terminate`, {
-      method: "POST", headers: mutationHeaders(base, "ws-smoke-terminate"),
+      method: "POST", headers: mutationHeaders(base, "ws-protocol-terminate"),
     });
     assert.equal(terminateResponse.status, 202);
     assert.equal((await terminateResponse.json()).generation, session.generation);
@@ -169,14 +190,14 @@ export async function runSessionWebSocketScenario(serverPath, deps) {
     await Promise.all([b.detach(bAttachment), a2.detach(a2Attachment), observer.detach(observerAttachment), freshReplay.detach(freshReplayAttachment), slow.detach(slowAttachment), finalClient.detach(finalAttachment)]);
     await waitSession(base, session.id, value => value.attachments === 0 && value.state === "exited", "all websocket attachments detached");
     const deleted = await fetch(`${base}/api/sessions/${session.id}`, {
-      method: "DELETE", headers: mutationHeaders(base, "ws-smoke-delete"),
+      method: "DELETE", headers: mutationHeaders(base, "ws-protocol-delete"),
     });
     assert.equal(deleted.status, 204);
     assert.equal((await fetch(`${base}/api/sessions/${session.id}`)).status, 404);
   } finally {
     if (session && server.exitCode === null) {
       await fetch(`${base}/api/sessions/${session.id}/terminate`, {
-        method: "POST", headers: mutationHeaders(base, "ws-smoke-cleanup"),
+        method: "POST", headers: mutationHeaders(base, "ws-protocol-cleanup"),
       }).catch(() => {});
       await waitSession(base, session.id, value => value.state === "exited", "cleanup exit").catch(() => {});
     }

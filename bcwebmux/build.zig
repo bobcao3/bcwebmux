@@ -99,8 +99,12 @@ pub fn build(b: *std.Build) void {
         "fonts/NotoEmoji-Regular.woff2",
     );
     _ = web_assets.addCopyFile(wasm.getEmittedBin(), "terminal.wasm");
-    _ = web_assets.addCopyFile(snapshot_csi_file, "test/terminal-core-csi.snapshot");
-    _ = web_assets.addCopyFile(snapshot_utf8_file, "test/terminal-core-utf8.snapshot");
+
+    const terminal_core_test_assets = b.addWriteFiles();
+    _ = terminal_core_test_assets.addCopyDirectory(web_assets.getDirectory(), "", .{});
+    _ = terminal_core_test_assets.addCopyDirectory(b.path("test/terminal-core"), "terminal-core", .{});
+    _ = terminal_core_test_assets.addCopyFile(snapshot_csi_file, "terminal-core/fixtures/terminal-core-csi.snapshot");
+    _ = terminal_core_test_assets.addCopyFile(snapshot_utf8_file, "terminal-core/fixtures/terminal-core-utf8.snapshot");
 
     const tar = b.addSystemCommand(&.{
         "tar",
@@ -179,31 +183,43 @@ pub fn build(b: *std.Build) void {
         b.getInstallPath(.bin, "bcwebmux-server"),
         b.getInstallPath(.prefix, "web"),
     });
-    const terminal_core_smoke_cmd = b.addSystemCommand(&.{ "node", "test/terminal-core-smoke.mjs" });
-    terminal_core_smoke_cmd.step.dependOn(b.getInstallStep());
-    terminal_core_smoke_cmd.addArgs(&.{
+    const terminal_core_integration_cmd = b.addSystemCommand(&.{ "node", "test/terminal-core-integration.mjs" });
+    terminal_core_integration_cmd.step.dependOn(b.getInstallStep());
+    terminal_core_integration_cmd.addArg(b.getInstallPath(.bin, "bcwebmux-server"));
+    terminal_core_integration_cmd.addDirectoryArg(terminal_core_test_assets.getDirectory());
+    const terminal_core_integration_dpr4_webgpu_cmd = b.addSystemCommand(&.{ "node", "test/terminal-core-integration.mjs" });
+    terminal_core_integration_dpr4_webgpu_cmd.step.dependOn(b.getInstallStep());
+    terminal_core_integration_dpr4_webgpu_cmd.step.dependOn(&terminal_core_integration_cmd.step);
+    terminal_core_integration_dpr4_webgpu_cmd.addArg(b.getInstallPath(.bin, "bcwebmux-server"));
+    terminal_core_integration_dpr4_webgpu_cmd.addDirectoryArg(terminal_core_test_assets.getDirectory());
+    terminal_core_integration_dpr4_webgpu_cmd.setEnvironmentVariable("DEVICE_SCALE_FACTOR", "4");
+    terminal_core_integration_dpr4_webgpu_cmd.setEnvironmentVariable("RENDER_BACKEND", "webgpu");
+    const terminal_core_integration_dpr4_webgl_cmd = b.addSystemCommand(&.{ "node", "test/terminal-core-integration.mjs" });
+    terminal_core_integration_dpr4_webgl_cmd.step.dependOn(b.getInstallStep());
+    terminal_core_integration_dpr4_webgl_cmd.step.dependOn(&terminal_core_integration_dpr4_webgpu_cmd.step);
+    terminal_core_integration_dpr4_webgl_cmd.addArg(b.getInstallPath(.bin, "bcwebmux-server"));
+    terminal_core_integration_dpr4_webgl_cmd.addDirectoryArg(terminal_core_test_assets.getDirectory());
+    terminal_core_integration_dpr4_webgl_cmd.setEnvironmentVariable("DEVICE_SCALE_FACTOR", "4");
+    terminal_core_integration_dpr4_webgl_cmd.setEnvironmentVariable("RENDER_BACKEND", "webgl2");
+    const session_api_integration_cmd = b.addSystemCommand(&.{ "node", "test/session-api-integration.mjs" });
+    session_api_integration_cmd.step.dependOn(b.getInstallStep());
+    session_api_integration_cmd.addArgs(&.{
         b.getInstallPath(.bin, "bcwebmux-server"),
-        b.getInstallPath(.prefix, "web"),
     });
-    const session_api_smoke_cmd = b.addSystemCommand(&.{ "node", "test/session-api-smoke.mjs" });
-    session_api_smoke_cmd.step.dependOn(b.getInstallStep());
-    session_api_smoke_cmd.addArgs(&.{
+    const session_ws_protocol_cmd = b.addSystemCommand(&.{ "node", "test/session-ws-protocol.mjs" });
+    session_ws_protocol_cmd.step.dependOn(b.getInstallStep());
+    session_ws_protocol_cmd.addArgs(&.{
         b.getInstallPath(.bin, "bcwebmux-server"),
     });
-    const session_ws_smoke_cmd = b.addSystemCommand(&.{ "node", "test/session-ws-smoke.mjs" });
-    session_ws_smoke_cmd.step.dependOn(b.getInstallStep());
-    session_ws_smoke_cmd.addArgs(&.{
-        b.getInstallPath(.bin, "bcwebmux-server"),
-    });
-    const session_browser_smoke_cmd = b.addSystemCommand(&.{ "node", "test/session-browser-smoke.mjs" });
-    session_browser_smoke_cmd.step.dependOn(b.getInstallStep());
-    session_browser_smoke_cmd.addArgs(&.{
+    const session_browser_resume_cmd = b.addSystemCommand(&.{ "node", "test/session-browser-resume.mjs" });
+    session_browser_resume_cmd.step.dependOn(b.getInstallStep());
+    session_browser_resume_cmd.addArgs(&.{
         b.getInstallPath(.bin, "bcwebmux-server"),
         b.getInstallPath(.prefix, "web"),
     });
     const session_controller_contract_cmd = b.addSystemCommand(&.{ "node", "test/session-controller-contract.mjs" });
     session_controller_contract_cmd.step.dependOn(b.getInstallStep());
-    session_controller_contract_cmd.step.dependOn(&session_browser_smoke_cmd.step);
+    session_controller_contract_cmd.step.dependOn(&session_browser_resume_cmd.step);
     const session_checkpoint_contract_cmd = b.addSystemCommand(&.{ "node", "test/session-checkpoint-contract.mjs" });
     session_checkpoint_contract_cmd.step.dependOn(b.getInstallStep());
     session_checkpoint_contract_cmd.step.dependOn(&session_controller_contract_cmd.step);
@@ -226,15 +242,16 @@ pub fn build(b: *std.Build) void {
         b.getInstallPath(.prefix, "web"),
     });
     e2e_cmd.step.dependOn(&mouse_selection_cmd.step);
-    terminal_core_smoke_cmd.step.dependOn(&e2e_webgl_cmd.step);
-    session_browser_smoke_cmd.step.dependOn(&e2e_cmd.step);
-    session_browser_smoke_cmd.step.dependOn(&terminal_core_smoke_cmd.step);
+    terminal_core_integration_cmd.step.dependOn(&e2e_webgl_cmd.step);
+    session_browser_resume_cmd.step.dependOn(&e2e_cmd.step);
+    session_browser_resume_cmd.step.dependOn(&terminal_core_integration_cmd.step);
     session_ui_e2e_cmd.step.dependOn(&wasm_size_contract_cmd.step);
     const e2e_step = b.step("e2e", "Run the physical-GPU browser-to-PTY end-to-end test");
     e2e_step.dependOn(&e2e_cmd.step);
     e2e_step.dependOn(&e2e_webgl_cmd.step);
-    e2e_step.dependOn(&terminal_core_smoke_cmd.step);
-    e2e_step.dependOn(&session_browser_smoke_cmd.step);
+    e2e_step.dependOn(&terminal_core_integration_cmd.step);
+    e2e_step.dependOn(&terminal_core_integration_dpr4_webgl_cmd.step);
+    e2e_step.dependOn(&session_browser_resume_cmd.step);
     e2e_step.dependOn(&session_controller_contract_cmd.step);
     e2e_step.dependOn(&session_checkpoint_contract_cmd.step);
     e2e_step.dependOn(&wasm_font_contract_cmd.step);
@@ -282,17 +299,23 @@ pub fn build(b: *std.Build) void {
     });
     const run_session_registry_tests = b.addRunArtifact(session_registry_tests);
     const protocol_contract_cmd = b.addSystemCommand(&.{ "node", "test/protocol-contract.mjs" });
+    const glyph_cache_layout_cmd = b.addSystemCommand(&.{ "node", "test/glyph-cache-layout.mjs" });
+    const utf_probe_cmd = b.addSystemCommand(&.{ "node", "test/utf-probe.mjs" });
+    utf_probe_cmd.step.dependOn(b.getInstallStep());
     const test_step = b.step("test", "Run unit and browser end-to-end tests");
     test_step.dependOn(&run_protocol_tests.step);
     test_step.dependOn(&run_vfs_tests.step);
     test_step.dependOn(&run_session_tests.step);
     test_step.dependOn(&run_session_registry_tests.step);
     test_step.dependOn(&protocol_contract_cmd.step);
+    test_step.dependOn(&glyph_cache_layout_cmd.step);
+    test_step.dependOn(&utf_probe_cmd.step);
     test_step.dependOn(&e2e_cmd.step);
-    test_step.dependOn(&terminal_core_smoke_cmd.step);
-    test_step.dependOn(&session_api_smoke_cmd.step);
-    test_step.dependOn(&session_ws_smoke_cmd.step);
-    test_step.dependOn(&session_browser_smoke_cmd.step);
+    test_step.dependOn(&terminal_core_integration_cmd.step);
+    test_step.dependOn(&terminal_core_integration_dpr4_webgl_cmd.step);
+    test_step.dependOn(&session_api_integration_cmd.step);
+    test_step.dependOn(&session_ws_protocol_cmd.step);
+    test_step.dependOn(&session_browser_resume_cmd.step);
     test_step.dependOn(&session_controller_contract_cmd.step);
     test_step.dependOn(&session_checkpoint_contract_cmd.step);
     test_step.dependOn(&wasm_font_contract_cmd.step);

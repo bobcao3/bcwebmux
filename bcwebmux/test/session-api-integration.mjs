@@ -6,7 +6,7 @@ import { spawn } from "node:child_process";
 import net from "node:net";
 
 const serverPath = process.argv[2];
-if (!serverPath) throw new Error("usage: node test/session-api-smoke.mjs SERVER");
+if (!serverPath) throw new Error("usage: node test/session-api-integration.mjs SERVER");
 
 const port = await freePort();
 const base = `http://127.0.0.1:${port}`;
@@ -49,6 +49,11 @@ try {
     geometry: { cols: 1, rows: 1 },
   });
   assert.equal(invalidGeometry.status, 422);
+  const invalidCellProduct = await createSession("bad-cell-product", {
+    profile: "shell",
+    geometry: { cols: 500, rows: 200 },
+  });
+  assert.equal(invalidCellProduct.status, 422);
   const invalidProfile = await createSession("bad-profile", { profile: "arbitrary-command" });
   assert.equal(invalidProfile.status, 422);
 
@@ -160,7 +165,7 @@ try {
   if (server.exitCode === null) server.kill("SIGKILL");
 }
 
-await naturalExitSmoke();
+await verifyNaturalExit();
 
 function mutationHeaders(key, json = false) {
   const headers = {
@@ -183,7 +188,7 @@ function createSession(key, body, origin = base) {
   });
 }
 
-async function naturalExitSmoke() {
+async function verifyNaturalExit() {
   const port = await freePort();
   const localBase = `http://127.0.0.1:${port}`;
   const secondServer = spawn(serverPath, [

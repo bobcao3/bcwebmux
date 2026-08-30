@@ -69,14 +69,40 @@ function selectedText(core) {
 }
 
 async function run() {
-  const root = document.querySelector("#terminal-core-smoke");
-  const terminal = new Terminal({ wasmUrl: "/terminal.wasm" });
+  const requestedBackend = new URLSearchParams(window.location.search).get("backend");
+  const root = document.querySelector("#terminal-core-test");
+  const terminal = new Terminal({
+    wasmUrl: "/terminal.wasm",
+    renderBackend: requestedBackend === "webgl2" ? "webgl2" : "webgpu",
+  });
   await terminal.open(root);
   const coreA = terminal.core;
   coreA.write("\x1b[2J\x1b[H\x1b[48;2;220;40;40m  \x1b[0m CORE-A\r\n");
   for (let index = 0; index < 400; index += 1) coreA.write(`A-history-${index}\r\n`);
   coreA.write("\x1b[2J\x1b[H\x1b[48;2;220;40;40m  \x1b[0m CORE-A-ACTIVE");
   const imageA = await pixels(terminal);
+  const renderer = terminal._renderer;
+  terminal._ensureFrameCapacity(0xffff);
+  if (renderer.maxCells < 0xffff || renderer.maxStyles !== 0x10000) {
+    throw new Error("maximum frame/style resource sizing mismatch");
+  }
+  const partitionA = renderer.glyphPartitions.get(coreA);
+  const initialVisibleCapacity = coreA.cols * coreA.rows;
+  if (!partitionA || partitionA.slotCapacity !== initialVisibleCapacity) {
+    throw new Error(`core A glyph partition capacity mismatch: ${JSON.stringify(partitionA)}`);
+  }
+  const atlasTextureBeforeBudgetFailure = renderer.atlas.texture;
+  const glyphCacheMaxBytesBefore = terminal.options.glyphCacheMaxBytes;
+  let budgetError = null;
+  try {
+    terminal.setGlyphCacheMaxBytes(1);
+  } catch (error) {
+    budgetError = error;
+  }
+  const budgetRollback = budgetError?.code === "ERR_GLYPH_ATLAS_CAPACITY" &&
+    renderer.atlas.texture === atlasTextureBeforeBudgetFailure &&
+    terminal.options.glyphCacheMaxBytes === glyphCacheMaxBytesBefore;
+  if (!budgetRollback) throw new Error("glyph cache budget failure was not transactional");
   const surface = root.querySelector('[data-terminal-role="surface"]');
   const scrollbar = root.querySelector('[data-terminal-role="scrollbar"]');
   if (!surface || !scrollbar) throw new Error("semantic viewport elements were not found");
@@ -102,6 +128,9 @@ async function run() {
   await nextFrame();
   await nextFrame();
   if (coreA.rows >= initialRows) throw new Error("shrinking root height did not reduce rows");
+  if (renderer.glyphPartitions.get(coreA).slotCapacity !== initialVisibleCapacity) {
+    throw new Error("viewport shrink reduced glyph cache high-water capacity");
+  }
   assertActive("active resize");
   await scrollKey("Home");
   coreA.write("\r\nA-WROTE-AT-TOP");
@@ -148,6 +177,14 @@ async function run() {
   coreB.write("\x1b[2J\x1b[H\x1b[48;2;20;190;210m  \x1b[0m CORE-B-ACTIVE");
   terminal.attachCore(coreB);
   const imageB = await pixels(terminal);
+  const partitionB = renderer.glyphPartitions.get(coreB);
+  if (!partitionB || partitionA.baseSlot + partitionA.slotCapacity > partitionB.baseSlot &&
+      partitionB.baseSlot + partitionB.slotCapacity > partitionA.baseSlot) {
+    throw new Error("core glyph partitions overlap");
+  }
+  if (renderer.glyphPartitions.reservedSlots !== partitionA.slotCapacity + partitionB.slotCapacity) {
+    throw new Error("shared atlas required slot count mismatch");
+  }
   const coreBMemoryAfterRender = coreB.wasm.memory.buffer.byteLength;
   const colorB = averageCell(imageB, terminal, 0, 0);
 
@@ -171,11 +208,14 @@ async function run() {
   await nextFrame();
 
   const fontReloads = terminal.state.fontReloads;
+  const atlasTextureBeforeSwitches = renderer.atlas.texture;
   for (let index = 0; index < 12; index += 1) {
     terminal.attachCore(index % 2 === 0 ? coreA : coreB);
   }
   terminal.attachCore(coreA);
   await nextFrame();
+  if (renderer.atlas.texture !== atlasTextureBeforeSwitches) throw new Error("core switches replaced the atlas texture");
+  if (terminal.state.cacheHits <= 0) throw new Error("core switches did not hit the shared cache");
   if (terminal.state.fontReloads !== fontReloads) throw new Error("core switches reloaded the font");
   const textA = selectedText(coreA);
   if (!textA.includes("A-SUSTAINED-11-7") || textA.includes("CORE-B-ACTIVE")) {
@@ -204,6 +244,9 @@ async function run() {
 
   let disposeReplies = 0;
   const temporary = await terminal.createCore();
+  const temporaryPartition = renderer.glyphPartitions.get(temporary);
+  const temporaryAtlasTexture = renderer.atlas.texture;
+  const temporaryAtlasCapacity = renderer.atlas.capacity;
   temporary.onReply(() => {
     disposeReplies += 1;
     temporary.dispose();
@@ -212,8 +255,22 @@ async function run() {
   if (disposeReplies !== 1) throw new Error(`temporary reply count mismatch: ${disposeReplies}`);
   if (!temporary.disposed) throw new Error("temporary core was not disposed");
   if (terminal.coreCount !== 2) throw new Error(`temporary core count mismatch: ${terminal.coreCount}`);
+  if (renderer.glyphPartitions.size !== 2) throw new Error("temporary glyph partition was not released");
+  if (renderer.atlas.texture !== temporaryAtlasTexture ||
+      renderer.atlas.capacity !== temporaryAtlasCapacity) {
+    throw new Error("temporary core disposal shrank or replaced the shared atlas");
+  }
+  const replacement = await terminal.createCore();
+  const replacementPartition = renderer.glyphPartitions.get(replacement);
+  if (!replacementPartition || replacementPartition.baseSlot !== temporaryPartition.baseSlot) {
+    throw new Error("replacement core did not reuse the disposed glyph partition");
+  }
+  replacement.dispose();
+  if (terminal.coreCount !== 2 || renderer.glyphPartitions.size !== 2) {
+    throw new Error("replacement core disposal left an unexpected core count");
+  }
 
-  const response = await fetch("/test/terminal-core-csi.snapshot");
+  const response = await fetch("/terminal-core/fixtures/terminal-core-csi.snapshot");
   if (!response.ok) throw new Error(`snapshot fixture fetch failed: ${response.status}`);
   terminal.restoreSnapshot(await response.arrayBuffer(), coreB);
   coreB.write("mSNAPSHOT-CONTINUATION\x1b[0m");
@@ -232,7 +289,7 @@ async function run() {
     throw new Error(`primary snapshot state missing: ${JSON.stringify(primaryText)}`);
   }
 
-  const utf8Response = await fetch("/test/terminal-core-utf8.snapshot");
+  const utf8Response = await fetch("/terminal-core/fixtures/terminal-core-utf8.snapshot");
   if (!utf8Response.ok) throw new Error(`UTF-8 snapshot fixture fetch failed: ${utf8Response.status}`);
   terminal.restoreSnapshot(await utf8Response.arrayBuffer(), coreA);
   coreA.write(new Uint8Array([0x98, 0x84]));
@@ -249,13 +306,36 @@ async function run() {
   if (terminal.state.gpuError !== null) throw new Error(`GPU error: ${terminal.state.gpuError}`);
 
   const result = {
+    backend: terminal.state.backend,
+    physicalCellWidth: terminal.state.physicalCellWidth,
+    physicalCellHeight: terminal.state.physicalCellHeight,
     coreCount: terminal.coreCount,
     coreSwitches: terminal.state.coreSwitches,
     gpuFrames: terminal.state.gpuFrames,
     colorA,
     colorB,
+    budgetRollback,
     coreBMemoryBeforeRender,
     coreBMemoryAfterRender,
+    partitions: {
+      coreA: { base: partitionA.baseSlot, capacity: partitionA.slotCapacity },
+      coreB: { base: partitionB.baseSlot, capacity: partitionB.slotCapacity },
+      temporary: { base: temporaryPartition.baseSlot, capacity: temporaryPartition.slotCapacity },
+      replacement: { base: replacementPartition.baseSlot, capacity: replacementPartition.slotCapacity },
+    },
+    atlas: {
+      requiredSlots: renderer.glyphPartitions.reservedSlots,
+      capacity: renderer.atlas.capacity,
+      cacheHits: terminal.state.cacheHits,
+      tileWidth: renderer.atlas.tileWidth,
+      tileHeight: renderer.atlas.tileHeight,
+      textureBytes: renderer.atlas.capacity * renderer.atlas.tileWidth * renderer.atlas.tileHeight,
+    },
+    viewport: {
+      width: terminal.state.viewportWidth,
+      height: terminal.state.viewportHeight,
+    },
+    devicePixelRatio: window.devicePixelRatio,
     hiddenGeometry,
     redPixels,
     textA,
@@ -267,8 +347,8 @@ async function run() {
     hostData,
     disposeReplies,
   };
-  window.terminalCoreSmokeTerminal = terminal;
+  window.terminalCoreTestTerminal = terminal;
   return result;
 }
 
-window.terminalCoreSmoke = run();
+window.terminalCoreTest = run();

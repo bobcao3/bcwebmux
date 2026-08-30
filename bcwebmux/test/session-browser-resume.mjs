@@ -44,7 +44,7 @@ class Cdp {
 }
 
 const [serverPath, webRoot] = process.argv.slice(2);
-assert.ok(serverPath && webRoot, "usage: session-browser-smoke.mjs SERVER WEB_ROOT");
+assert.ok(serverPath && webRoot, "usage: session-browser-resume.mjs SERVER WEB_ROOT");
 const serverPort = await freePort();
 const debugPort = await freePort();
 const base = `http://127.0.0.1:${serverPort}`;
