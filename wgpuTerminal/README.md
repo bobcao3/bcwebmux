@@ -2,6 +2,41 @@
 
 Embeddable GPU terminal frontend using WebGPU with a WebGL2 fallback, used by bcwebmux. The package owns terminal emulation, rendering, keyboard/IME input, pointer handling, scrollback, and selection. It does not create a PTY or choose a transport.
 
+## Build and consume
+
+The package is currently a private npm workspace, not a published npm install.
+To build and pack it from this checkout (Zig 0.16.0 and Node/npm required):
+
+```sh
+# From the repository root
+npm install
+npm pack --workspace=@bcwebmux/wgpu-terminal
+```
+
+The `prepack` script builds only the `terminal-wasm` target through
+`bcwebmux/build.zig` and copies WASM/fonts into `wgpuTerminal/dist/`; it does not
+build the Go server. Install the resulting tarball in your application, or use
+the workspace directly after running `node wgpuTerminal/scripts/prepare-wasm.mjs`.
+
+Your application supplies:
+
+- A DOM container, the package CSS, and a browser with WebGPU or WebGL2 support.
+- A served URL for the package's `terminal.wasm`, passed as `wasmUrl`, and the
+  four packaged TTF fonts under `fonts/` beside it (or explicit `wasmFontUrls`).
+  Configure CSS font faces to match. Ship matching JavaScript and WASM assets.
+- Your own backend/transport if you want an interactive shell: feed backend
+  output to `terminal.write(bytes)`, forward `terminal.onData` to the backend,
+  and forward `terminal.onResize` to its PTY resize operation.
+
+You do not need bcwebmux's session UI, wire protocol, Go server, or native PTY
+worker to embed the terminal. You still need `common/terminal` and the current
+build files **when building its WASM from source**; consumers of the packed
+assets do not need Zig or the repository at runtime.
+
+For a WASM-only build, run `zig build terminal-wasm` from `bcwebmux/`. Assets are emitted under `bcwebmux/zig-out/wgpu-terminal/`; the preparation script copies them into `wgpuTerminal/dist/`. These paths are relative to the repository root.
+
+## Integration
+
 ```js
 import { Terminal } from "@bcwebmux/wgpu-terminal";
 import "@bcwebmux/wgpu-terminal/css/terminal.css";
@@ -20,9 +55,9 @@ const terminal = new Terminal({
   grainStrength: 4,
 });
 
-terminal.onData(bytes => backend.send(bytes));
+terminal.onData((bytes) => backend.send(bytes));
 terminal.onResize(({ cols, rows }) => backend.resize(cols, rows));
-backend.onData(bytes => terminal.write(bytes));
+backend.onData((bytes) => terminal.write(bytes));
 
 await terminal.open(document.querySelector("#terminal-container"));
 terminal.focus();
@@ -46,6 +81,14 @@ only when that style is first rendered. The package exports these files under
 array in the same order. CSS `@font-face` declarations should point at the
 same URLs so the HTTP cache serves both browser and WASM users.
 
+## WASM diagnostics
+
+Ship matching JavaScript and WASM assets. The freestanding module imports
+`host.terminal_log(level, ptr, len)`; `TerminalCore` supplies it and forwards
+messages to the browser console (error=0, warn=1, info=2, debug=3). Custom WASM
+hosts must implement this import and consume its borrowed UTF-8 bytes during
+the callback. Native formatting is allocation-free and bounded to 2,048 bytes.
+
 ## More than one terminal
 
 Create a core for each terminal state and attach the one that should be visible. Cores can keep receiving backend output while another is on screen, and snapshots can be restored before attachment.
@@ -61,4 +104,11 @@ terminal.restoreSnapshot(snapshot, other);
 
 For server-authoritative session transports, set `canonicalGeometry: true`, send only `TerminalCore.onData`, apply accepted server dimensions with `resizeCanonical`, use `setReplayMode` during historical tail application, and never forward `onReply`.
 
-Defaults and types are in `index.d.ts`; low-level sources are in `common/terminal`.
+## Development
+
+- [src/](src/): public API, WASM hosting, browser input, selection, scrolling, and GPU rendering.
+- [index.d.ts](index.d.ts): public API types.
+- [../common/terminal/](../common/terminal/): low-level WASM engine; see the [glyph-cache design](../docs/glyph_cache_design.md).
+- [../bcwebmux/test/](../bcwebmux/test/): browser and contract tests shared with the application. See the [application README](../bcwebmux/README.md#develop) for test commands.
+
+Rebuild WASM assets after changing the low-level engine. See the [repository overview](../README.md) for component boundaries.

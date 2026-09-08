@@ -65,6 +65,9 @@ export class SessionController {
   #cores = new Map()
   #activeId = null; #started = false; #disposed = false; #startPromise = null
   #refreshing = false; #refreshQueued = false; #refreshTimer = 0
+  #refreshError = null
+  #waiters = new Set()
+  #lifetime = new AbortController()
   #switchTail = Promise.resolve(); #pendingSwitches = new Map()
   #subscriptions = []
   #events = { change: emitter(), active: emitter(), title: emitter(), bell: emitter(), notification: emitter(), error: emitter(), status: emitter() }
@@ -79,17 +82,21 @@ export class SessionController {
     this.#coreLimit = Number.isFinite(coreLimit) ? Math.max(1, Math.floor(coreLimit)) : DEFAULT_CORE_LIMIT
     if (!this.#terminal || !this.#api || !this.#transport) throw new TypeError("SessionController requires terminal, api, and transport")
     this.#subscriptions.push(this.#transport.onStatus?.((label, state) => {
+      this.#syncPointers()
       this.#events.status.emit(label, state)
       this.#events.change.emit({ type: "status", label, state, controller: this })
-      this.#syncPointers()
     }))
     this.#subscriptions.push(this.#transport.onError?.(error => this.#reportError(error, true)))
+    this.#subscriptions.push(this.#transport.onAttachmentChanged?.(() => {
+      this.#syncPointers()
+      this.#events.change.emit({ type: "attachment", controller: this })
+    }))
     this.#subscriptions.push(this.#transport.onSessionChanged?.(revision => {
       if (!this.#started || !this.#serverInfo) return
       const incomingRevision = Number(revision)
       if (Number.isFinite(incomingRevision)) this.#listRevision = Math.max(this.#listRevision, incomingRevision)
       if (this.#refreshing) this.#refreshQueued = true
-      else this.refresh().catch(error => this.#reportError(error, true))
+      else this.refresh().catch(error => this.#reportRefreshError(error))
     }))
   }
 
@@ -111,6 +118,7 @@ export class SessionController {
       coreCount: this.#cores.size,
       started: this.#started,
       storageDenied: this.#storageDenied,
+      refreshError: this.#refreshError,
       transport: this.#transport.state,
     }
   }
@@ -121,20 +129,27 @@ export class SessionController {
   start() {
     if (this.#disposed) return Promise.reject(new Error("session controller is disposed")); if (this.#startPromise) return this.#startPromise
     this.#started = true
-    this.#startPromise = this.#start().catch(error => {
-      this.#reportError(error, true)
-      throw error
+    const operation = this.#start()
+    this.#startPromise = operation
+    // This is a caller-owned operation, not a second error-emitting path. A
+    // failed API/attachment operation may be explicitly retried by its caller.
+    operation.catch(() => {
+      if (this.#startPromise !== operation) return
+      this.#startPromise = null
+      this.#started = false
     })
-    return this.#startPromise
+    return operation
   }
 
   initialize() { return this.start() }
 
   async #start() {
     this.#transport.activate?.(this.#terminal)
-    const [info, list] = await Promise.all([this.#api.info(), this.#api.list(), this.#transport.connect()])
+    const [info, list] = await Promise.all([this.#api.info(), this.#api.list(), this.#transport.connect({ signal: this.#lifetime.signal })])
+    if (this.#disposed) throw new Error("session controller is disposed")
     this.#serverInfo = info ?? {}
     if (info?.protocol !== "bcw.sessions") throw new Error("unsupported session protocol")
+    this.#transport.configureServer?.(info)
     this.#setStorageScope(this.#serverInfo.serverInstance ?? this.#serverInfo.server_instance ?? "server", this.#serverInfo.principal ?? "principal")
     this.#replaceList(list)
     let selected = this.#readLastSession()
@@ -149,7 +164,7 @@ export class SessionController {
     if (!this.#refreshTimer) this.#refreshTimer = setInterval(() => {
       if (globalThis.document?.hidden === true) return
       if (!this.sessions.some(session => !this.isAttached(session.id))) return
-      this.refresh().catch(error => this.#reportError(error, false))
+      this.refresh().catch(error => this.#reportRefreshError(error))
     }, 3000)
     return this.activeSession
   }
@@ -161,14 +176,19 @@ export class SessionController {
     try {
       const requestedAtRevision = this.#listRevision
       const list = await this.#api.list()
+      if (this.#disposed) throw new Error("session controller is disposed")
       this.#replaceList(list, requestedAtRevision)
       this.#syncPointers()
+      if (this.#refreshError) {
+        this.#refreshError = null
+        this.#events.change.emit({ type: "refreshed", controller: this })
+      }
       return this.sessions
     } finally {
       this.#refreshing = false
       if (this.#refreshQueued) {
         this.#refreshQueued = false
-        queueMicrotask(() => this.refresh().catch(error => this.#reportError(error, false)))
+        queueMicrotask(() => this.refresh().catch(error => this.#reportRefreshError(error)))
       }
     }
   }
@@ -208,7 +228,6 @@ export class SessionController {
       this.#syncEntry(entry, record)
       if (entry !== old) this.#closeEntry(entry)
       else this.#detach(entry)
-      this.#reportError(error, false)
       throw error
     }
     const oldRecord = old?.attachment ?? null
@@ -243,33 +262,64 @@ export class SessionController {
       if (entry !== old) this.#closeEntry(entry)
       else this.#detach(entry)
       if (rendererHandoff) this.#terminal.resumeFocus({ focus: true })
-      this.#reportError(error, false)
       throw error
     }
   }
 
   async #attach(entry, metadata, preserveCore) {
-    const record = await this.#transport.attach(metadata, entry.core, {
-      eventSeq: entry.eventSeq,
-      outputOffset: entry.outputOffset,
-      preserveCore,
-    })
-    this.#syncEntry(entry, record); return record
+    const cancellation = new AbortController()
+    entry.attachCancellation = cancellation
+    try {
+      const record = await this.#transport.attach(metadata, entry.core, {
+        eventSeq: entry.eventSeq,
+        outputOffset: entry.outputOffset,
+        preserveCore,
+        signal: cancellation.signal,
+      })
+      if (this.#disposed || this.#cores.get(entry.id) !== entry || cancellation.signal.aborted) {
+        this.#transport.detach(record)
+        throw cancellation.signal.reason ?? new Error("session attachment operation canceled")
+      }
+      this.#syncEntry(entry, record)
+      return record
+    } finally {
+      if (entry.attachCancellation === cancellation) entry.attachCancellation = null
+    }
   }
 
   async #waitForLive(key, entry) {
     const attachment = entry.attachment
-    const started = Date.now()
-    while (Date.now() - started < 3000) {
-      if (this.#activeId !== key) throw new Error("session switch was superseded")
-      if (this.#activeId === key && entry.attachment === attachment && attachment.active && attachment.live) return this.activeSession
-      if (entry.attachment === attachment && !attachment.active) {
-        entry.attachment = null
-        return this.switchTo(key)
+    return new Promise((resolve, reject) => {
+      let timer
+      const subscriptions = []
+      let settled = false
+      const finish = (error, value) => {
+        if (settled) return
+        settled = true
+        clearTimeout(timer)
+        for (const subscription of subscriptions) subscription?.dispose?.()
+        this.#waiters.delete(cancel)
+        if (error) reject(error)
+        else resolve(value)
       }
-      await new Promise(resolve => setTimeout(resolve, 50))
-    }
-    throw new Error("session attachment is reconnecting")
+      const cancel = () => finish(new Error("session controller is disposed"))
+      const check = () => {
+        if (settled) return
+        if (this.#disposed) return cancel()
+        if (this.#activeId !== key) return finish(new Error("session switch was superseded"))
+        if (entry.attachment !== attachment || !attachment.active) {
+          if (entry.attachment === attachment) entry.attachment = null
+          finish(null, this.switchTo(key))
+        } else if (attachment.live) finish(null, this.activeSession)
+      }
+      subscriptions.push(this.onChange(check))
+      subscriptions.push(this.#transport.onError?.(error => finish(error)))
+      this.#waiters.add(cancel)
+      // This deadline settles only this user's switch operation. The transport
+      // keeps recovering and the committed viewport remains available.
+      timer = setTimeout(() => finish(new Error("session switch readiness deadline exceeded")), 30000)
+      check()
+    })
   }
 
   async #waitForDetach(id, previousCount) {
@@ -305,7 +355,12 @@ export class SessionController {
     if (!entry.core || entry.core.disposed) {
       const hostCore = this.#terminal.core
       const inUse = [...this.#cores.values()].some(item => item !== entry && item.core === hostCore)
-      entry.core = !inUse && hostCore ? hostCore : await this.#terminal.createCore()
+      const core = !inUse && hostCore ? hostCore : await this.#terminal.createCore()
+      if (this.#disposed || this.#cores.get(metadata.id) !== entry) {
+        if (core !== hostCore) core?.dispose?.()
+        throw new Error("session core creation was canceled")
+      }
+      entry.core = core
       this.#bindCore(entry, metadata)
     }
     this.#touch(entry)
@@ -365,6 +420,8 @@ export class SessionController {
 
   #detach(entry) {
     if (!entry) return
+    entry.attachCancellation?.abort(new Error("session attachment operation canceled"))
+    entry.attachCancellation = null
     this.#syncEntry(entry, entry.attachment)
     if (entry.attachment) {
       try { this.#transport.detach(entry.attachment) } catch (error) { this.#reportError(error, true) }
@@ -436,6 +493,12 @@ export class SessionController {
 
   #reportError(error, global) { const value = error instanceof Error ? error : new Error(String(error ?? "session error")); this.#events.error.emit(value, global, this); this.#events.change.emit({ type: "error", error: value, global, controller: this }) }
 
+  #reportRefreshError(error) {
+    if (this.#disposed) return
+    this.#refreshError = error?.message || String(error)
+    this.#events.change.emit({ type: "refresh-error", error, controller: this })
+  }
+
   async create(options = {}) {
     const state = this.#terminal.state ?? {}
     const geometry = options.geometry ?? {
@@ -449,6 +512,7 @@ export class SessionController {
       name: options.name == null ? "" : String(options.name),
       geometry,
     })
+    if (this.#disposed) throw new Error("session controller is disposed")
     const metadata = this.#putMetadata(created)
     this.#events.change.emit({ type: "created", session: metadata, controller: this })
     if (options.activate !== false) await this.switchTo(metadata.id)
@@ -507,6 +571,8 @@ export class SessionController {
   dispose() {
     if (this.#disposed) return
     this.#disposed = true
+    this.#lifetime.abort(new Error("session controller is disposed"))
+    for (const cancel of [...this.#waiters]) cancel()
     clearInterval(this.#refreshTimer)
     this.#refreshTimer = 0
     for (const entry of [...this.#cores.values()]) this.#closeEntry(entry)

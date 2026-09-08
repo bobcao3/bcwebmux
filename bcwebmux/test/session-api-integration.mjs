@@ -3,7 +3,8 @@
 
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import net from "node:net";
+import { freePort, terminateProcess, waitFor as poll } from "./test-support.mjs";
+const waitFor = (check, timeout, message) => poll(check, timeout, message, 25);
 
 const serverPath = process.argv[2];
 if (!serverPath) throw new Error("usage: node test/session-api-integration.mjs SERVER");
@@ -30,6 +31,7 @@ try {
   assertSecurity(infoResponse);
   const info = await infoResponse.json();
   assert.equal(info.protocol, "bcw.sessions");
+  assert.equal(info.capabilities.attachmentResume, true);
   assert.equal(info.principal, "local");
   assert.equal(info.persistence, "memory");
   assert.equal(info.liveSessionLifetime, "daemon");
@@ -157,12 +159,7 @@ try {
   });
   assert.equal(oversized.status, 413);
 } finally {
-  server.kill("SIGTERM");
-  await Promise.race([
-    new Promise(resolve => server.once("exit", resolve)),
-    new Promise(resolve => setTimeout(resolve, 1000)),
-  ]);
-  if (server.exitCode === null) server.kill("SIGKILL");
+  await terminateProcess(server);
 }
 
 await verifyNaturalExit();
@@ -240,12 +237,7 @@ async function verifyNaturalExit() {
     });
     assert.equal(deleteResponse.status, 204);
   } finally {
-    secondServer.kill("SIGTERM");
-    await Promise.race([
-      new Promise(resolve => secondServer.once("exit", resolve)),
-      new Promise(resolve => setTimeout(resolve, 1000)),
-    ]);
-    if (secondServer.exitCode === null) secondServer.kill("SIGKILL");
+    await terminateProcess(secondServer);
   }
 }
 
@@ -274,24 +266,4 @@ function assertSecurity(response, json = true) {
   assert.match(response.headers.get("content-security-policy"), /default-src 'none'/);
   assert.equal(response.headers.get("access-control-allow-origin"), null);
   if (json) assert.match(response.headers.get("content-type"), /^application\/json/);
-}
-
-async function waitFor(predicate, timeoutMs, message) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (await predicate()) return;
-    await new Promise(resolve => setTimeout(resolve, 25));
-  }
-  throw new Error(message());
-}
-
-function freePort() {
-  return new Promise((resolve, reject) => {
-    const server = net.createServer();
-    server.once("error", reject);
-    server.listen(0, "127.0.0.1", () => {
-      const { port } = server.address();
-      server.close(error => error ? reject(error) : resolve(port));
-    });
-  });
 }

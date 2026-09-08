@@ -92,7 +92,7 @@ class InputDiagnostics {
     this.enabled = Boolean(enabled);
     this.entries = [];
     this.started = performance.now();
-    this._disposers = [];
+    this._listenerController = new AbortController();
     if (!this.enabled) return;
 
     this.panel?.removeAttribute("hidden");
@@ -105,15 +105,12 @@ class InputDiagnostics {
         this.event("event", event);
         queueMicrotask(() => this.event("post", event));
       };
-      input.addEventListener(type, listener, { capture: true });
-      this._disposers.push(() => input.removeEventListener(type, listener, { capture: true }));
+      input.addEventListener(type, listener, { capture: true, signal: this._listenerController.signal });
     }
     const clear = () => this.clear();
     const copy = () => this.copy();
-    this.clearButton?.addEventListener("click", clear);
-    this.copyButton?.addEventListener("click", copy);
-    this._disposers.push(() => this.clearButton?.removeEventListener("click", clear));
-    this._disposers.push(() => this.copyButton?.removeEventListener("click", copy));
+    this.clearButton?.addEventListener("click", clear, { signal: this._listenerController.signal });
+    this.copyButton?.addEventListener("click", copy, { signal: this._listenerController.signal });
     this._logEnvironment();
   }
 
@@ -180,7 +177,7 @@ class InputDiagnostics {
   }
 
   dispose() {
-    for (const dispose of this._disposers.splice(0)) dispose();
+    this._listenerController.abort();
   }
 }
 
@@ -207,7 +204,7 @@ export class InputController {
     this.manualCommit = false;
     this.heldHardwareModifiers = 0;
     this.suppressedShortcutKeyUps = new Set();
-    this._listeners = [];
+    this._listenerController = new AbortController();
     this.diagnostics = new InputDiagnostics(
       this.input,
       options.debugElements,
@@ -218,15 +215,21 @@ export class InputController {
   }
 
   _listen(target, type, listener, options) {
-    target.addEventListener(type, listener, options);
-    this._listeners.push(() => target.removeEventListener(type, listener, options));
+    target.addEventListener(type, listener, { ...options, signal: this._listenerController.signal });
   }
 
   _installListeners() {
+    const isMac = /Mac/i.test(navigator.userAgentData?.platform || navigator.platform || "");
     this._listen(this.input, "keydown", async (event) => {
       if (!this.keyDown(event)) return;
       const code = eventCode(event);
-      if (code === "KeyC" && ((event.ctrlKey && event.shiftKey) || event.metaKey)) {
+      // Let macOS dispatch native clipboard events to the handlers below.
+      if (isMac && event.metaKey && !event.ctrlKey && !event.altKey &&
+          (code === "KeyC" || code === "KeyV")) {
+        this.suppressedShortcutKeyUps.add(code);
+        return;
+      }
+      if (!isMac && code === "KeyC" && ((event.ctrlKey && event.shiftKey) || event.metaKey)) {
         const selectedText = this.getSelectedText();
         if (selectedText !== null) {
           event.preventDefault();
@@ -240,7 +243,7 @@ export class InputController {
           return;
         }
       }
-      if (event.ctrlKey && event.shiftKey && event.code === "KeyV") {
+      if (!isMac && event.ctrlKey && event.shiftKey && event.code === "KeyV") {
         event.preventDefault();
         this.suppressedShortcutKeyUps.add(code);
         this.sendText(await navigator.clipboard.readText(), true);
@@ -263,6 +266,7 @@ export class InputController {
     this._listen(this.input, "compositionend", (event) => this.compositionEnd(event));
     this._listen(this.input, "input", (event) => this.inputEvent(event));
     this._listen(this.input, "paste", (event) => {
+      if (event.defaultPrevented || !event.clipboardData) return;
       event.preventDefault();
       this.sendText(event.clipboardData.getData("text/plain"), true);
       this.clear();
@@ -523,7 +527,7 @@ export class InputController {
 
   dispose() {
     clearTimeout(this.commitTimer);
-    for (const dispose of this._listeners.splice(0)) dispose();
+    this._listenerController.abort();
     this.diagnostics.dispose();
   }
 }

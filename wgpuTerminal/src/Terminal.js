@@ -90,8 +90,7 @@ export class Terminal {
     this._textView = null;
     this._scheduler = null;
     this._coarsePointer = null;
-    this._coarsePointerListener = null;
-    this._windowListeners = [];
+    this._windowListenerController = null;
     this._fontChangeGeneration = 0;
     this._pendingFont = null;
     this._activeTextRenderer = this.options.renderer;
@@ -493,9 +492,10 @@ export class Terminal {
   }
 
   _installWindowListeners() {
+    this._windowListenerController?.abort();
+    this._windowListenerController = new AbortController();
     const listen = (target, type, listener) => {
-      target.addEventListener(type, listener);
-      this._windowListeners.push(() => target.removeEventListener(type, listener));
+      target.addEventListener(type, listener, { signal: this._windowListenerController.signal });
     };
     listen(window, "focus", () => this._focusController.windowFocus());
     listen(window, "blur", () => {
@@ -508,14 +508,13 @@ export class Terminal {
         this._scheduler.resume();
       }
     });
-    this._coarsePointerListener = () => {
+    listen(this._coarsePointer, "change", () => {
       if (!this._coarsePointer.matches && this._selectionMode) {
         this.exitSelectionMode({ restoreFocus: false });
       }
       this._inputController.resetGeometry();
       if (this._inputController.isComposing) this._inputController.sync();
-    };
-    this._coarsePointer.addEventListener("change", this._coarsePointerListener);
+    });
   }
 
   _sampleMetric(name, value) {
@@ -918,9 +917,8 @@ export class Terminal {
   }
 
   _disposeRuntime() {
-    this._coarsePointer?.removeEventListener("change", this._coarsePointerListener);
-    this._coarsePointerListener = null;
-    for (const dispose of this._windowListeners.splice(0)) dispose();
+    this._windowListenerController?.abort();
+    this._windowListenerController = null;
     cancelAnimationFrame(this._selectionFallbackFrame);
     this._selectionFallbackFrame = null;
     this._pointerController?.dispose();

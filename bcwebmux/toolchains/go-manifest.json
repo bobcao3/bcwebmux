@@ -1,0 +1,29 @@
+{
+  "version": "go1.27.1",
+  "archives": {
+    "linux-amd64": {
+      "filename": "go1.27.1.linux-amd64.tar.gz",
+      "sha256": "63d339f0da5ab53635a56f2490a7984dfe12dfcff22ad749f63edaf590168445"
+    },
+    "linux-arm64": {
+      "filename": "go1.27.1.linux-arm64.tar.gz",
+      "sha256": "3450b45a3f9ee8568792736a5c5e70a1f2e9b36c35a8f74958c03e51d7d92bec"
+    },
+    "darwin-amd64": {
+      "filename": "go1.27.1.darwin-amd64.tar.gz",
+      "sha256": "8f8f52c6649542cf027bbc9b9c68d1ec042f9f34808a40413f0b8b3f66f3caa4"
+    },
+    "darwin-arm64": {
+      "filename": "go1.27.1.darwin-arm64.tar.gz",
+      "sha256": "ee215d57e0ec269c60cc9ceca68e6bda321ba9ee5afe24f4b0988703c2d87d12"
+    },
+    "freebsd-amd64": {
+      "filename": "go1.27.1.freebsd-amd64.tar.gz",
+      "sha256": "9761194512938a640948ae5ba273df73a441f4229ea21a1503937e55c69bf107"
+    },
+    "freebsd-arm64": {
+      "filename": "go1.27.1.freebsd-arm64.tar.gz",
+      "sha256": "8b155a723a584fb29125c6b36fc9cb0d5489a3f7fb76670508a2c51af718074d"
+    }
+  }
+}

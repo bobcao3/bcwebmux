@@ -2,12 +2,16 @@
 // Stubs the GPU host imports and captures glyph bitmaps + cell metadata.
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
+import { resolve } from "node:path";
+import { pathToFileURL } from "node:url";
+
+const webRoot = process.argv[2] ? pathToFileURL(resolve(process.argv[2]) + "/") : new URL("../zig-out/web/", import.meta.url);
 
 const fontBytes = await Promise.all([
-  readFile(new URL("../zig-out/web/fonts/JetBrainsMonoNerdFontMono-Regular.ttf", import.meta.url)),
-  readFile(new URL("../zig-out/web/fonts/JetBrainsMonoNerdFontMono-Bold.ttf", import.meta.url)),
-  readFile(new URL("../zig-out/web/fonts/JetBrainsMonoNerdFontMono-Italic.ttf", import.meta.url)),
-  readFile(new URL("../zig-out/web/fonts/JetBrainsMonoNerdFontMono-BoldItalic.ttf", import.meta.url)),
+  readFile(new URL("fonts/JetBrainsMonoNerdFontMono-Regular.ttf", webRoot)),
+  readFile(new URL("fonts/JetBrainsMonoNerdFontMono-Bold.ttf", webRoot)),
+  readFile(new URL("fonts/JetBrainsMonoNerdFontMono-Italic.ttf", webRoot)),
+  readFile(new URL("fonts/JetBrainsMonoNerdFontMono-BoldItalic.ttf", webRoot)),
 ]);
 function font(style) {
   if (!Number.isSafeInteger(style) || style < 0 || style >= fontBytes.length) {
@@ -16,9 +20,10 @@ function font(style) {
   return fontBytes[style];
 }
 
-const wasmBytes = await readFile(new URL("../zig-out/web/terminal.wasm", import.meta.url));
+const wasmBytes = await readFile(new URL("terminal.wasm", webRoot));
 const { instance } = await WebAssembly.instantiate(wasmBytes, {
   host: {
+    terminal_log() {},
     pty_write(ptr, len) { return 1; },
     set_title() {},
     ring_bell() {},

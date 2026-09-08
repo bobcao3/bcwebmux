@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Cheng Cao
 
+import { renderFontFamily } from "../../wgpuTerminal/src/TerminalOptions.js";
+export { renderFontFamily };
+
 const STORAGE_KEY = "bcwebmux.settings.v1";
 const DEFAULT_PROFILE = "github-dark-high-contrast";
 const COLOR_FIELDS = ["background", "foreground", "surface", "border", "accent", "muted", "success", "danger"];
@@ -59,14 +62,6 @@ function migrateFontFamilies(families) {
     ? uiMonospaceIndex + 1
     : symbolsIndex >= 0 ? symbolsIndex : families.length - 1;
   return [...families.slice(0, insertionIndex), "Noto Emoji", ...families.slice(insertionIndex)];
-}
-
-export function renderFontFamily(families) {
-  return families.map(family => {
-    const generic = family.toLowerCase();
-    if (generic === "monospace" || generic === "ui-monospace") return generic;
-    return `"${family.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
-  }).join(", ");
 }
 
 const DEFAULT_SETTINGS = Object.freeze({

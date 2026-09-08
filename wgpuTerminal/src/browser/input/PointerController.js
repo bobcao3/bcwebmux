@@ -36,13 +36,12 @@ export class PointerController {
     this.suppressedMousePointerUps = new Set();
     this.touchMoveThreshold = 8;
     this.touchLongPressThreshold = 400;
-    this._listeners = [];
+    this._listenerController = new AbortController();
     this._installListeners();
   }
 
   _listen(type, listener, options) {
-    this.surface.addEventListener(type, listener, options);
-    this._listeners.push(() => this.surface.removeEventListener(type, listener, options));
+    this.surface.addEventListener(type, listener, { ...options, signal: this._listenerController.signal });
   }
 
   resetGestures() {
@@ -362,7 +361,7 @@ export class PointerController {
   }
 
   dispose() {
-    for (const dispose of this._listeners.splice(0)) dispose();
+    this._listenerController.abort();
     this.resetGestures();
   }
 }

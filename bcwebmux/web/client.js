@@ -45,6 +45,12 @@ const notificationPromptDismissalKey = "bcwebmux.notification-prompt-dismissed";
 const coarsePointer = window.matchMedia("(hover: none) and (pointer: coarse)");
 const clientErrorDetailLimit = 8;
 const clientErrorCharacterLimit = 2048;
+const startupRetryFloorMs = 500;
+const startupRetryCeilingMs = 10000;
+// A fatal outcome may also reject its caller's readiness promise. The UI is its
+// single reporting owner; object identity, not message/timing heuristics, fences
+// that same outcome without hiding distinct errors.
+const reportedClientErrors = new WeakSet();
 
 function errorValueMessage(value) {
   if (typeof value === "string") return value.trim();
@@ -69,8 +75,11 @@ function formatClientError(error, fallback) {
 }
 
 function showClientError(error, fallback = "client error") {
+  if (error && (typeof error === "object" || typeof error === "function")) {
+    if (reportedClientErrors.has(error)) return;
+    reportedClientErrors.add(error);
+  }
   const message = formatClientError(error, fallback);
-  setConnectionStatus(false, message);
   clientErrorMessage.textContent = message;
   clientError.hidden = false;
   console.error("client error", error);
@@ -96,6 +105,8 @@ let softkeysVisibilityOverride = null;
 let softkeysVisible = false;
 let pendingLinkUri = null;
 let appReady = false;
+let startupRetryAt = null;
+let startupError = null;
 let lastTelemetryLine = null;
 let lastTelemetryDescription = null;
 let lastGpuError = null;
@@ -103,17 +114,26 @@ let lastGpuError = null;
 async function openInitialSession() {
   await terminal.open(terminalElement);
   if (query.has("gpu-test")) return openGpuTestSession();
-  await sessionController.start();
+  let retryMs = startupRetryFloorMs;
+  for (;;) {
+    try {
+      await sessionController.start();
+      startupRetryAt = null;
+      startupError = null;
+      break;
+    } catch (error) {
+      startupError = error;
+      startupRetryAt = performance.now() + retryMs;
+      console.warn("session startup failed; retrying", { retryMs, error });
+      renderConnectionStatus();
+      await new Promise(resolve => setTimeout(resolve, retryMs));
+      retryMs = Math.min(startupRetryCeilingMs, retryMs * 2);
+      startupRetryAt = null;
+    }
+  }
   activeAttachment = sessionController.activeAttachment;
   drawer.setStorageScope(sessionController.storageScope);
   drawer.render();
-  if (activeAttachment?.metadata?.state === "running") {
-    for (let elapsed = 0; elapsed < 3000 && !activeAttachment.controller; elapsed += 10) {
-      await new Promise((resolve) => setTimeout(resolve, 10));
-      activeAttachment = sessionController.activeAttachment;
-    }
-    if (!activeAttachment.controller) throw new Error("session controller timeout");
-  }
 }
 
 async function openGpuTestSession() {
@@ -121,6 +141,7 @@ async function openGpuTestSession() {
   const [info, sessionList] = await Promise.all([sessionApi.info(), sessionApi.list()]);
   await connectPromise;
   if (info?.protocol !== "bcw.sessions") throw new Error("unsupported session protocol");
+  transport.configureServer(info);
   let selected = sessionList.sessions.find((session) => session.state === "running");
   if (!selected) {
     const state = terminal.state;
@@ -140,18 +161,54 @@ async function openGpuTestSession() {
   }
   activeAttachment = await transport.attach(selected, terminal.core);
   transport.setActive(activeAttachment);
-  if (selected.state === "running") {
-    for (let elapsed = 0; elapsed < 3000 && !activeAttachment.controller; elapsed += 10) {
-      await new Promise((resolve) => setTimeout(resolve, 10));
-    }
-    if (!activeAttachment.controller) throw new Error("session controller timeout");
-  }
 }
 
-function setConnectionStatus(connected, label) {
-  status.classList.toggle("connected", connected);
+function renderConnectionStatus() {
+  const state = transport.state;
+  if (!appReady && startupRetryAt != null) {
+    const retryMs = Math.max(0, startupRetryAt - performance.now());
+    const label = `Retrying · ${retryMs < 1000 ? "<1s" : `${Math.ceil(retryMs / 1000)}s`}`;
+    return setConnectionStatus("recovering", label, `${label} · ${errorValueMessage(startupError) || "session startup failed"}`);
+  }
+  const retryMs = state.retryAt == null ? null : Math.max(0, state.retryAt - performance.now());
+  const retry = retryMs == null ? "" : ` · ${retryMs < 1000 ? "<1s" : `${Math.ceil(retryMs / 1000)}s`}`;
+  const labels = {
+    idle: "Offline",
+    connecting: "Connecting",
+    negotiating: "Negotiating",
+    checking: "Checking connection",
+    suspect: "Heartbeat overdue",
+    "hedging-connect": "Opening backup path",
+    "hedging-negotiate": "Checking backup path",
+    roaming: "Switching network path",
+    retiring: "Connection lost",
+    backoff: `Retrying${retry}`,
+    "resource-wait": "Waiting for socket close",
+    failed: "Connection failed",
+    disposed: "Disconnected",
+  };
+  const recovering = ["checking", "suspect", "hedging-connect", "hedging-negotiate", "roaming"].includes(state.status);
+  const detail = [
+    labels[state.status] ?? state.status,
+    `generation ${state.generation}`,
+    `${state.unreleasedSockets} socket${state.unreleasedSockets === 1 ? "" : "s"}`,
+    state.lastOutcome?.kind ? `last: ${state.lastOutcome.kind}` : null,
+  ].filter(Boolean).join(" · ");
+  if (!state.connected) return setConnectionStatus(state.status === "failed" ? "error" : "offline", labels[state.status] ?? state.status, detail);
+  if (!appReady) return setConnectionStatus("recovering", "Initializing", detail);
+  if (!activeAttachment) return setConnectionStatus("offline", "No active session", detail);
+  if (!activeAttachment.live) return setConnectionStatus("recovering", activeAttachment.state || "Restoring session", detail);
+  if (activeAttachment.metadata?.state === "running" && !activeAttachment.controller) {
+    return setConnectionStatus("recovering", "Waiting for control", detail);
+  }
+  setConnectionStatus(recovering ? "recovering" : "online", labels[state.status] ?? "Connected", detail);
+}
+
+function setConnectionStatus(state, label, detail = label) {
+  status.dataset.state = state;
+  status.textContent = label;
   status.setAttribute("aria-label", label);
-  status.setAttribute("title", label);
+  status.setAttribute("title", detail);
 }
 
 function updateTerminalIdentity(metadata, terminalTitle = metadata?.title) {
@@ -393,15 +450,17 @@ const drawer = new SessionDrawer({
 drawer.init();
 if (query.has("gpu-test")) drawer.close();
 sessionController.onChange(() => {
-  activeAttachment = sessionController.activeAttachment;
+  activeAttachment = query.has("gpu-test") ? transport.activeAttachment : sessionController.activeAttachment;
   updateTerminalIdentity(sessionController.activeSession);
+  renderConnectionStatus();
   const count = sessionController.sessions.length;
   document.querySelector("#session-drawer-status").textContent =
     `${count} ${count === 1 ? "SESSION" : "SESSIONS"}`;
 });
 sessionController.onActiveChange(() => {
-  activeAttachment = sessionController.activeAttachment;
+  activeAttachment = query.has("gpu-test") ? transport.activeAttachment : sessionController.activeAttachment;
   updateTerminalIdentity(sessionController.activeSession);
+  renderConnectionStatus();
 });
 terminal.onError((error) => showClientError(error, "terminal error"));
 terminal.onTitleChange((title) => {
@@ -426,7 +485,9 @@ sessionController.onError((error) => {
 terminal.onLinkActivate(({ uri }) => showLinkConfirmation(uri));
 terminal.onSelectionModeChange(({ active }) => updateSelectionModeUi(active));
 terminal.onSoftModifiersChange(updateSoftModifiers);
-transport.onStatus((label, state) => setConnectionStatus(state.connected, label));
+transport.onStatus(() => {
+  renderConnectionStatus();
+});
 
 settings.setOnChange((profile) => terminal.setTheme(profile));
 settings.setOnFontChange(async (font) => {
@@ -631,15 +692,18 @@ if (query.has("session-test")) {
   });
 }
 
-setConnectionStatus(false, "connecting");
+setConnectionStatus("recovering", "Connecting");
+setInterval(renderConnectionStatus, 250);
 try {
   await openInitialSession();
+  appReady = true;
 } catch (error) {
   showClientError(error, "terminal error");
-  throw error;
 }
-applyPerfMode(settings.perfMode);
-updateTelemetry();
-setInterval(updateTelemetry, 250);
-maybeShowNotificationPrompt();
-appReady = true;
+renderConnectionStatus();
+if (appReady) {
+  applyPerfMode(settings.perfMode);
+  updateTelemetry();
+  setInterval(updateTelemetry, 250);
+  maybeShowNotificationPrompt();
+}

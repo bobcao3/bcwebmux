@@ -104,7 +104,9 @@ export class GpuTerminal {
     this.frameMs = null;
     this.gpuFrameMs = null;
     this.presentationOpportunityMs = null;
+    this.disposed = false;
     this.queueProbePending = false;
+    this.presentationFrames = new Set();
     this.lastQueueProbeAt = -Infinity;
     this.bundleExecutions = 0;
     this.rasterPasses = 0;
@@ -138,8 +140,13 @@ export class GpuTerminal {
     this.submissionSelectionsPtr = 0;
     this.submissionCanvasRequestsPtr = 0;
     this.submissionCanvasRequestsCount = 0;
-    this.device.lost.then(info => { this.error = `WebGPU device lost: ${info.message}`; });
-    this.device.addEventListener("uncapturederror", event => { if (this.error === null) this.error = event.error.message; });
+    this.device.lost.then(info => {
+      if (!this.disposed) this.error = `WebGPU device lost: ${info.message}`;
+    });
+    this.onUncapturedError = event => {
+      if (!this.disposed && this.error === null) this.error = event.error.message;
+    };
+    this.device.addEventListener("uncapturederror", this.onUncapturedError);
   }
 
   initialize(cellSource, grain, grainSize, maxCells, maxStyles, styleSize, cellSize) { return initializeResources(this, cellSource, grain, grainSize, maxCells, maxStyles, styleSize, cellSize); }
@@ -321,7 +328,7 @@ export class GpuTerminal {
   }
 
   draw(hasSubmission = false) {
-    if (!this.offscreen || !this.rows || this.error) return;
+    if (this.disposed || !this.offscreen || !this.rows || this.error) return;
     const drawStartedAt = performance.now();
     this.uniformU32[0] = this.cols;
     this.uniformU32[1] = this.rows;
@@ -445,21 +452,26 @@ export class GpuTerminal {
     const submittedAt = performance.now();
     const frameMs = submittedAt - drawStartedAt;
     this.frameMs = this.frameMs === null ? frameMs : this.frameMs * 0.8 + frameMs * 0.2;
-    requestAnimationFrame(() => {
+    const presentationFrame = requestAnimationFrame(() => {
+      if (this.disposed) return;
+      this.presentationFrames.delete(presentationFrame);
       const presentationOpportunityMs = performance.now() - submittedAt;
       this.presentationOpportunityMs = this.presentationOpportunityMs === null
         ? presentationOpportunityMs
         : this.presentationOpportunityMs * 0.8 + presentationOpportunityMs * 0.2;
     });
+    this.presentationFrames.add(presentationFrame);
     const now = performance.now();
     if (!this.queueProbePending && now - this.lastQueueProbeAt >= 1000) {
       this.queueProbePending = true;
       this.lastQueueProbeAt = now;
       queue.onSubmittedWorkDone().then(() => {
+        if (this.disposed) return;
         this.queueProbePending = false;
         const queueDrainMs = performance.now() - now;
         this.gpuFrameMs = this.gpuFrameMs === null ? queueDrainMs : this.gpuFrameMs * 0.8 + queueDrainMs * 0.2;
       }).catch(error => {
+        if (this.disposed) return;
         this.queueProbePending = false;
         this.error = error.message;
       });
@@ -472,6 +484,7 @@ export class GpuTerminal {
   async readPixels() { return readPixelsResources(this); }
 
   updateBlinkTimer() {
+    if (this.disposed) return;
     const animated = (this.cursorFlags & 6) !== 0;
     if (!animated && this.blinkTimer) {
       clearTimeout(this.blinkTimer);

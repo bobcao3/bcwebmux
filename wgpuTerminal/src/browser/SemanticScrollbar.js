@@ -17,13 +17,12 @@ export class SemanticScrollbar {
     this.scrollable = false;
     this.autohideTimer = null;
     this.metrics = { track: 0, thumb: 0, travel: 0, top: 0 };
-    this._listeners = [];
+    this._listenerController = new AbortController();
     this._installListeners();
   }
 
   _listen(type, listener, options) {
-    this.element.addEventListener(type, listener, options);
-    this._listeners.push(() => this.element.removeEventListener(type, listener, options));
+    this.element.addEventListener(type, listener, { ...options, signal: this._listenerController.signal });
   }
 
   render(adjustment = this.adjustment) {
@@ -183,7 +182,7 @@ export class SemanticScrollbar {
   }
 
   dispose() {
-    for (const dispose of this._listeners.splice(0)) dispose();
+    this._listenerController.abort();
     this.drag = null;
     this._resetAutohide();
     this.adjustment = null;

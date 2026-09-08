@@ -2,30 +2,13 @@
 // Copyright (c) 2026 Cheng Cao
 
 const std = @import("std");
-const manifest = @import("session_manifest.zig");
 const c = @cImport({
     @cDefine("_XOPEN_SOURCE", "600");
-    // Disable glibc fortified variadic open/fcntl wrappers, which Zig cannot translate in optimized builds.
-    @cDefine("_FORTIFY_SOURCE", "0");
-    @cInclude("fcntl.h");
-    @cInclude("poll.h");
-    @cInclude("pty.h");
     @cInclude("signal.h");
-    @cInclude("stdlib.h");
-    @cInclude("sys/ioctl.h");
     @cInclude("sys/socket.h");
-    @cInclude("time.h");
-    @cInclude("sys/wait.h");
-    @cInclude("unistd.h");
 });
 
 pub const packet_capacity = 64 * 1024 + 1;
-const output_coalescing_interval_ms = 1;
-var worker_terminate_signal: std.atomic.Value(bool) = .init(false);
-
-fn workerTerminateSignalHandler(_: std.posix.SIG) callconv(.c) void {
-    worker_terminate_signal.store(true, .release);
-}
 
 pub const Kind = enum(u8) {
     input = 1,
@@ -34,6 +17,7 @@ pub const Kind = enum(u8) {
     output = 4,
     exited = 5,
     resize_applied = 6,
+    ready = 7,
 };
 
 pub const Message = struct {
@@ -41,28 +25,21 @@ pub const Message = struct {
     payload: []const u8,
 };
 
-fn decodeKind(value: u8) ?Kind {
-    return switch (value) {
-        1 => .input,
-        2 => .resize,
-        3 => .terminate,
-        4 => .output,
-        5 => .exited,
-        6 => .resize_applied,
-        else => null,
-    };
+pub fn decodeKind(value: u8) ?Kind {
+    return std.enums.fromInt(Kind, value);
 }
 
 pub const Connection = struct {
-    fd: std.posix.fd_t,
+    channel: std.Io.File,
     child: std.process.Child,
     send_mutex: std.Io.Mutex = .init,
-    closed: std.atomic.Value(bool) = .init(false),
+    closed: bool = false,
 
     pub fn send(self: *Connection, io: std.Io, kind: Kind, payload: []const u8) !void {
-        if (payload.len + 1 > packet_capacity or self.closed.load(.acquire)) return error.WorkerClosed;
+        if (payload.len >= packet_capacity) return error.WorkerClosed;
         try self.send_mutex.lock(io);
         defer self.send_mutex.unlock(io);
+        if (self.closed) return error.WorkerClosed;
         var prefix = [_]u8{@intFromEnum(kind)};
         var iovecs = [_]c.struct_iovec{
             .{ .iov_base = &prefix, .iov_len = 1 },
@@ -71,30 +48,38 @@ pub const Connection = struct {
         var message: c.struct_msghdr = std.mem.zeroes(c.struct_msghdr);
         message.msg_iov = &iovecs;
         message.msg_iovlen = if (payload.len == 0) 1 else 2;
-        const sent = c.sendmsg(self.fd, &message, c.MSG_NOSIGNAL | c.MSG_DONTWAIT);
+        // Atomic nonblocking vectored packet sends with MSG_NOSIGNAL are not supported by
+        // std.Io socket send (IP destinations only).
+        var sent = c.sendmsg(self.channel.handle, &message, c.MSG_NOSIGNAL | c.MSG_DONTWAIT);
+        while (sent == -1 and std.c.errno(sent) == .INTR) {
+            try io.checkCancel();
+            sent = c.sendmsg(self.channel.handle, &message, c.MSG_NOSIGNAL | c.MSG_DONTWAIT);
+        }
         const length = payload.len + 1;
         if (sent != @as(isize, @intCast(length))) return error.WorkerWriteFailed;
     }
 
-    pub fn receive(self: *Connection, buffer: []u8) !Message {
-        if (buffer.len < 2) return error.InvalidWorkerPacket;
-        var count = c.recv(self.fd, buffer.ptr, buffer.len, 0);
-        while (count == -1 and std.c.errno(count) == .INTR) {
-            count = c.recv(self.fd, buffer.ptr, buffer.len, 0);
-        }
-        if (count <= 0) {
-            std.log.err("worker packet receive failed: result={d}, errno={t}, closed={}", .{
-                count,
-                std.c.errno(count),
-                self.closed.load(.acquire),
-            });
-            return error.WorkerClosed;
-        }
+    pub fn receive(self: *Connection, io: std.Io, buffer: []u8) !Message {
+        if (buffer.len < packet_capacity + 1) return error.InvalidWorkerPacket;
+        // One unbuffered readv preserves packet boundaries and is cancelable through std.Io.
+        // The extra byte detects oversized packets; Socket.receive currently decodes IP
+        // source addresses and cannot receive from an unnamed Unix socketpair.
+        const count = self.channel.readStreaming(io, &.{buffer}) catch |err| switch (err) {
+            error.EndOfStream => return error.WorkerClosed,
+            else => return err,
+        };
+        if (count == 0 or count > packet_capacity) return error.InvalidWorkerPacket;
         const kind = decodeKind(buffer[0]) orelse return error.InvalidWorkerPacket;
         return .{
             .kind = kind,
-            .payload = buffer[1..@intCast(count)],
+            .payload = buffer[1..count],
         };
+    }
+
+    fn awaitReady(self: *Connection, io: std.Io) !void {
+        var buffer: [packet_capacity + 1]u8 = undefined;
+        const message = try self.receive(io, &buffer);
+        if (message.kind != .ready or message.payload.len != 0) return error.InvalidWorkerReady;
     }
 
     pub fn resize(self: *Connection, io: std.Io, operation_id: u64, cols: u16, rows: u16, cell_width_px: u16, cell_height_px: u16) !void {
@@ -108,252 +93,140 @@ pub const Connection = struct {
     }
 
     pub fn terminate(self: *Connection, io: std.Io) void {
-        self.send(io, .terminate, &.{}) catch |err| std.log.err("session worker terminate send failed: {t}", .{err});
+        self.send_mutex.lockUncancelable(io);
+        defer self.send_mutex.unlock(io);
+        if (self.closed) return;
+        var packet = [_]u8{@intFromEnum(Kind.terminate)};
+        // Do not block on a full input queue; the signal fallback wakes the worker.
+        _ = c.send(self.channel.handle, &packet, packet.len, c.MSG_NOSIGNAL | c.MSG_DONTWAIT);
         if (self.child.id) |pid| {
             _ = c.kill(pid, c.SIGUSR1);
         }
     }
 
-    pub fn close(self: *Connection) void {
-        if (self.closed.swap(true, .acq_rel)) return;
-        _ = c.close(self.fd);
+    // Only the receive owner may close, or close may be called after the receive owner finishes.
+    pub fn close(self: *Connection, io: std.Io) void {
+        self.send_mutex.lockUncancelable(io);
+        defer self.send_mutex.unlock(io);
+        if (self.closed) return;
+        self.closed = true;
+        self.channel.close(io);
+    }
+
+    pub fn finish(self: *Connection, io: std.Io) void {
+        const previous = io.swapCancelProtection(.blocked);
+        defer _ = io.swapCancelProtection(previous);
+        self.close(io);
+        if (self.child.id != null) {
+            // The worker must clean up its PTY process group before it is reaped.
+            // closed also guards readers of child.id.
+            _ = self.child.wait(io) catch {
+                self.child.kill(io);
+                return;
+            };
+        }
     }
 };
 
 pub fn spawn(io: std.Io, executable: []const u8, shell: []const u8, cols: u16, rows: u16) !Connection {
+    if (executable.len == 0 or shell.len == 0 or std.mem.indexOfScalar(u8, executable, 0) != null or std.mem.indexOfScalar(u8, shell, 0) != null) return error.InvalidArgument;
+    var sockets: [2]c_int = .{ -1, -1 };
+    // std.Io Socket.createPair only supports IP families.
+    if (c.socketpair(c.AF_UNIX, c.SOCK_SEQPACKET | c.SOCK_CLOEXEC, 0, &sockets) != 0)
+        return error.SocketPairFailed;
+    const files = [_]std.Io.File{
+        .{ .handle = sockets[0], .flags = .{ .nonblocking = false } },
+        .{ .handle = sockets[1], .flags = .{ .nonblocking = false } },
+    };
+    const child = blk: {
+        errdefer files[0].close(io);
+        defer files[1].close(io);
+
+        var cols_buffer: [8]u8 = undefined;
+        var rows_buffer: [8]u8 = undefined;
+        const cols_text = try std.fmt.bufPrint(&cols_buffer, "{d}", .{cols});
+        const rows_text = try std.fmt.bufPrint(&rows_buffer, "{d}", .{rows});
+        break :blk try std.process.spawn(io, .{
+            .argv = &.{ executable, "--session-worker", shell, cols_text, rows_text },
+            .stdin = .{ .file = files[1] },
+            .stdout = .{ .file = files[1] },
+            .stderr = .inherit,
+        });
+    };
+    // Do not publish the connection until the worker has installed its signal handler and PTY cleanup.
+    // Close and reap failed or canceled startup.
+    var connection: Connection = .{ .channel = files[0], .child = child };
+    errdefer connection.finish(io);
+    try connection.awaitReady(io);
+    return connection;
+}
+
+test "seqpacket boundaries, readiness, validation, close, and receive cancellation" {
+    if (!@import("builtin").link_libc) return error.SkipZigTest;
+    const io = std.testing.io;
     var sockets: [2]c_int = .{ -1, -1 };
     if (c.socketpair(c.AF_UNIX, c.SOCK_SEQPACKET | c.SOCK_CLOEXEC, 0, &sockets) != 0)
         return error.SocketPairFailed;
-    errdefer {
-        _ = c.close(sockets[0]);
-        _ = c.close(sockets[1]);
-    }
-
-    var cols_buffer: [8]u8 = undefined;
-    var rows_buffer: [8]u8 = undefined;
-    const cols_text = try std.fmt.bufPrint(&cols_buffer, "{d}", .{cols});
-    const rows_text = try std.fmt.bufPrint(&rows_buffer, "{d}", .{rows});
-    const child_file: std.Io.File = .{
-        .handle = sockets[1],
-        .flags = .{ .nonblocking = false },
+    const files = [_]std.Io.File{
+        .{ .handle = sockets[0], .flags = .{ .nonblocking = false } },
+        .{ .handle = sockets[1], .flags = .{ .nonblocking = false } },
     };
-    const child = try std.process.spawn(io, .{
-        .argv = &.{ executable, "--session-worker", shell, cols_text, rows_text },
-        .stdin = .{ .file = child_file },
-        .stdout = .{ .file = child_file },
-        .stderr = .inherit,
-    });
-    _ = c.close(sockets[1]);
-    sockets[1] = -1;
-    return .{ .fd = sockets[0], .child = child };
-}
+    var a = Connection{ .channel = files[0], .child = undefined };
+    var b = Connection{ .channel = files[1], .child = undefined };
+    defer a.close(io);
+    defer b.close(io);
 
-pub fn run(shell: [:0]const u8, cols: u16, rows: u16, limits: manifest.Limits) !void {
-    worker_terminate_signal.store(false, .release);
-    const signal_action: std.posix.Sigaction = .{
-        .handler = .{ .handler = workerTerminateSignalHandler },
-        .mask = std.posix.sigemptyset(),
-        .flags = 0,
-    };
-    std.posix.sigaction(.USR1, &signal_action, null);
-    const channel = std.posix.STDIN_FILENO;
-    var master: c_int = -1;
-    var size: c.struct_winsize = std.mem.zeroes(c.struct_winsize);
-    size.ws_col = cols;
-    size.ws_row = rows;
-    const pid = c.forkpty(&master, null, null, &size);
-    if (pid < 0) return error.ForkPtyFailed;
-    if (pid == 0) {
-        _ = c.setenv("TERM", "xterm-256color", 1);
-        _ = c.setenv("COLORTERM", "truecolor", 1);
-        var argv = [_:null]?[*:0]const u8{ shell.ptr, "-l" };
-        _ = c.execvp(shell.ptr, @ptrCast(&argv));
-        c._exit(127);
-    }
-    var child_reaped = false;
-    var child_status: c_int = 0;
-    defer {
-        if (!child_reaped) {
-            _ = c.kill(-pid, c.SIGHUP);
-            _ = c.kill(-pid, c.SIGTERM);
-            _ = c.kill(-pid, c.SIGKILL);
-            _ = c.waitpid(pid, &child_status, 0);
-        }
-    }
-    defer _ = c.close(master);
+    var buffer: [packet_capacity + 1]u8 = undefined;
+    try a.send(io, .output, "");
+    try std.testing.expectError(error.InvalidWorkerReady, b.awaitReady(io));
+    try a.send(io, .ready, "unexpected");
+    try std.testing.expectError(error.InvalidWorkerReady, b.awaitReady(io));
+    try a.send(io, .ready, "");
+    try a.send(io, .output, "after ready");
+    try b.awaitReady(io);
+    const after_ready = try b.receive(io, &buffer);
+    try std.testing.expectEqual(.output, after_ready.kind);
+    try std.testing.expectEqualSlices(u8, "after ready", after_ready.payload);
 
-    var terminating = false;
-    var termination_started_ms: ?u64 = null;
-    var packet: [packet_capacity]u8 = undefined;
-    while (true) {
-        if (worker_terminate_signal.swap(false, .acq_rel) and !terminating) {
-            terminating = true;
-            _ = c.kill(-pid, c.SIGHUP);
-            _ = c.kill(-pid, c.SIGTERM);
-            termination_started_ms = monotonicMs();
-        }
-        var drained_for_resize = false;
-        var descriptors = [_]c.struct_pollfd{
-            .{ .fd = if (termination_started_ms == null) channel else -1, .events = c.POLLIN, .revents = 0 },
-            .{ .fd = master, .events = c.POLLIN, .revents = 0 },
-        };
-        const timeout: c_int = if (terminating) 100 else 500;
-        const poll_result = c.poll(&descriptors, descriptors.len, timeout);
-        if (poll_result < 0) continue;
+    try a.send(io, .input, "first");
+    try a.send(io, .resize, "");
+    const first = try b.receive(io, &buffer);
+    try std.testing.expectEqual(.input, first.kind);
+    try std.testing.expectEqualSlices(u8, "first", first.payload);
 
-        if ((descriptors[0].revents & (c.POLLIN | c.POLLHUP | c.POLLERR)) != 0) {
-            const count = c.recv(channel, &packet, packet.len, 0);
-            if (count <= 0) {
-                if (termination_started_ms == null) {
-                    _ = c.kill(-pid, c.SIGHUP);
-                    _ = c.kill(-pid, c.SIGTERM);
-                    termination_started_ms = monotonicMs();
-                    terminating = true;
-                }
-            } else {
-                const data = packet[0..@intCast(count)];
-                const kind = decodeKind(data[0]) orelse continue;
-                switch (kind) {
-                    .input => writeAll(master, data[1..]),
-                    .resize => if (data.len == 17) {
-                        var resize_payload: [16]u8 = undefined;
-                        std.mem.copyForwards(u8, &resize_payload, data[1..17]);
-                        if (!drainAvailableOutput(channel, master, &packet)) return;
-                        drained_for_resize = true;
-                        var next_size: c.struct_winsize = std.mem.zeroes(c.struct_winsize);
-                        next_size.ws_col = std.mem.readInt(u16, resize_payload[8..10], .little);
-                        next_size.ws_row = std.mem.readInt(u16, resize_payload[10..12], .little);
-                        const status: u8 = if (next_size.ws_col != 0 and next_size.ws_row != 0 and c.ioctl(master, c.TIOCSWINSZ, &next_size) == 0) 0 else 1;
-                        var acknowledgement: [18]u8 = undefined;
-                        acknowledgement[0] = @intFromEnum(Kind.resize_applied);
-                        std.mem.copyForwards(u8, acknowledgement[1..17], &resize_payload);
-                        acknowledgement[17] = status;
-                        if (!sendPacket(channel, &acknowledgement)) return;
-                    },
-                    .terminate => if (!terminating) {
-                        terminating = true;
-                        _ = c.kill(-pid, c.SIGHUP);
-                        _ = c.kill(-pid, c.SIGTERM);
-                        termination_started_ms = monotonicMs();
-                    },
-                    .resize_applied => {},
-                    else => {},
-                }
-            }
-        }
+    const second = try b.receive(io, &buffer);
+    try std.testing.expectEqual(.resize, second.kind);
+    try std.testing.expectEqual(@as(usize, 0), second.payload.len);
 
-        if (!drained_for_resize and (descriptors[1].revents & (c.POLLIN | c.POLLHUP | c.POLLERR)) != 0) {
-            if (!drainAvailableOutput(channel, master, &packet)) return;
-        }
+    var maximum: [packet_capacity - 1]u8 = undefined;
+    @memset(&maximum, 0x5a);
+    try a.send(io, .output, &maximum);
+    const full = try b.receive(io, &buffer);
+    try std.testing.expectEqual(.output, full.kind);
+    try std.testing.expectEqualSlices(u8, &maximum, full.payload);
 
-        const waited = c.waitpid(pid, &child_status, c.WNOHANG);
-        if (waited == pid) {
-            child_reaped = true;
-            _ = c.kill(-pid, c.SIGHUP);
-            drainOutput(channel, master, &packet);
-            drainChannel(channel, &packet);
-            var exit_packet: [5]u8 = undefined;
-            exit_packet[0] = @intFromEnum(Kind.exited);
-            std.mem.writeInt(i32, exit_packet[1..5], child_status, .little);
-            _ = sendPacket(channel, &exit_packet);
-            return;
-        }
-        if (terminating) {
-            if (termination_started_ms) |started_ms| {
-                if (monotonicMs() - started_ms >= limits.termination_grace_ms)
-                    _ = c.kill(-pid, c.SIGKILL);
-            }
-        }
-    }
-}
+    var oversized: [packet_capacity + 1]u8 = undefined;
+    oversized[0] = @intFromEnum(Kind.output);
+    @memset(oversized[1..], 0);
+    const oversized_sent = c.send(a.channel.handle, &oversized, oversized.len, c.MSG_NOSIGNAL);
+    try std.testing.expectEqual(@as(isize, oversized.len), oversized_sent);
+    try std.testing.expectError(error.InvalidWorkerPacket, b.receive(io, &buffer));
 
-fn monotonicMs() u64 {
-    var timestamp: c.struct_timespec = undefined;
-    _ = c.clock_gettime(c.CLOCK_MONOTONIC, &timestamp);
-    return @as(u64, @intCast(timestamp.tv_sec)) * 1000 +
-        @as(u64, @intCast(timestamp.tv_nsec)) / 1_000_000;
-}
+    var invalid = [_]u8{255};
+    const invalid_sent = c.send(a.channel.handle, &invalid, invalid.len, c.MSG_NOSIGNAL);
+    try std.testing.expectEqual(@as(isize, 1), invalid_sent);
+    try std.testing.expectError(error.InvalidWorkerPacket, b.receive(io, &buffer));
 
-fn sendPacket(fd: c_int, packet: []const u8) bool {
-    while (true) {
-        const result = c.send(fd, packet.ptr, packet.len, c.MSG_NOSIGNAL);
-        if (result == -1 and std.c.errno(result) == .INTR) continue;
-        if (result == @as(isize, @intCast(packet.len))) return true;
-        std.log.err("worker packet send failed: result={d}, expected packet length={d}, errno={t}", .{
-            result,
-            packet.len,
-            std.c.errno(result),
-        });
-        return false;
-    }
-}
+    var future = try io.concurrent(Connection.awaitReady, .{ &b, io });
+    try std.testing.expectError(error.Canceled, future.cancel(io));
 
-fn writeAll(fd: c_int, bytes: []const u8) void {
-    var remaining = bytes;
-    while (remaining.len != 0) {
-        if (worker_terminate_signal.load(.acquire)) return;
-        const count = c.write(fd, remaining.ptr, remaining.len);
-        if (count <= 0) return;
-        remaining = remaining[@intCast(count)..];
-    }
-}
+    a.close(io);
+    a.close(io);
+    try std.testing.expectError(error.WorkerClosed, a.send(io, .input, ""));
+    try std.testing.expectError(error.WorkerClosed, b.receive(io, &buffer));
+    try std.testing.expectError(error.WorkerClosed, b.awaitReady(io));
 
-fn drainAvailableOutput(channel: c_int, master: c_int, packet: *[packet_capacity]u8) bool {
-    const flags = c.fcntl(master, c.F_GETFL);
-    if (flags < 0 or c.fcntl(master, c.F_SETFL, flags | c.O_NONBLOCK) < 0) return false;
-    defer _ = c.fcntl(master, c.F_SETFL, flags);
-
-    var length: usize = 0;
-    var waited_for_output = false;
-    read_loop: while (true) {
-        const count = c.read(master, packet[1 + length ..].ptr, packet.len - 1 - length);
-        if (count > 0) {
-            length += @intCast(count);
-            if (length == packet.len - 1) {
-                packet[0] = @intFromEnum(Kind.output);
-                if (!sendPacket(channel, packet[0 .. length + 1])) return false;
-                length = 0;
-                waited_for_output = false;
-            }
-            continue :read_loop;
-        } else if (count == -1 and std.c.errno(count) == .INTR) {
-            continue;
-        } else if (count == -1 and std.c.errno(count) == .AGAIN) {
-            if (length == 0) return true;
-            if (!waited_for_output) {
-                waited_for_output = true;
-                var wait = [_]c.struct_pollfd{
-                    .{ .fd = master, .events = c.POLLIN, .revents = 0 },
-                };
-                while (true) {
-                    const waited = c.poll(&wait, wait.len, output_coalescing_interval_ms);
-                    if (waited < 0 and std.c.errno(waited) == .INTR) continue;
-                    if (waited > 0) continue :read_loop;
-                    break;
-                }
-            }
-            packet[0] = @intFromEnum(Kind.output);
-            if (!sendPacket(channel, packet[0 .. length + 1])) return false;
-            return true;
-        } else {
-            if (length != 0) {
-                packet[0] = @intFromEnum(Kind.output);
-                if (!sendPacket(channel, packet[0 .. length + 1])) return false;
-            }
-            return true;
-        }
-    }
-}
-
-fn drainOutput(channel: c_int, master: c_int, packet: *[packet_capacity]u8) void {
-    _ = drainAvailableOutput(channel, master, packet);
-}
-
-fn drainChannel(channel: c_int, packet: *[packet_capacity]u8) void {
-    while (true) {
-        const count = c.recv(channel, packet, packet.len, c.MSG_DONTWAIT);
-        if (count > 0) continue;
-        if (count == -1 and std.c.errno(count) == .INTR) continue;
-        return;
+    if (@import("builtin").os.tag == .linux) {
+        try std.testing.expectError(error.WorkerClosed, spawn(io, "/bin/true", "/bin/sh", 80, 24));
     }
 }

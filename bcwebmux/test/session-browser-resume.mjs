@@ -3,45 +3,10 @@
 
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
-import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
-
-class Cdp {
-  constructor(socket) {
-    this.socket = socket;
-    this.nextId = 1;
-    this.pending = new Map();
-    this.events = [];
-    socket.addEventListener("message", event => {
-      const message = JSON.parse(event.data);
-      if (!message.id) return void this.events.push(message);
-      const pending = this.pending.get(message.id);
-      if (!pending) return;
-      this.pending.delete(message.id);
-      if (message.error) pending.reject(new Error(message.error.message));
-      else pending.resolve(message.result);
-    });
-  }
-
-  static async connect(url) {
-    const socket = new WebSocket(url);
-    await new Promise((resolve, reject) => {
-      socket.addEventListener("open", resolve, { once: true });
-      socket.addEventListener("error", reject, { once: true });
-    });
-    return new Cdp(socket);
-  }
-
-  call(method, params = {}) {
-    const id = this.nextId++;
-    this.socket.send(JSON.stringify({ id, method, params }));
-    return new Promise((resolve, reject) => this.pending.set(id, { resolve, reject }));
-  }
-
-  close() { this.socket.close(); }
-}
+import { Cdp, freePort, terminateProcess, waitFor } from "./test-support.mjs";
 
 const [serverPath, webRoot] = process.argv.slice(2);
 assert.ok(serverPath && webRoot, "usage: session-browser-resume.mjs SERVER WEB_ROOT");
@@ -154,32 +119,4 @@ async function evaluate(cdp, expression) {
 
 async function waitBrowser(cdp, expression, timeout, message) {
   return waitFor(async () => Boolean(await evaluate(cdp, expression).catch(() => false)), timeout, message);
-}
-
-async function freePort() {
-  const listener = net.createServer();
-  await new Promise((resolve, reject) => listener.listen(0, "127.0.0.1", resolve).once("error", reject));
-  const port = listener.address().port;
-  await new Promise(resolve => listener.close(resolve));
-  return port;
-}
-
-async function waitFor(check, timeout, message) {
-  const end = Date.now() + timeout;
-  while (Date.now() < end) {
-    const value = await check();
-    if (value) return value;
-    await new Promise(resolve => setTimeout(resolve, 50));
-  }
-  throw new Error(message);
-}
-
-async function terminateProcess(process) {
-  if (!process || process.exitCode !== null) return;
-  process.kill("SIGTERM");
-  await Promise.race([
-    new Promise(resolve => process.once("exit", resolve)),
-    new Promise(resolve => setTimeout(resolve, 1000)),
-  ]);
-  if (process.exitCode === null) process.kill("SIGKILL");
 }

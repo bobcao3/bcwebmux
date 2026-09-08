@@ -53,7 +53,6 @@ const FrameType = Object.freeze({
   PING: 23,
   PONG: 24,
 });
-const FRAME_TYPES = FrameType;
 const FRAME_TYPE_VALUES = new Set(Object.values(FrameType));
 
 function requireUint8Array(name, value) {
@@ -263,7 +262,6 @@ export {
   RESIZE_ROWS_OFFSET,
   MAX_UINT64,
   FrameType,
-  FRAME_TYPES,
   asUint16,
   asUint32,
   asUint64,

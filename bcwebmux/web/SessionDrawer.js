@@ -63,7 +63,7 @@ export class SessionDrawer {
   #longPress = null
   #suppressedClick = null
   #contextSessionId = null
-  #dom = []
+  #listenerController = new AbortController()
   #subscriptions = []
   #tabs = new Map()
   #ownedDialogs = []
@@ -234,7 +234,7 @@ export class SessionDrawer {
       copy.className = "session-copy"; nameLine.className = "session-name-line"; name.className = "session-name"; name.textContent = label; detail.className = "session-detail"; detail.id = `${tab.id}-detail`; detail.textContent = `${metadata.state || "unknown"}${disconnected ? " · disconnected" : ""}`; unread.className = metadata.unread ? "session-unread is-unread" : "session-unread"; unread.textContent = ""; unread.setAttribute("aria-label", metadata.unread ? "Unread activity" : "No unread activity"); tab.setAttribute("aria-describedby", detail.id)
       rename.type = "button"; rename.className = "session-rename"; rename.style.minWidth = "44px"; rename.style.minHeight = "44px"; rename.textContent = "✎"; rename.setAttribute("aria-label", `Rename ${label}`); rename.setAttribute("title", `Rename ${label}`)
       remove.type = "button"; remove.className = "session-lifecycle"; remove.style.minWidth = "44px"; remove.style.minHeight = "44px"; remove.textContent = terminate ? "■" : "×"; remove.setAttribute("aria-label", `${terminate ? "Terminate" : "Remove"} ${label}`); remove.disabled = metadata.state === "creating" || metadata.state === "terminating"
-      nameLine.append(name, rename); copy.append(nameLine, detail, unread); row.append(tab, copy, remove); tabs.append(row); this.#tabs.set(id, tab); tab.addEventListener("click", event => { const suppressed = this.#suppressedClick; if (suppressed?.id === id && suppressed.until > Date.now()) { event.preventDefault(); event.stopPropagation(); this.#suppressedClick = null; return } this.#suppressedClick = null; this.#closeContextMenu(); this.#select(id) }); rename.addEventListener("click", event => { event.stopPropagation(); this.#showRename(id) }); remove.addEventListener("click", event => { event.stopPropagation(); this.#showConfirm(id, action) })
+      nameLine.append(name, rename); copy.append(nameLine, detail, unread); row.append(tab, copy, remove); tabs.append(row); this.#tabs.set(id, tab); tab.addEventListener("click", event => { const suppressed = this.#suppressedClick; if (suppressed?.id === id && suppressed.until > performance.now()) { event.preventDefault(); event.stopPropagation(); this.#suppressedClick = null; return } this.#suppressedClick = null; this.#closeContextMenu(); this.#select(id) }); rename.addEventListener("click", event => { event.stopPropagation(); this.#showRename(id) }); remove.addEventListener("click", event => { event.stopPropagation(); this.#showConfirm(id, action) })
     }
     if (this.#refs.workspace && activeId) {
       const tab = this.#tabs.get(activeId)
@@ -367,7 +367,7 @@ export class SessionDrawer {
     press.timeout = globalThis.setTimeout(() => {
       if (this.#longPress !== press) return
       this.#longPress = null
-      this.#suppressedClick = { id, until: Date.now() + 1000 }
+      this.#suppressedClick = { id, until: performance.now() + 1000 }
       this.#showContextMenu(id, press.x, press.y)
     }, LONG_PRESS_MS)
     this.#longPress = press
@@ -391,7 +391,7 @@ export class SessionDrawer {
     event.preventDefault()
     this.#cancelLongPress()
     const id = String(row.dataset.sessionId)
-    if (event.pointerType !== "mouse") this.#suppressedClick = { id, until: Date.now() + 1000 }
+    if (event.pointerType !== "mouse") this.#suppressedClick = { id, until: performance.now() + 1000 }
     this.#showContextMenu(id, event.clientX, event.clientY)
   }
 
@@ -573,8 +573,7 @@ export class SessionDrawer {
 
   #add(target, type, listener) {
     if (!target?.addEventListener) return
-    target.addEventListener(type, listener)
-    this.#dom.push({ target, type, listener })
+    target.addEventListener(type, listener, { signal: this.#listenerController.signal })
   }
 
   dispose() {
@@ -583,7 +582,7 @@ export class SessionDrawer {
     this.#cancelLongPress()
     this.#closeContextMenu()
     this.#renderQueued = false
-    for (const item of this.#dom.splice(0)) item.target.removeEventListener?.(item.type, item.listener)
+    this.#listenerController.abort()
     for (const subscription of this.#subscriptions.splice(0)) subscription?.dispose?.()
     for (const dialog of this.#ownedDialogs.splice(0)) dialog.remove()
     this.#tabs.clear()

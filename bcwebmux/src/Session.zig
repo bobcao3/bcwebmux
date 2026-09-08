@@ -86,13 +86,13 @@ pub const Journal = struct {
     events: std.ArrayListUnmanaged(Event) = .empty,
     byte_limit: usize,
 
-    pub fn init(allocator: std.mem.Allocator, byte_limit: usize) !Journal {
+    pub fn init(allocator: std.mem.Allocator, byte_limit: usize) Journal {
         return .{ .allocator = allocator, .byte_limit = byte_limit };
     }
 
-    pub fn deinit(self: *Journal, allocator: std.mem.Allocator) void {
-        self.bytes.deinit(allocator);
-        self.events.deinit(allocator);
+    pub fn deinit(self: *Journal) void {
+        self.bytes.deinit(self.allocator);
+        self.events.deinit(self.allocator);
         self.* = undefined;
     }
 
@@ -296,8 +296,8 @@ pub fn create(
     const self = try allocator.create(Self);
     errdefer allocator.destroy(self);
     const now = nowMs(io);
-    var journal = try Journal.init(allocator, limits.journal_bytes);
-    errdefer journal.deinit(allocator);
+    var journal = Journal.init(allocator, limits.journal_bytes);
+    errdefer journal.deinit();
     var mirror = try ghostty.Terminal.init(io, allocator, .{
         .cols = geometry.cols,
         .rows = geometry.rows,
@@ -337,21 +337,24 @@ pub fn create(
 }
 
 pub fn destroy(self: *Self) void {
-    self.connection.close();
+    self.connection.finish(self.io);
     self.mirror_stream.deinit();
     self.mirror_terminal.deinit(self.allocator);
-    self.journal.deinit(self.allocator);
+    self.journal.deinit();
     freeCheckpoint(self.allocator, &self.current_checkpoint);
     self.allocator.destroy(self);
 }
 
 pub fn run(self: *Self) void {
     defer self.actor_done.store(true, .release);
-    var packet: [worker.packet_capacity]u8 = undefined;
+    defer self.connection.finish(self.io);
+    var packet: [worker.packet_capacity + 1]u8 = undefined;
     var failed = false;
     while (true) {
-        const message = self.connection.receive(&packet) catch |err| {
-            std.log.err("session worker receive failed: {t}", .{err});
+        const message = self.connection.receive(self.io, &packet) catch |err| {
+            if (err != error.Canceled) {
+                std.log.err("session worker receive failed: {t}", .{err});
+            }
             self.markFailed();
             break;
         };
@@ -387,8 +390,6 @@ pub fn run(self: *Self) void {
             else => {},
         }
     }
-    self.connection.close();
-    _ = self.connection.child.wait(self.io) catch {};
 }
 
 pub fn snapshotMetadata(self: *Self) Metadata {
@@ -530,6 +531,15 @@ fn acceptResizeApplied(self: *Self, payload: []const u8) !void {
         pending.geometry.cell_height_px != geometry.cell_height_px) return error.InvalidResizeAck;
     pending.* = .{};
     self.pending_resize_count -= 1;
+    std.log.info("terminal resize applied: operation_id={d} cols={d} rows={d} cell_width_px={d} cell_height_px={d} ioctl_status={d} sigwinch_expected={}", .{
+        operation_id,
+        geometry.cols,
+        geometry.rows,
+        geometry.cell_width_px,
+        geometry.cell_height_px,
+        status,
+        status == 0,
+    });
     const promote_after_resize = self.pending_resize_count == 0 and
         self.controller_key == null and
         self.attachment_count != 0;
@@ -761,8 +771,8 @@ fn effectTitle(handler: *Handler) void {
 }
 
 test "journal preserves ordered output and resize" {
-    var journal = try Journal.init(std.testing.allocator, 1024);
-    defer journal.deinit(std.testing.allocator);
+    var journal = Journal.init(std.testing.allocator, 1024);
+    defer journal.deinit();
     try journal.appendOutput("abc", 1, 0, 10);
     try journal.appendResize(.{ .cols = 90, .rows = 30 }, 2, 3, 11);
     try std.testing.expectEqual(@as(usize, 2), journal.events.items.len);
@@ -772,8 +782,8 @@ test "journal preserves ordered output and resize" {
 }
 
 test "journal compacts acknowledged prefix" {
-    var journal = try Journal.init(std.testing.allocator, 1024);
-    defer journal.deinit(std.testing.allocator);
+    var journal = Journal.init(std.testing.allocator, 1024);
+    defer journal.deinit();
     try journal.appendOutput("abc", 1, 0, 10);
     try journal.appendResize(.{ .cols = 90, .rows = 30 }, 2, 3, 11);
     try journal.appendOutput("def", 3, 3, 12);
@@ -796,8 +806,8 @@ test "journal compacts acknowledged prefix" {
 
 test "journal grows lazily within configured bounds" {
     const byte_limit = 8 * 1024 * 1024;
-    var journal = try Journal.init(std.testing.allocator, byte_limit);
-    defer journal.deinit(std.testing.allocator);
+    var journal = Journal.init(std.testing.allocator, byte_limit);
+    defer journal.deinit();
 
     try std.testing.expectEqual(@as(usize, 0), journal.bytes.capacity);
     try std.testing.expectEqual(@as(usize, 0), journal.events.capacity);
@@ -815,8 +825,8 @@ test "journal grows lazily within configured bounds" {
     try std.testing.expectEqual(@as(usize, 0), journal.bytes.capacity);
     try std.testing.expectEqual(@as(usize, 0), journal.events.capacity);
 
-    var small_journal = try Journal.init(std.testing.allocator, 4);
-    defer small_journal.deinit(std.testing.allocator);
+    var small_journal = Journal.init(std.testing.allocator, 4);
+    defer small_journal.deinit();
     try small_journal.appendOutput("1234", 1, 0, 10);
     try std.testing.expectError(error.JournalFull, small_journal.appendOutput("x", 2, 4, 11));
 }

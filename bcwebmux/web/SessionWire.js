@@ -63,11 +63,9 @@ export function stableClientId() {
   try {
     const existing = localStorage.getItem(key);
     if (existing) return uuidBytes(existing);
-    const bytes = crypto.getRandomValues(new Uint8Array(16));
-    bytes[6] = (bytes[6] & 0x0f) | 0x40;
-    bytes[8] = (bytes[8] & 0x3f) | 0x80;
-    localStorage.setItem(key, bytesUuid(bytes));
-    return bytes;
+    const id = crypto.randomUUID();
+    localStorage.setItem(key, id);
+    return uuidBytes(id);
   } catch {
     return crypto.getRandomValues(new Uint8Array(16));
   }

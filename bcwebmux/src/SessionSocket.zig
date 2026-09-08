@@ -15,6 +15,140 @@ const event_prefix_length = 32;
 const checkpoint_chunk_prefix_length = 16;
 const output_stream_preamble = "bcwebmux persistent PTY zstd stream preamble; discard before output\n";
 
+pub const MessageQueue = struct {
+    pub const Message = struct {
+        data: []u8,
+    };
+
+    allocator: std.mem.Allocator,
+    max_bytes: usize,
+    max_message_bytes: usize,
+    messages: std.ArrayListUnmanaged(Message) = .empty,
+    bytes: usize = 0,
+    overflowed: bool = false,
+    closed: bool = false,
+
+    pub fn init(allocator: std.mem.Allocator, max_bytes: usize, max_message_bytes: usize) MessageQueue {
+        return .{
+            .allocator = allocator,
+            .max_bytes = max_bytes,
+            .max_message_bytes = max_message_bytes,
+        };
+    }
+
+    pub fn deinit(self: *MessageQueue) void {
+        for (self.messages.items) |message| self.allocator.free(message.data);
+        self.messages.deinit(self.allocator);
+    }
+
+    pub fn push(self: *MessageQueue, data: []const u8) !void {
+        if (data.len > self.max_message_bytes) return error.MessageTooLarge;
+        if (self.closed) return error.QueueClosed;
+        if (data.len > self.max_bytes -| self.bytes) {
+            self.overflowed = true;
+            return error.QueueOverflow;
+        }
+        const copy = try self.allocator.dupe(u8, data);
+        errdefer self.allocator.free(copy);
+        try self.messages.append(self.allocator, .{ .data = copy });
+        self.bytes += data.len;
+    }
+
+    pub fn pop(self: *MessageQueue) ?Message {
+        if (self.messages.items.len == 0) return null;
+        const message = self.messages.orderedRemove(0);
+        self.bytes -= message.data.len;
+        return message;
+    }
+
+    pub fn close(self: *MessageQueue) void {
+        self.closed = true;
+    }
+
+    pub fn isClosed(self: *MessageQueue) bool {
+        return self.closed;
+    }
+
+    pub fn isOverflowed(self: *MessageQueue) bool {
+        return self.overflowed;
+    }
+};
+
+pub const Transport = struct {
+    pub const ControlOpcode = enum { ping, pong, connection_close, binary };
+    context: ?*anyopaque,
+    send_binary_fn: *const fn (?*anyopaque, []const u8) anyerror!void,
+    send_control_fn: *const fn (?*anyopaque, []const u8, ControlOpcode) anyerror!void,
+    close_fn: *const fn (?*anyopaque) anyerror!void,
+
+    pub fn sendBinary(self: Transport, payload: []const u8) !void {
+        return self.send_binary_fn(self.context, payload);
+    }
+
+    pub fn sendControl(self: Transport, payload: []const u8, opcode: ControlOpcode) !void {
+        return self.send_control_fn(self.context, payload, opcode);
+    }
+
+    pub fn close(self: Transport) !void {
+        return self.close_fn(self.context);
+    }
+};
+
+pub fn queueTransport(queue: *MessageQueue) Transport {
+    return .{
+        .context = queue,
+        .send_binary_fn = queueSendBinary,
+        .send_control_fn = queueSendControl,
+        .close_fn = queueClose,
+    };
+}
+
+pub fn legacyTransport(websocket: *std.http.Server.WebSocket) Transport {
+    return .{
+        .context = websocket,
+        .send_binary_fn = legacySendBinary,
+        .send_control_fn = legacySendControl,
+        .close_fn = legacyClose,
+    };
+}
+
+fn queueSendBinary(context: ?*anyopaque, payload: []const u8) !void {
+    const queue: *MessageQueue = @ptrCast(@alignCast(context.?));
+    try queue.push(payload);
+}
+
+fn queueSendControl(context: ?*anyopaque, payload: []const u8, opcode: Transport.ControlOpcode) !void {
+    const queue: *MessageQueue = @ptrCast(@alignCast(context.?));
+    _ = payload;
+    if (opcode == .connection_close) queue.close();
+}
+
+fn queueClose(context: ?*anyopaque) !void {
+    const queue: *MessageQueue = @ptrCast(@alignCast(context.?));
+    queue.close();
+}
+
+fn legacySendBinary(context: ?*anyopaque, payload: []const u8) !void {
+    const websocket: *std.http.Server.WebSocket = @ptrCast(@alignCast(context.?));
+    try websocket.writeMessage(payload, .binary);
+}
+
+fn legacySendControl(context: ?*anyopaque, payload: []const u8, opcode: Transport.ControlOpcode) !void {
+    const websocket: *std.http.Server.WebSocket = @ptrCast(@alignCast(context.?));
+    const native_opcode: std.http.Server.WebSocket.Opcode = switch (opcode) {
+        .ping => .ping,
+        .pong => .pong,
+        .connection_close => .connection_close,
+        .binary => .binary,
+    };
+    try websocket.writeMessage(payload, native_opcode);
+}
+
+fn legacyClose(context: ?*anyopaque) !void {
+    const websocket: *std.http.Server.WebSocket = @ptrCast(@alignCast(context.?));
+    try websocket.writeMessage(&.{}, .connection_close);
+}
+
 const OutputCompressor = struct {
     ctx: *c.ZSTD_CCtx,
     needs_preamble: bool = true,
@@ -119,7 +253,8 @@ const ConnectionAttachment = struct {
 allocator: std.mem.Allocator,
 io: std.Io,
 registry: *Registry,
-websocket: *std.http.Server.WebSocket,
+transport: Transport,
+websocket: ?*std.http.Server.WebSocket,
 connection_id: u64,
 client_id: Session.Id = zero_id,
 state_mutex: std.Io.Mutex = .init,
@@ -130,14 +265,62 @@ sender_sequence: u64 = 0,
 receiver_sequence: u64 = 0,
 last_pong_ms: i64,
 last_ping_ms: i64,
+// Embedders with their own transport watchdog must opt in before HELLO.
+transport_managed: bool = false,
+heartbeat: Heartbeat = .{},
 revision_seen: u64,
 stopped: std.atomic.Value(bool) = .init(false),
+negotiated: bool = false,
+deinitialized: bool = false,
+
+const Heartbeat = struct {
+    pending: ?i64 = null,
+
+    fn pong(self: *Heartbeat, nonce: i64) bool {
+        if (self.pending == null or self.pending.? != nonce) return false;
+        self.pending = null;
+        return true;
+    }
+};
+
+test "heartbeat accepts a late nonce without superseding outstanding state" {
+    var heartbeat: Heartbeat = .{ .pending = 100 };
+    // Unknown, old and duplicate PONGs do not invalidate the connection or
+    // renew the watchdog. The single outstanding probe survives arbitrary delay.
+    try std.testing.expect(!heartbeat.pong(99));
+    try std.testing.expectEqual(@as(?i64, 100), heartbeat.pending);
+    try std.testing.expect(heartbeat.pong(100));
+    heartbeat.pending = 200;
+    try std.testing.expect(!heartbeat.pong(100));
+    try std.testing.expectEqual(@as(?i64, 200), heartbeat.pending);
+    try std.testing.expect(heartbeat.pong(200));
+    try std.testing.expect(!heartbeat.pong(200));
+}
 
 pub fn init(
     allocator: std.mem.Allocator,
     io: std.Io,
     registry: *Registry,
     websocket: *std.http.Server.WebSocket,
+) !Self {
+    return initTransport(allocator, io, registry, legacyTransport(websocket), websocket);
+}
+
+pub fn initBuffered(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    registry: *Registry,
+    queue: *MessageQueue,
+) !Self {
+    return initTransport(allocator, io, registry, queueTransport(queue), null);
+}
+
+fn initTransport(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    registry: *Registry,
+    transport: Transport,
+    websocket: ?*std.http.Server.WebSocket,
 ) !Self {
     var random: [8]u8 = undefined;
     try io.randomSecure(&random);
@@ -148,6 +331,7 @@ pub fn init(
         .allocator = allocator,
         .io = io,
         .registry = registry,
+        .transport = transport,
         .websocket = websocket,
         .connection_id = connection_id,
         .output_compressors = blk: {
@@ -165,26 +349,69 @@ pub fn init(
     };
 }
 
+pub fn deinit(self: *Self) void {
+    self.state_mutex.lockUncancelable(self.io);
+    if (self.deinitialized) {
+        self.state_mutex.unlock(self.io);
+        return;
+    }
+    self.deinitialized = true;
+    self.state_mutex.unlock(self.io);
+    self.stopped.store(true, .release);
+    for (0..self.attachments.len) |index| self.detachIndex(index);
+    _ = self.transport.close() catch {};
+    self.deinitOutputCompressors();
+}
+
 pub fn serve(self: *Self) !void {
-    defer self.deinitOutputCompressors();
-    defer self.stopAndDetach();
-    try self.negotiate();
+    defer self.deinit();
+    const websocket = self.websocket orelse return error.LegacyTransportRequired;
+    const first_message = try websocket.readSmallMessage();
+    if (first_message.opcode != .binary) return error.HelloRequired;
+    try self.receiveBinary(first_message.data);
     var publisher = try self.io.concurrent(publishLoop, .{self});
     defer publisher.cancel(self.io);
     while (!self.stopped.load(.acquire)) {
-        const message = self.websocket.readSmallMessage() catch return;
+        const message = websocket.readSmallMessage() catch return;
         switch (message.opcode) {
             .ping => try self.sendWebSocketControl(message.data, .pong),
-            .binary => try self.receiveFrame(message.data),
+            .binary => try self.receiveBinary(message.data),
             else => return error.UnexpectedWebSocketMessage,
         }
     }
 }
 
-fn negotiate(self: *Self) !void {
-    const message = try self.websocket.readSmallMessage();
-    if (message.opcode != .binary) return error.HelloRequired;
-    const frame = protocol.decodeFrame(message.data) catch return error.InvalidFrame;
+pub fn tick(self: *Self) !void {
+    if (self.stopped.load(.acquire)) return error.SocketClosed;
+    if (!self.negotiated) return error.NotReady;
+    self.publishControl() catch |err| return self.failTransport(err);
+    for (0..self.attachments.len) |index| {
+        self.publishSlot(index) catch |err| {
+            if (err == error.StaleAttachment) continue;
+            return self.failTransport(err);
+        };
+    }
+}
+
+fn failTransport(self: *Self, err: anyerror) anyerror {
+    self.stopped.store(true, .release);
+    for (0..self.attachments.len) |index| self.detachIndex(index);
+    _ = self.transport.close() catch {};
+    return err;
+}
+
+pub fn receiveBinary(self: *Self, bytes: []const u8) !void {
+    if (self.stopped.load(.acquire)) return error.SocketClosed;
+    if (!self.negotiated) {
+        try self.negotiate(bytes);
+        self.negotiated = true;
+        return;
+    }
+    try self.receiveFrame(bytes);
+}
+
+fn negotiate(self: *Self, bytes: []const u8) !void {
+    const frame = protocol.decodeFrame(bytes) catch return error.InvalidFrame;
     try self.acceptSequence(frame.connection_sequence);
     if (frame.frame_type != .hello or frame.request_id == 0 or frame.payload.len != 56 or frame.attachment_id != 0 or
         frame.attachment_epoch != 0 or !std.mem.eql(u8, &frame.session_id, &zero_id)) return error.HelloRequired;
@@ -389,11 +616,12 @@ fn receivePong(self: *Self, frame: protocol.Frame) !void {
         return error.InvalidPong;
     const ping_ms: i64 = @bitCast(protocol.readU64LE(frame.payload, 0));
     self.state_mutex.lockUncancelable(self.io);
-    if (ping_ms != self.last_ping_ms) {
-        self.state_mutex.unlock(self.io);
-        return error.InvalidPong;
+    // Stale/superseded/duplicate nonces are observations, not framing errors,
+    // and cannot renew the current probe. Storage is one outstanding nonce.
+    if (self.heartbeat.pong(ping_ms)) {
+        self.last_pong_ms = monotonicMs(self.io);
+        self.last_ping_ms = self.last_pong_ms; // Pace from completion, not old submission.
     }
-    self.last_pong_ms = monotonicMs(self.io);
     self.state_mutex.unlock(self.io);
 }
 
@@ -543,28 +771,44 @@ fn sendParts(
         .session_id = session_id,
     }, &header);
     protocol.writeU32LE(&header, protocol.payload_length_offset, @intCast(payload_length));
-    var vectors: [8][]const u8 = undefined;
-    vectors[0] = &header;
-    for (parts, 1..) |part, index| vectors[index] = part;
-    try self.websocket.writeMessageVec(vectors[0 .. parts.len + 1], .binary);
+    const payload = try self.allocator.alloc(u8, protocol.header_length + payload_length);
+    defer self.allocator.free(payload);
+    @memcpy(payload[0..protocol.header_length], &header);
+    var offset: usize = protocol.header_length;
+    for (parts) |part| {
+        @memcpy(payload[offset..][0..part.len], part);
+        offset += part.len;
+    }
+    try self.transport.sendBinary(payload);
 }
 
 fn sendWebSocketControl(self: *Self, data: []const u8, opcode: std.http.Server.WebSocket.Opcode) !void {
+    const transport_opcode: Transport.ControlOpcode = switch (opcode) {
+        .ping => .ping,
+        .pong => .pong,
+        .connection_close => .connection_close,
+        .binary => .binary,
+        .continuation, .text => .binary,
+        else => .binary,
+    };
     try self.send_mutex.lock(self.io);
     defer self.send_mutex.unlock(self.io);
-    try self.websocket.writeMessage(data, opcode);
+    try self.transport.sendControl(data, transport_opcode);
 }
 
 fn publishLoop(self: *Self) void {
     while (!self.stopped.load(.acquire)) {
-        self.publishControl() catch {
+        self.publishControl() catch |err| {
             self.stopped.store(true, .release);
+            // Do not start another potentially blocking write after consuming cancellation.
+            if (err == error.Canceled) return;
             _ = self.sendWebSocketControl(&.{}, .connection_close) catch {};
             return;
         };
         for (0..self.attachments.len) |index| self.publishSlot(index) catch |err| {
             if (err == error.StaleAttachment) continue;
             self.stopped.store(true, .release);
+            if (err == error.Canceled) return;
             _ = self.sendWebSocketControl(&.{}, .connection_close) catch {};
             return;
         };
@@ -576,12 +820,13 @@ fn publishControl(self: *Self) !void {
     const now = monotonicMs(self.io);
     var send_ping = false;
     self.state_mutex.lockUncancelable(self.io);
-    if (now - self.last_pong_ms >= manifest.heartbeat_timeout_ms) {
+    if (!self.transport_managed and now - self.last_pong_ms >= manifest.heartbeat_timeout_ms) {
         self.state_mutex.unlock(self.io);
         return error.HeartbeatTimeout;
     }
-    if (now - self.last_ping_ms >= manifest.heartbeat_interval_ms) {
+    if (self.heartbeat.pending == null and now - self.last_ping_ms >= manifest.heartbeat_interval_ms) {
         self.last_ping_ms = now;
+        self.heartbeat.pending = now;
         send_ping = true;
     }
     const revision = self.registry.currentRevision();

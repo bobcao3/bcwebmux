@@ -8,6 +8,8 @@ import { promisify } from "node:util";
 import net from "node:net";
 import { Decompress, decompress } from "fzstd";
 import * as Protocol from "../web/protocol.js";
+import { freePort, terminateProcess, waitFor as poll, delay as wait } from "./test-support.mjs";
+const waitFor = (check, timeout, message) => poll(check, timeout, message, 25);
 const execFileAsync = promisify(execFile),
   {
     SUBPROTOCOL,
@@ -82,9 +84,6 @@ function geometry(bytes, offset = 0) {
     cellWidthPx: readUint16LE(bytes, offset + 4),
     cellHeightPx: readUint16LE(bytes, offset + 6),
   };
-}
-function wait(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 class RawClient {
   constructor(url, origin, name) {
@@ -245,11 +244,11 @@ class RawClient {
     });
   }
   async until(predicate, description, timeoutMs = 5000) {
-    const deadline = Date.now() + timeoutMs;
-    while (Date.now() < deadline) {
+    const deadline = performance.now() + timeoutMs;
+    while (performance.now() < deadline) {
       let frame;
       try {
-        frame = await this.nextFrame(Math.max(1, deadline - Date.now()));
+        frame = await this.nextFrame(Math.max(1, deadline - performance.now()));
       } catch (error) {
         if (error?.message === `${this.name} frame timeout`)
           throw Error(`${this.name} timed out waiting for ${description}`, {
@@ -757,16 +756,6 @@ class RawClient {
     await Promise.race([closed, wait(1000)]);
   }
 }
-async function freePort() {
-  return new Promise((resolve, reject) => {
-    const listener = net.createServer();
-    listener.once("error", reject);
-    listener.listen(0, "127.0.0.1", () => {
-      const port = listener.address().port;
-      listener.close((error) => (error ? reject(error) : resolve(port)));
-    });
-  });
-}
 function mutationHeaders(origin, key) {
   return { Origin: origin, "Idempotency-Key": key };
 }
@@ -788,14 +777,6 @@ async function getSession(base, id) {
   const response = await fetch(`${base}/api/sessions/${id}`);
   assert.equal(response.status, 200);
   return response.json();
-}
-async function waitFor(predicate, timeoutMs, message) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (await predicate()) return;
-    await wait(25);
-  }
-  throw Error(typeof message === "function" ? message() : message);
 }
 async function waitSession(base, id, predicate, message) {
   let latest;
@@ -855,15 +836,6 @@ async function processState(pid) {
     return "";
   }
 }
-async function stopServer(server) {
-  if (!server || server.exitCode !== null) return;
-  server.kill("SIGTERM");
-  await Promise.race([
-    new Promise((resolve) => server.once("exit", resolve)),
-    wait(1500),
-  ]);
-  if (server.exitCode === null) server.kill("SIGKILL");
-}
 const { runSessionWebSocketScenario } = await import(
   "./session-ws-scenario.mjs"
 );
@@ -877,7 +849,7 @@ await runSessionWebSocketScenario(serverPath, {
   mutationHeaders,
   processState,
   sameBytes,
-  stopServer,
+  stopServer: server => terminateProcess(server, 1500),
   unsupportedWebSocket,
   waitFor,
   waitSession,

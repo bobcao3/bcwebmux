@@ -165,6 +165,11 @@ export class TerminalCore {
     };
     return {
       host: {
+        terminal_log: (level, ptr, len) => {
+          const message = decoder.decode(new Uint8Array(this._wasm.memory.buffer, ptr, len));
+          const method = ["error", "warn", "info", "debug"][level] ?? "log";
+          console[method]("terminal WASM:", message);
+        },
         gpu_text_backend: () => this.options.renderer === "kb-canvas" ? 1 : 0,
         gpu_init: (...args) => this._host?._gpuInit(this, ...args) ?? 1,
         gpu_submit: (submissionPtr) => this._host?._gpuSubmit(this, submissionPtr) ?? 0,

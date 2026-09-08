@@ -3,50 +3,11 @@
 
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
-import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
-
-class Cdp {
-  constructor(socket) {
-    this.socket = socket;
-    this.nextId = 1;
-    this.pending = new Map();
-    this.events = [];
-    socket.addEventListener("message", event => {
-      const message = JSON.parse(event.data);
-      if (!message.id) {
-        this.events.push(message);
-        return;
-      }
-      const pending = this.pending.get(message.id);
-      if (!pending) return;
-      this.pending.delete(message.id);
-      if (message.error) pending.reject(new Error(message.error.message));
-      else pending.resolve(message.result);
-    });
-  }
-
-  static async connect(url) {
-    const socket = new WebSocket(url);
-    await new Promise((resolve, reject) => {
-      socket.addEventListener("open", resolve, { once: true });
-      socket.addEventListener("error", reject, { once: true });
-    });
-    return new Cdp(socket);
-  }
-
-  call(method, params = {}) {
-    const id = this.nextId++;
-    this.socket.send(JSON.stringify({ id, method, params }));
-    return new Promise((resolve, reject) => this.pending.set(id, { resolve, reject }));
-  }
-
-  close() {
-    this.socket.close();
-  }
-}
+import { Cdp, freePort, terminateProcess, waitFor as poll, delay } from "./test-support.mjs";
+const waitFor = (check, timeout, message) => poll(check, timeout, message, 25);
 
 const [serverPath, webRoot] = process.argv.slice(2);
 assert.ok(serverPath && webRoot, "usage: mouse-selection-e2e.mjs SERVER WEB_ROOT");
@@ -290,7 +251,7 @@ try {
   assert.notEqual(await evaluate("document.activeElement === document.querySelector('#input')"), true, "keyboard input was active before long touch");
   const txBeforeLongTouch = await evaluate("window.bcwebmux.state.txBytes");
   await dispatchTouch("pointerdown");
-  await new Promise(resolve => setTimeout(resolve, 450));
+  await delay(450);
   await dispatchTouch("pointerup");
   await dispatchTouchClick();
   assert.equal(await evaluate("window.bcwebmux.state.txBytes"), txBeforeLongTouch, "long touch emitted PTY mouse reports");
@@ -698,7 +659,7 @@ try {
     }));
     window.__dispatchScrollTouch("pointerdown", centerY, 0, 1);
   })()`);
-  await new Promise(resolve => setTimeout(resolve, 20));
+  await delay(20);
   await evaluate(`window.__dispatchScrollTouch("pointermove", (${geometry.top} + ${geometry.bottom}) / 2 + 10, -1, 1)`);
   await evaluate("new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))");
   const offsetBeforeMomentum = await evaluate("window.bcwebmux.state.scrollOffset");
@@ -803,8 +764,8 @@ try {
 } finally {
   pageCdp?.close();
   browserCdp?.close();
-  await terminate(chromium);
-  await terminate(server);
+  await terminateProcess(chromium);
+  await terminateProcess(server);
   await rm(profile, { recursive: true, force: true });
 }
 
@@ -814,32 +775,4 @@ function assertDark(color, label) {
 
 function assertGray(color, label) {
   assert.ok(color.every(channel => channel > 75 && channel < 180), `${label} did not retain its background: ${color}`);
-}
-
-async function freePort() {
-  const listener = net.createServer();
-  await new Promise((resolve, reject) => listener.listen(0, "127.0.0.1", resolve).once("error", reject));
-  const port = listener.address().port;
-  await new Promise(resolve => listener.close(resolve));
-  return port;
-}
-
-async function waitFor(check, timeout, message) {
-  const end = Date.now() + timeout;
-  while (Date.now() < end) {
-    const value = await check();
-    if (value) return value;
-    await new Promise(resolve => setTimeout(resolve, 25));
-  }
-  throw new Error(message());
-}
-
-async function terminate(process) {
-  if (!process || process.exitCode !== null) return;
-  process.kill("SIGTERM");
-  await Promise.race([
-    new Promise(resolve => process.once("exit", resolve)),
-    new Promise(resolve => setTimeout(resolve, 1000)),
-  ]);
-  if (process.exitCode === null) process.kill("SIGKILL");
 }

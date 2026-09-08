@@ -30,19 +30,24 @@ pub const Vfs = struct {
         defer output.deinit();
         var decompressor: std.compress.zstd.Decompress = .init(&input, &.{}, .{});
         _ = decompressor.reader.streamRemaining(&output.writer) catch |err| {
-            if (decompressor.err) |decompress_error| return decompressionError(decompress_error);
+            if (decompressor.err) |decompress_error| return decompress_error;
             return err;
         };
         const archive = try output.toOwnedSlice();
+        errdefer allocator.free(archive);
         var reader: std.Io.Reader = .fixed(archive);
-        var name_buffer: [std.fs.max_path_bytes]u8 = undefined;
-        var link_buffer: [std.fs.max_path_bytes]u8 = undefined;
+        var name_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+        var link_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
         var iterator: std.tar.Iterator = .init(&reader, .{
             .file_name_buffer = &name_buffer,
             .link_name_buffer = &link_buffer,
         });
         var files: std.StringHashMapUnmanaged(Asset) = .empty;
-        errdefer files.deinit(allocator);
+        errdefer {
+            var key_iterator = files.keyIterator();
+            while (key_iterator.next()) |key| allocator.free(key.*);
+            files.deinit(allocator);
+        }
         while (try iterator.next()) |file| {
             if (file.kind != .file) continue;
             var name = file.name;
@@ -53,6 +58,7 @@ pub const Vfs = struct {
             if (end > archive.len) return error.InvalidTar;
             if (files.contains(name)) return error.DuplicateAsset;
             const owned_name = try allocator.dupe(u8, name);
+            errdefer allocator.free(owned_name);
             const data = archive[reader.seek..end];
             try files.put(allocator, owned_name, .{
                 .data = data,
@@ -71,6 +77,14 @@ pub const Vfs = struct {
         return self.files.count();
     }
 
+    pub fn deinit(self: *Vfs, allocator: std.mem.Allocator) void {
+        var key_iterator = self.files.keyIterator();
+        while (key_iterator.next()) |key| allocator.free(key.*);
+        self.files.deinit(allocator);
+        allocator.free(self.archive);
+        self.* = undefined;
+    }
+
     pub fn validPath(path: []const u8) bool {
         if (path.len == 0 or path[0] == '/' or path[path.len - 1] == '/') return false;
         var components = std.mem.splitScalar(u8, path, '/');
@@ -81,10 +95,6 @@ pub const Vfs = struct {
         return true;
     }
 };
-
-fn decompressionError(err: std.compress.zstd.Decompress.Error) anyerror {
-    return err;
-}
 
 test "valid asset paths" {
     try std.testing.expect(Vfs.validPath("index.html"));
@@ -98,4 +108,30 @@ test "valid asset paths" {
     try std.testing.expect(!Vfs.validPath(".."));
     try std.testing.expect(!Vfs.validPath("assets/../index.html"));
     try std.testing.expect(!Vfs.validPath("assets\\index.html"));
+}
+
+test "Vfs owns archive and cleans up duplicate assets" {
+    var tar_buffer: [4096]u8 = undefined;
+    var tar_output: std.Io.Writer = .fixed(&tar_buffer);
+    var tar: std.tar.Writer = .{ .underlying_writer = &tar_output };
+    try tar.writeFileBytes("index.html", "hello", .{});
+
+    var frame_buffer: [8192]u8 = undefined;
+    var frame: std.Io.Writer = .fixed(&frame_buffer);
+    // Single raw-block Zstandard frame keeps this ownership test independent of libzstd.
+    try frame.writeAll("\x28\xb5\x2f\xfd\xa0");
+    try frame.writeInt(u32, @intCast(tar_output.buffered().len), .little);
+    try frame.writeInt(u24, @intCast((tar_output.buffered().len << 3) | 1), .little);
+    try frame.writeAll(tar_output.buffered());
+    var assets = try Vfs.init(std.testing.allocator, frame.buffered());
+    defer assets.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings("hello", assets.get("index.html").?.data);
+
+    try tar.writeFileBytes("index.html", "duplicate", .{});
+    frame = .fixed(&frame_buffer);
+    try frame.writeAll("\x28\xb5\x2f\xfd\xa0");
+    try frame.writeInt(u32, @intCast(tar_output.buffered().len), .little);
+    try frame.writeInt(u24, @intCast((tar_output.buffered().len << 3) | 1), .little);
+    try frame.writeAll(tar_output.buffered());
+    try std.testing.expectError(error.DuplicateAsset, Vfs.init(std.testing.allocator, frame.buffered()));
 }

@@ -4,44 +4,9 @@
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
-import net from "node:net";
 import os from "node:os";
 import path from "node:path";
-
-class Cdp {
-  constructor(socket) {
-    this.socket = socket;
-    this.nextId = 1;
-    this.pending = new Map();
-    this.events = [];
-    socket.addEventListener("message", event => {
-      const message = JSON.parse(event.data);
-      if (!message.id) return void this.events.push(message);
-      const pending = this.pending.get(message.id);
-      if (!pending) return;
-      this.pending.delete(message.id);
-      if (message.error) pending.reject(new Error(message.error.message));
-      else pending.resolve(message.result);
-    });
-  }
-
-  static async connect(url) {
-    const socket = new WebSocket(url);
-    await new Promise((resolve, reject) => {
-      socket.addEventListener("open", resolve, { once: true });
-      socket.addEventListener("error", reject, { once: true });
-    });
-    return new Cdp(socket);
-  }
-
-  call(method, params = {}) {
-    const id = this.nextId++;
-    this.socket.send(JSON.stringify({ id, method, params }));
-    return new Promise((resolve, reject) => this.pending.set(id, { resolve, reject }));
-  }
-
-  close() { this.socket.close(); }
-}
+import { Cdp, freePort, terminateProcess, waitFor, delay } from "./test-support.mjs";
 
 const [serverPath, webRoot, outputArgument] = process.argv.slice(2);
 assert.ok(serverPath && webRoot, "usage: session-ui-e2e.mjs SERVER WEB_ROOT [SCREENSHOT_DIR]");
@@ -156,7 +121,7 @@ try {
   await waitBrowser(`(() => { const session = window.bcwebmux.sessions.find(session => session.id === window.bcwebmux.activeSessionId); const title = session?.title?.trim(); const row = document.querySelector('.session-row[data-session-id="${secondId}"]'); return Boolean(title) && row?.querySelector('.session-name')?.textContent.trim() === 'Renamed beta' && document.querySelector('#terminal-identity-primary')?.textContent.trim() === 'Renamed beta' && document.querySelector('#terminal-identity-secondary')?.hidden === false && document.querySelector('#terminal-identity-secondary')?.textContent.trim() === title; })()`, 5000, "renamed identity was not rendered");
   assert.equal(await evaluate(`document.activeElement === document.querySelector('.session-row[data-session-id="${secondId}"] .session-rename')`), true);
   await evaluate(`document.querySelector('.session-row[data-session-id="${firstId}"] .session-rename').focus()`);
-  await new Promise(resolve => setTimeout(resolve, 3500));
+  await delay(3500);
   assert.equal(await evaluate(`document.activeElement === document.querySelector('.session-row[data-session-id="${firstId}"] .session-rename')`), true);
 
   const tabNavigation = await evaluate(`(() => {
@@ -227,7 +192,7 @@ try {
   for (const [width, height] of controls.sizes) assert.ok(width >= 44 && height >= 44, `undersized session control ${width}x${height}`);
 
   await evaluate(`(() => { const tab = document.querySelector('.session-row[data-session-id="${secondId}"] .session-tab'); const rect = tab.getBoundingClientRect(); tab.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerId: 41, pointerType: 'touch', button: 0, buttons: 1, isPrimary: true, clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2 })); })()`);
-  await new Promise(resolve => setTimeout(resolve, 650));
+  await delay(650);
   await waitBrowser(`(() => { const menu = document.querySelector('#session-context-menu'); const tab = document.querySelector('.session-row[data-session-id="${secondId}"] .session-tab'); return Boolean(menu && !menu.hidden && menu.getClientRects().length && getComputedStyle(menu).visibility !== 'hidden' && getComputedStyle(menu).display !== 'none' && tab?.getAttribute('aria-expanded') === 'true' && [...menu.querySelectorAll('[role="menuitem"]')].some(item => item.textContent.trim().toUpperCase() === 'RENAME')); })()`, 2000, "long press did not open session context menu");
   await evaluate(`(() => { const tab = document.querySelector('.session-row[data-session-id="${secondId}"] .session-tab'); const rect = tab.getBoundingClientRect(); tab.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerId: 41, pointerType: 'touch', button: 0, buttons: 0, isPrimary: true, clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2 })); })()`);
   await evaluate("document.querySelector('.session-context-rename').click()");
@@ -237,7 +202,7 @@ try {
 
   await metrics(720);
   await waitBrowser("window.bcwebmux.drawerState.narrow && !window.bcwebmux.drawerState.open", 3000, "720px drawer did not default closed");
-  await new Promise(resolve => setTimeout(resolve, 400));
+  await delay(400);
   const narrowMetadata = await sessionMetadata(secondId);
   const geometryBeforeNarrow = narrowMetadata.geometry;
   const narrowClosedWidth = await evaluate("document.querySelector('#workspace').getBoundingClientRect().width");
@@ -252,7 +217,7 @@ try {
   const narrowOpenWidth = await evaluate("document.querySelector('#workspace').getBoundingClientRect().width");
   assert.equal(narrowOpenWidth, narrowClosedWidth, "narrow drawer changed terminal width");
   await screenshot("session-drawer-narrow.png");
-  await new Promise(resolve => setTimeout(resolve, 400));
+  await delay(400);
   const narrowOpenMetadata = await sessionMetadata(secondId);
   assert.deepEqual(narrowOpenMetadata.geometry, geometryBeforeNarrow, "narrow overlay proposed canonical resize");
   assert.equal(narrowOpenMetadata.revision, narrowMetadata.revision, "narrow overlay journaled a redundant resize");
@@ -270,19 +235,19 @@ try {
   const docked = await evaluate("document.querySelector('#workspace').getBoundingClientRect().left");
   assert.ok(docked >= 238, `docked drawer width was ${docked}`);
 
-  await new Promise(resolve => setTimeout(resolve, 400));
+  await delay(400);
   const openMetadata = await sessionMetadata(secondId);
   const openGeometry = openMetadata.geometry;
   await evaluate("document.querySelector('#session-toggle').click()");
   await waitBrowser("!window.bcwebmux.drawerState.open", 1000, "wide drawer did not close");
   await waitFor(async () => (await sessionGeometry(secondId)).cols > openGeometry.cols, 5000, "wide drawer close did not resize controller PTY");
-  await new Promise(resolve => setTimeout(resolve, 250));
+  await delay(250);
   const closedMetadata = await sessionMetadata(secondId);
   const closedGeometry = closedMetadata.geometry;
   assert.equal(closedMetadata.revision, openMetadata.revision + 1, JSON.stringify({ openMetadata, closedMetadata }));
   await evaluate("document.querySelector('#session-toggle').click()");
   await waitFor(async () => (await sessionGeometry(secondId)).cols < closedGeometry.cols, 5000, "wide drawer open did not resize controller PTY");
-  await new Promise(resolve => setTimeout(resolve, 250));
+  await delay(250);
   const reopenedMetadata = await sessionMetadata(secondId);
   assert.equal(reopenedMetadata.revision, closedMetadata.revision + 1, JSON.stringify({ openMetadata, closedMetadata, reopenedMetadata }));
 
@@ -377,71 +342,6 @@ async function sessionMetadata(id) {
 async function screenshot(name) {
   const capture = await page.call("Page.captureScreenshot", { format: "png", fromSurface: true });
   await writeFile(path.join(screenshotDir, name), Buffer.from(capture.data, "base64"));
-}
-
-async function freePort() {
-  const listener = net.createServer();
-  await new Promise((resolve, reject) => listener.listen(0, "127.0.0.1", resolve).once("error", reject));
-  const port = listener.address().port;
-  await new Promise(resolve => listener.close(resolve));
-  return port;
-}
-
-async function waitFor(check, timeout, message) {
-  const end = Date.now() + timeout;
-  while (Date.now() < end) {
-    const value = await check();
-    if (value) return value;
-    await new Promise(resolve => setTimeout(resolve, 50));
-  }
-  throw new Error(message);
-}
-
-function signalProcess(child, signal) {
-  if (child.detachedGroup) {
-    try {
-      globalThis.process.kill(-child.pid, signal);
-      return;
-    } catch {}
-  }
-  child.kill(signal);
-}
-
-function processGroupAlive(child) {
-  if (!child?.detachedGroup || child.pid == null) return false;
-  try {
-    globalThis.process.kill(-child.pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-async function terminateProcess(child) {
-  if (!child) return;
-  const leaderRunning = child.exitCode === null;
-  if (leaderRunning || processGroupAlive(child)) {
-    signalProcess(child, "SIGTERM");
-  }
-  if (leaderRunning) {
-    await Promise.race([
-      new Promise(resolve => child.once("exit", resolve)),
-      new Promise(resolve => setTimeout(resolve, 1000)),
-    ]);
-  }
-  if (processGroupAlive(child)) {
-    signalProcess(child, "SIGKILL");
-    await Promise.race([
-      new Promise(resolve => child.once("exit", resolve)),
-      new Promise(resolve => setTimeout(resolve, 100)),
-    ]);
-  } else if (!child.detachedGroup && child.exitCode === null) {
-    signalProcess(child, "SIGKILL");
-    await Promise.race([
-      new Promise(resolve => child.once("exit", resolve)),
-      new Promise(resolve => setTimeout(resolve, 1000)),
-    ]);
-  }
 }
 
 async function cleanup() {

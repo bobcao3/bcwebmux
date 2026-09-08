@@ -72,11 +72,26 @@ pub fn beginAttach(
     if (connection_id == 0 or attachment_id == 0) return error.InvalidAttachment;
     session.mutex.lockUncancelable(session.io);
     defer session.mutex.unlock(session.io);
-    if (session.attachment_count >= session.limits.max_attachments_per_session) return error.AttachmentLimit;
     if (findByConnectionAttachment(session, connection_id, attachment_id) != null) return error.AttachmentExists;
-    const slot_index = freeSlot(session) orelse return error.AttachmentLimit;
-    const high_event_seq = session.next_event_seq -| 1;
     const generation_matches = std.mem.eql(u8, &generation, &session.generation);
+    // Logical resume continues the same owner; session-owned pending resize operations remain intact.
+    var replacement_index: ?usize = null;
+    if (generation_matches) {
+        for (session.attachments, 0..) |attachment, index| {
+            if (attachment.active and
+                std.mem.eql(u8, &attachment.client_id, &client_id) and
+                attachment.key.attachment_id == attachment_id and
+                attachment.key.connection_id != connection_id)
+            {
+                replacement_index = index;
+                break;
+            }
+        }
+    }
+    if (replacement_index == null and session.attachment_count >= session.limits.max_attachments_per_session)
+        return error.AttachmentLimit;
+    const slot_index = replacement_index orelse (freeSlot(session) orelse return error.AttachmentLimit);
+    const high_event_seq = session.next_event_seq -| 1;
     const resumable = generation_matches and cursorAvailable(session, event_seq, output_offset);
     const mode: AttachMode = if (resumable)
         .tail
@@ -103,7 +118,14 @@ pub fn beginAttach(
         try allocator.alloc(u8, 0);
     errdefer allocator.free(checkpoint);
     const epoch = session.next_attachment_epoch;
-    session.next_attachment_epoch = std.math.add(u64, epoch, 1) catch return error.EpochExhausted;
+    const next_epoch = std.math.add(u64, epoch, 1) catch return error.EpochExhausted;
+    const transferring_controller = replacement_index != null and
+        keyEqual(session.controller_key, session.attachments[slot_index].key);
+    const next_lease_epoch = if (transferring_controller)
+        std.math.add(u64, session.lease_epoch, 1) catch return error.EpochExhausted
+    else
+        session.lease_epoch;
+    session.next_attachment_epoch = next_epoch;
     session.activity_order +%= 1;
     const key: Session.AttachmentKey = .{
         .connection_id = connection_id,
@@ -125,7 +147,11 @@ pub fn beginAttach(
             .reset => 0,
         },
     };
-    session.attachment_count += 1;
+    if (transferring_controller) {
+        session.lease_epoch = next_lease_epoch;
+        session.controller_key = key;
+    }
+    if (replacement_index == null) session.attachment_count += 1;
     session.bumpRevision();
     return .{
         .allocator = allocator,
@@ -368,10 +394,13 @@ fn copyEventsAfter(session: *Session, allocator: std.mem.Allocator, event_seq: u
         high_event_seq = event.seq;
         high_output_offset = event.output_offset + if (event.kind == .output) event.byte_len else 0;
     }
+    const owned_events = try events.toOwnedSlice(allocator);
+    errdefer allocator.free(owned_events);
+    const owned_bytes = try bytes.toOwnedSlice(allocator);
     return .{
         .allocator = allocator,
-        .events = try events.toOwnedSlice(allocator),
-        .bytes = try bytes.toOwnedSlice(allocator),
+        .events = owned_events,
+        .bytes = owned_bytes,
         .high_event_seq = high_event_seq,
         .high_output_offset = high_output_offset,
     };
@@ -390,4 +419,190 @@ fn cursorOffset(session: *Session, event_seq: u64) ?u64 {
         return event.output_offset;
     }
     return if (event_seq == 0 and session.checkpoint_event_seq == 0) 0 else null;
+}
+
+test "replay allocation failures release transferred slices" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, struct {
+        fn run(allocator: std.mem.Allocator) !void {
+            var journal = Session.Journal.init(allocator, 64);
+            defer journal.deinit();
+            try journal.appendOutput("abc", 1, 0, 0);
+
+            var session: Session = undefined;
+            session.journal = journal;
+            session.next_event_seq = 2;
+            session.output_offset = 3;
+            session.checkpoint_event_seq = 0;
+            session.current_checkpoint = null;
+
+            var batch = try copyEventsAfter(&session, allocator, 0, 64);
+            defer batch.deinit();
+            try std.testing.expectEqualStrings("abc", batch.bytes);
+            try std.testing.expectEqual(@as(usize, 1), batch.events.len);
+        }
+    }.run, .{});
+}
+
+fn resumeTestSession(revision: *std.atomic.Value(u64)) Session {
+    var session: Session = undefined;
+    session.io = std.testing.io;
+    session.mutex = .init;
+    session.registry_revision = revision;
+    session.limits = .{ .max_attachments_per_session = 1 };
+    session.generation = .{1} ** 16;
+    session.geometry = .{ .cols = 80, .rows = 24 };
+    session.initial_geometry = session.geometry;
+    session.state = .running;
+    session.journal = Session.Journal.init(std.testing.allocator, 64);
+    session.current_checkpoint = null;
+    session.checkpoint_event_seq = 0;
+    session.next_event_seq = 1;
+    session.output_offset = 0;
+    session.attachments = [_]Session.AttachmentState{.{}} ** Session.max_attachment_slots;
+    session.attachment_count = 0;
+    session.next_attachment_epoch = 1;
+    session.activity_order = 0;
+    session.controller_key = null;
+    session.lease_epoch = 0;
+    session.pending_resizes = [_]Session.PendingResize{.{}} ** Session.max_attachment_slots;
+    session.next_resize_operation = 1;
+    session.pending_resize_count = 0;
+    return session;
+}
+
+test "logical resume at capacity fences old controller and waits for replay ACK" {
+    var revision: std.atomic.Value(u64) = .init(0);
+    var session = resumeTestSession(&revision);
+    defer session.journal.deinit();
+    const client: Session.Id = .{2} ** 16;
+    var old = try beginAttach(&session, std.testing.allocator, 1, 10, client, session.generation, 0, 0);
+    defer old.deinit();
+    try acknowledge(&session, old.key, 0, 0);
+    const old_lease = try claimControl(&session, old.key);
+    try std.testing.expectError(error.AttachmentExists, beginAttach(&session, std.testing.allocator, 1, 10, client, session.generation, 0, 0));
+    try std.testing.expectError(error.AttachmentLimit, beginAttach(&session, std.testing.allocator, 2, 10, .{3} ** 16, session.generation, 0, 0));
+    try std.testing.expectError(error.AttachmentLimit, beginAttach(&session, std.testing.allocator, 2, 11, client, session.generation, 0, 0));
+    try std.testing.expectError(error.AttachmentLimit, beginAttach(&session, std.testing.allocator, 2, 10, client, .{9} ** 16, 0, 0));
+    var resumed = try beginAttach(&session, std.testing.allocator, 2, 10, client, session.generation, 0, 0);
+    defer resumed.deinit();
+    try std.testing.expectEqual(@as(u8, 1), session.attachment_count);
+    try std.testing.expectEqual(old.key.epoch + 1, resumed.key.epoch);
+    try std.testing.expectEqual(old_lease.epoch + 1, resumed.lease.epoch);
+    try std.testing.expect(keyEqual(session.controller_key, resumed.key));
+    try std.testing.expectError(error.AttachmentNotLive, applyInput(&session, resumed.key, resumed.lease.epoch, 0, 1, "x"));
+    try std.testing.expectError(error.AttachmentNotFound, applyInput(&session, old.key, old_lease.epoch, 0, 1, "x"));
+    try std.testing.expectError(error.AttachmentNotFound, acknowledge(&session, old.key, 0, 0));
+    try std.testing.expectError(error.AttachmentNotFound, claimControl(&session, old.key));
+    _ = detach(&session, old.key);
+    try std.testing.expectEqual(@as(u8, 1), session.attachment_count);
+    try std.testing.expect(keyEqual(session.controller_key, resumed.key));
+    try std.testing.expectError(error.InvalidCursor, acknowledge(&session, resumed.key, 1, 0));
+    try std.testing.expectError(error.AttachmentNotLive, validateControllerLocked(&session, resumed.key, resumed.lease.epoch, 0));
+    try acknowledge(&session, resumed.key, 0, 0);
+    _ = try validateControllerLocked(&session, resumed.key, resumed.lease.epoch, 0);
+    try std.testing.expectError(error.LeaseLost, validateControllerLocked(&session, resumed.key, old_lease.epoch, 0));
+}
+
+test "logical resume preserves readers and pending resize owners" {
+    var revision: std.atomic.Value(u64) = .init(0);
+    var session = resumeTestSession(&revision);
+    defer session.journal.deinit();
+    session.limits.max_attachments_per_session = 2;
+    const client: Session.Id = .{2} ** 16;
+    var controller = try beginAttach(&session, std.testing.allocator, 1, 10, client, session.generation, 0, 0);
+    defer controller.deinit();
+    try acknowledge(&session, controller.key, 0, 0);
+    const lease = try claimControl(&session, controller.key);
+    var reader = try beginAttach(&session, std.testing.allocator, 1, 11, client, session.generation, 0, 0);
+    defer reader.deinit();
+    var resumed = try beginAttach(&session, std.testing.allocator, 2, 11, client, session.generation, 0, 0);
+    defer resumed.deinit();
+    try std.testing.expectEqual(lease.epoch, resumed.lease.epoch);
+    try std.testing.expect(keyEqual(session.controller_key, controller.key));
+    try acknowledge(&session, resumed.key, 0, 0);
+    try std.testing.expectError(error.LeaseLost, validateControllerLocked(&session, resumed.key, lease.epoch, 0));
+    session.pending_resizes[0] = .{ .active = true, .operation_id = 41, .geometry = .{ .cols = 100, .rows = 30, .cell_width_px = 9, .cell_height_px = 18 } };
+    session.pending_resizes[1] = .{ .active = true, .operation_id = 42, .geometry = .{ .cols = 120, .rows = 40, .cell_width_px = 10, .cell_height_px = 20 } };
+    session.pending_resize_count = 2;
+    session.next_resize_operation = 43;
+    const pending = session.pending_resizes;
+    try std.testing.expectError(error.ResizePending, claimControl(&session, resumed.key));
+    var handover = try beginAttach(&session, std.testing.allocator, 3, 10, client, session.generation, 0, 0);
+    defer handover.deinit();
+    try std.testing.expectEqual(@as(u8, 2), session.attachment_count);
+    try std.testing.expectEqual(lease.epoch + 1, handover.lease.epoch);
+    try std.testing.expect(keyEqual(session.controller_key, handover.key));
+    try std.testing.expectError(error.AttachmentNotLive, applyInput(&session, handover.key, handover.lease.epoch, 0, 1, "x"));
+    try std.testing.expectError(error.AttachmentNotFound, applyInput(&session, controller.key, lease.epoch, 0, 1, "x"));
+    try std.testing.expectError(error.AttachmentNotFound, acknowledge(&session, controller.key, 0, 0));
+    try std.testing.expectError(error.AttachmentNotFound, claimControl(&session, controller.key));
+    _ = detach(&session, controller.key);
+    try std.testing.expectEqual(@as(u8, 2), session.attachment_count);
+    try acknowledge(&session, handover.key, 0, 0);
+    _ = try validateControllerLocked(&session, handover.key, handover.lease.epoch, 0);
+    try std.testing.expectError(error.ResizePending, claimControl(&session, resumed.key));
+    try std.testing.expectEqualDeep(pending, session.pending_resizes);
+    try std.testing.expectEqual(@as(u8, 2), session.pending_resize_count);
+    try std.testing.expectEqual(@as(u64, 43), session.next_resize_operation);
+}
+
+test "logical resume epoch failures preserve old slot and counters" {
+    var revision: std.atomic.Value(u64) = .init(0);
+    var session = resumeTestSession(&revision);
+    defer session.journal.deinit();
+    const client: Session.Id = .{2} ** 16;
+    var old = try beginAttach(&session, std.testing.allocator, 1, 10, client, session.generation, 0, 0);
+    defer old.deinit();
+    try acknowledge(&session, old.key, 0, 0);
+    _ = try claimControl(&session, old.key);
+    const activity = session.activity_order;
+    const rev = revision.load(.monotonic);
+    session.next_attachment_epoch = std.math.maxInt(u64);
+    try std.testing.expectError(error.EpochExhausted, beginAttach(&session, std.testing.allocator, 2, 10, client, session.generation, 0, 0));
+    session.next_attachment_epoch = 2;
+    session.lease_epoch = std.math.maxInt(u64);
+    try std.testing.expectError(error.EpochExhausted, beginAttach(&session, std.testing.allocator, 2, 10, client, session.generation, 0, 0));
+    try std.testing.expectEqual(@as(u64, 2), session.next_attachment_epoch);
+    try std.testing.expectEqual(activity, session.activity_order);
+    try std.testing.expectEqual(rev, revision.load(.monotonic));
+    try std.testing.expectEqual(@as(u8, 1), session.attachment_count);
+    try std.testing.expect(keyEqual(session.controller_key, old.key));
+    _ = try validateControllerLocked(&session, old.key, session.lease_epoch, 0);
+}
+
+test "logical resume replay allocation failures leave old attachment valid" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, struct {
+        fn run(allocator: std.mem.Allocator) !void {
+            var revision: std.atomic.Value(u64) = .init(0);
+            var session = resumeTestSession(&revision);
+            defer session.journal.deinit();
+            const client: Session.Id = .{2} ** 16;
+            var old = try beginAttach(&session, std.testing.allocator, 1, 10, client, session.generation, 0, 0);
+            defer old.deinit();
+            try acknowledge(&session, old.key, 0, 0);
+            const lease = try claimControl(&session, old.key);
+            try session.journal.appendOutput("abc", 1, 0, 0);
+            session.next_event_seq = 2;
+            session.output_offset = 3;
+            const rev = revision.load(.monotonic);
+            const activity = session.activity_order;
+            var resumed = beginAttach(&session, allocator, 2, 10, client, session.generation, 0, 0) catch |err| {
+                try std.testing.expectEqual(@as(u8, 1), session.attachment_count);
+                try std.testing.expectEqual(@as(u64, 2), session.next_attachment_epoch);
+                try std.testing.expectEqual(lease.epoch, session.lease_epoch);
+                try std.testing.expectEqual(activity, session.activity_order);
+                try std.testing.expectEqual(rev, revision.load(.monotonic));
+                try std.testing.expect(keyEqual(session.controller_key, old.key));
+                _ = try validateControllerLocked(&session, old.key, lease.epoch, 0);
+                return err;
+            };
+            defer resumed.deinit();
+            try std.testing.expectEqualStrings("abc", resumed.bytes);
+            try std.testing.expectError(error.AttachmentNotLive, applyInput(&session, resumed.key, resumed.lease.epoch, 0, 1, "x"));
+            try acknowledge(&session, resumed.key, 0, 0);
+            try std.testing.expectError(error.AttachmentNotLive, validateControllerLocked(&session, resumed.key, resumed.lease.epoch, 0));
+            try acknowledge(&session, resumed.key, 1, 3);
+            _ = try validateControllerLocked(&session, resumed.key, resumed.lease.epoch, 1);
+        }
+    }.run, .{});
 }

@@ -193,25 +193,35 @@ export function resize(renderer, widthValue, heightValue) {
 
 export async function readPixels(renderer) {
   await renderer.device.queue.onSubmittedWorkDone();
+  if (renderer.disposed) throw new Error("renderer disposed");
   const width = renderer.canvas.width;
   const height = renderer.canvas.height;
   const bytesPerRow = Math.ceil(width * 4 / 256) * 256;
   const buffer = renderer.device.createBuffer({ size: bytesPerRow * height, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST });
-  const encoder = renderer.device.createCommandEncoder();
-  encoder.copyTextureToBuffer({ texture: renderer.offscreen }, { buffer, bytesPerRow, rowsPerImage: height }, [width, height, 1]);
-  renderer.device.queue.submit([encoder.finish()]);
-  await buffer.mapAsync(GPUMapMode.READ);
-  const source = new Uint8Array(buffer.getMappedRange());
-  const data = new Uint8Array(width * height * 4);
-  for (let y = 0; y < height; y += 1) data.set(source.subarray(y * bytesPerRow, y * bytesPerRow + width * 4), y * width * 4);
-  buffer.unmap();
-  buffer.destroy();
-  return { width, height, format: renderer.format, data };
+  try {
+    const encoder = renderer.device.createCommandEncoder();
+    encoder.copyTextureToBuffer({ texture: renderer.offscreen }, { buffer, bytesPerRow, rowsPerImage: height }, [width, height, 1]);
+    renderer.device.queue.submit([encoder.finish()]);
+    await buffer.mapAsync(GPUMapMode.READ);
+    const source = new Uint8Array(buffer.getMappedRange());
+    const data = new Uint8Array(width * height * 4);
+    for (let y = 0; y < height; y += 1) data.set(source.subarray(y * bytesPerRow, y * bytesPerRow + width * 4), y * width * 4);
+    buffer.unmap();
+    return { width, height, format: renderer.format, data };
+  } finally {
+    buffer.destroy();
+  }
 }
 
 export function dispose(renderer) {
-  if (renderer.error === "disposed") return;
+  if (renderer.disposed) return;
+  renderer.disposed = true;
+  renderer.device?.removeEventListener("uncapturederror", renderer.onUncapturedError);
+  for (const frame of renderer.presentationFrames) cancelAnimationFrame(frame);
+  renderer.presentationFrames.clear();
+  renderer.queueProbePending = false;
   if (renderer.blinkTimer) clearTimeout(renderer.blinkTimer);
+  renderer.blinkTimer = null;
   renderer.atlas?.dispose?.();
   renderer.offscreen?.destroy?.();
   renderer.frameUploadBuffer?.destroy?.();

@@ -11,14 +11,67 @@ import { crc32c, equalBytes } from "./SessionWire.js";
 
 const MAX_CHECKPOINT_BYTES = 16 * 1024 * 1024;
 
+// Release the transaction's await on retirement; a late core is still disposed.
+// WebCrypto itself cannot be canceled, but its eventual result has no authority.
+function cancellable(start, signals, pool, discard = () => {}) {
+  return new Promise((resolve, reject) => {
+    let canceled = false, running = false;
+    const cleanup = () => { for (const signal of signals) signal.removeEventListener("abort", abort); };
+    const abort = () => {
+      canceled = true;
+      cleanup();
+      if (!running && pool) {
+        const index = pool.waiters.indexOf(run);
+        if (index >= 0) pool.waiters.splice(index, 1);
+      }
+      resolve(null);
+    };
+    const complete = () => {
+      cleanup();
+      if (pool) {
+        pool.active--;
+        pool.waiters.shift()?.();
+      }
+    };
+    const run = () => {
+      if (canceled) return;
+      running = true;
+      if (pool) pool.active++;
+      let promise;
+      try { promise = Promise.resolve(start()); }
+      catch (error) { complete(); reject(error); return; }
+      promise.then(value => {
+        // Cancellation settles the JS waiter, not this actual-job slot.
+        try { if (canceled) discard(value); else resolve(value); }
+        finally { complete(); }
+      }, error => {
+        if (!canceled) reject(error);
+        complete();
+      });
+    };
+    if (signals.some(signal => signal.aborted)) return abort();
+    for (const signal of signals) signal.addEventListener("abort", abort, { once: true });
+    if (pool && pool.active >= 2) pool.waiters.push(run);
+    else run();
+  });
+}
+
+function cancellationSignals(record) {
+  return [record.attempt?.cancel.signal, record.restoreCancel?.signal].filter(Boolean);
+}
+
 export async function ensureShadow(terminal, records, record, onData) {
   if (!terminal || record.previousCore) return true;
   const key = record.attachmentId.toString();
   const epoch = record.epoch;
+  const attempt = record.attempt;
+  const transaction = record.transaction;
   const originalCore = record.core;
-  const shadow = await terminal.createCore();
+  const shadow = await cancellable(() => terminal.createCore(), cancellationSignals(record), record.restoreJobs?.core, core => core.dispose());
+  if (!shadow) return false;
   if (
     !record.active ||
+    attempt?.retired || record.attempt !== attempt || record.transaction !== transaction ||
     records.get(key) !== record ||
     record.attachmentId.toString() !== key ||
     record.epoch !== epoch ||
@@ -28,6 +81,7 @@ export async function ensureShadow(terminal, records, record, onData) {
     return false;
   }
   record.previousWasHostActive = terminal.core === record.core;
+  record.previousCursor = { eventSeq: record.eventSeq, outputOffset: record.outputOffset };
   record.previousCore = record.core;
   record.previousInputDisposable = record.inputDisposable;
   record.core = shadow;
@@ -36,6 +90,10 @@ export async function ensureShadow(terminal, records, record, onData) {
 }
 
 export function rollbackShadow(record) {
+  if (record.restoreGeneration) {
+    record.generation = record.restoreGeneration;
+    record.restoreGeneration = null;
+  }
   if (!record.previousCore) return;
   record.inputDisposable?.dispose();
   record.core?.dispose();
@@ -44,6 +102,11 @@ export function rollbackShadow(record) {
   record.previousCore = null;
   record.previousInputDisposable = null;
   record.previousWasHostActive = false;
+  if (record.previousCursor) {
+    record.eventSeq = record.previousCursor.eventSeq;
+    record.outputOffset = record.previousCursor.outputOffset;
+    record.previousCursor = null;
+  }
 }
 
 export function clearCheckpoint(record) {
@@ -53,6 +116,9 @@ export function clearCheckpoint(record) {
 }
 
 export function resetCheckpointTransaction(record) {
+  record.restoreCancel?.abort();
+  record.restoreCancel = new AbortController();
+  record.transaction = (record.transaction ?? 0) + 1;
   clearCheckpoint(record);
   rollbackShadow(record);
 }
@@ -98,9 +164,19 @@ export async function finishCheckpoint(record, frame) {
     throw new Error("incomplete checkpoint");
   }
   const epoch = record.epoch;
+  const attempt = record.attempt;
+  const transaction = record.transaction;
   const checkpoint = record.checkpoint;
-  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", checkpoint));
-  if (!record.active || record.epoch !== epoch || record.checkpoint !== checkpoint) return null;
+  let resultDigest;
+  try {
+    resultDigest = await cancellable(() => crypto.subtle.digest("SHA-256", checkpoint), cancellationSignals(record), record.restoreJobs?.digest);
+  } catch (cause) {
+    const error = new Error("checkpoint digest operation failed", { cause });
+    error.checkpointOperation = true;
+    throw error;
+  }
+  if (!resultDigest || !record.active || attempt?.retired || record.attempt !== attempt || record.transaction !== transaction || record.epoch !== epoch || record.checkpoint !== checkpoint) return null;
+  const digest = new Uint8Array(resultDigest);
   if (!equalBytes(digest, record.checkpointHash) || !equalBytes(digest, frame.payload)) {
     throw new Error("checkpoint hash mismatch");
   }

@@ -56,17 +56,21 @@ pub fn init(
     limits: manifest.Limits,
 ) !Self {
     if (limits.max_exited_sessions < limits.max_live_sessions or limits.max_exited_sessions > 64 or limits.max_attachments_per_session > Session.max_attachment_slots) return error.InvalidLimits;
+    const owned_executable = try allocator.dupe(u8, executable);
+    errdefer allocator.free(owned_executable);
+    const owned_shell = try allocator.dupe(u8, shell);
+    errdefer allocator.free(owned_shell);
     var server_instance: Session.Id = undefined;
     try randomId(io, &server_instance);
     var self: Self = .{
         .allocator = allocator,
         .io = io,
-        .executable = executable,
-        .shell = shell,
+        .executable = owned_executable,
+        .shell = owned_shell,
         .limits = limits,
         .server_instance = server_instance,
     };
-    const session_capacity = std.math.cast(u32, limits.max_exited_sessions) orelse return error.SessionLimitTooLarge;
+    const session_capacity = @as(u32, @intCast(limits.max_exited_sessions));
     try self.sessions.ensureTotalCapacity(allocator, session_capacity);
     return self;
 }
@@ -78,6 +82,8 @@ pub fn deinit(self: *Self) void {
     iterator = self.sessions.valueIterator();
     while (iterator.next()) |entry| entry.*.destroy();
     self.sessions.deinit(self.allocator);
+    self.allocator.free(self.executable);
+    self.allocator.free(self.shell);
     self.* = undefined;
 }
 
@@ -108,8 +114,8 @@ pub fn create(
         self.mutex.unlock(self.io);
         return .{ .metadata = metadata, .replayed = true };
     }
-    const counts = self.countStatesLocked();
-    if (counts.live + self.creating_count >= self.limits.max_live_sessions) {
+    const live_count = self.countLiveLocked();
+    if (live_count + self.creating_count >= self.limits.max_live_sessions) {
         self.mutex.unlock(self.io);
         return error.LiveSessionLimit;
     }
@@ -157,7 +163,6 @@ pub fn create(
     }
     self.sessions.putAssumeCapacity(id, session);
     _ = self.revision.fetchAdd(1, .monotonic);
-    self.storeIdempotency(.create, key_hash, request_hash, id);
     self.group.concurrent(self.io, Session.run, .{session}) catch |err| {
         _ = self.sessions.remove(id);
         _ = self.revision.fetchAdd(1, .monotonic);
@@ -167,6 +172,7 @@ pub fn create(
         session.destroy();
         return err;
     };
+    self.storeIdempotency(.create, key_hash, request_hash, id);
     const metadata = session.snapshotMetadata();
     self.mutex.unlock(self.io);
     return .{ .metadata = metadata, .replayed = false };
@@ -245,8 +251,9 @@ pub fn terminate(
     _ = self.revision.fetchAdd(1, .monotonic);
     self.storeIdempotency(.terminate, key_hash, request_hash, id);
     const metadata = session.snapshotMetadata();
-    self.mutex.unlock(self.io);
+    // The session stays pinned by the registry lock while signaling termination.
     session.signalTerminate();
+    self.mutex.unlock(self.io);
     return .{ .metadata = metadata, .replayed = false };
 }
 
@@ -455,15 +462,14 @@ fn storeIdempotency(self: *Self, operation: Operation, key_hash: [32]u8, request
     };
 }
 
-fn countStatesLocked(self: *Self) struct { live: usize, exited: usize } {
+fn countLiveLocked(self: *Self) usize {
     var live: usize = 0;
-    var exited: usize = 0;
     var iterator = self.sessions.valueIterator();
     while (iterator.next()) |entry| switch (entry.*.snapshotMetadata().state) {
         .creating, .running, .terminating => live += 1,
-        .exited, .failed => exited += 1,
+        .exited, .failed => {},
     };
-    return .{ .live = live, .exited = exited };
+    return live;
 }
 
 fn newerFirst(_: void, a: Session.Metadata, b: Session.Metadata) bool {
@@ -471,7 +477,7 @@ fn newerFirst(_: void, a: Session.Metadata, b: Session.Metadata) bool {
 }
 
 fn validName(name: []const u8, max_bytes: usize) bool {
-    if (name.len > max_bytes or !std.unicode.utf8ValidateSlice(name)) return false;
+    if (name.len > max_bytes or name.len > @sizeOf(@FieldType(Session.Metadata, "name")) or !std.unicode.utf8ValidateSlice(name)) return false;
     for (name) |byte| if (byte < 0x20 or byte == 0x7f) return false;
     return true;
 }
@@ -533,11 +539,17 @@ fn hexNibble(byte: u8) ?u8 {
     };
 }
 
-test "session IDs round trip" {
+test "session IDs and names are bounded" {
     const id: Session.Id = .{ 0, 1, 2, 3, 4, 5, 0x46, 7, 0x88, 9, 10, 11, 12, 13, 14, 15 };
     var buffer: [36]u8 = undefined;
     const text = formatId(id, &buffer);
     try std.testing.expectEqualStrings("00010203-0405-4607-8809-0a0b0c0d0e0f", text);
     try std.testing.expectEqual(id, parseId(text).?);
     try std.testing.expect(parseId("not-an-id") == null);
+    const valid_name = [_]u8{'a'} ** 80;
+    const oversized_name = [_]u8{'a'} ** 81;
+    try std.testing.expect(validName(&valid_name, 100));
+    try std.testing.expect(!validName(&oversized_name, 100));
+    try std.testing.expect(!validName(&[_]u8{0xff}, 100));
+    try std.testing.expect(!validName("bad\nname", 100));
 }

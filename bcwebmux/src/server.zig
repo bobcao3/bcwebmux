@@ -7,11 +7,8 @@ const SessionRegistry = @import("SessionRegistry.zig");
 const SessionSocket = @import("SessionSocket.zig");
 const session_api = @import("session_api.zig");
 const session_manifest = @import("session_manifest.zig");
-const session_worker = @import("session_worker.zig");
+const pty_worker = @import("pty_worker.zig");
 const embedded_assets = @import("web_assets").data;
-const c = @cImport({
-    @cInclude("stdlib.h");
-});
 
 const App = struct {
     io: std.Io,
@@ -37,7 +34,7 @@ pub fn main(init: std.process.Init) !void {
         const cols = std.fmt.parseInt(u16, args[3], 10) catch return error.InvalidArgument;
         const rows = std.fmt.parseInt(u16, args[4], 10) catch return error.InvalidArgument;
         if (cols == 0 or rows == 0) return error.InvalidArgument;
-        try session_worker.run(args[2], cols, rows, .{});
+        try pty_worker.run(init.io, args[2], cols, rows, .{});
         return;
     }
     if (args.len == 2 and std.mem.eql(u8, args[1], "--help")) {
@@ -57,13 +54,14 @@ pub fn main(init: std.process.Init) !void {
         std.debug.print("warning: server was built in Debug mode; Ghostty can be very slow in Debug mode\n", .{});
     }
     const config = try parseArgs(args);
-    const shell = config.shell orelse defaultShell();
+    const shell = config.shell orelse try arena.dupeZ(u8, init.environ_map.get("SHELL") orelse "/bin/sh");
     var origin_buffer: [512]u8 = undefined;
     const origin = config.origin orelse try std.fmt.bufPrint(&origin_buffer, "http://{s}:{d}", .{ config.host, config.port });
     const limits: session_manifest.Limits = .{ .max_live_sessions = config.max_sessions };
     var registry = try SessionRegistry.init(std.heap.smp_allocator, init.io, args[0], shell, limits);
     defer registry.deinit();
-    const assets = try vfs.Vfs.init(arena, embedded_assets);
+    var assets = try vfs.Vfs.init(arena, embedded_assets);
+    defer assets.deinit(arena);
     const asset_dir = if (config.web_root) |web_root|
         try std.Io.Dir.cwd().openDir(init.io, web_root, .{})
     else
@@ -132,13 +130,9 @@ fn parseArgs(args: []const [:0]const u8) !Config {
     return config;
 }
 
-fn defaultShell() [:0]const u8 {
-    const value = c.getenv("SHELL") orelse return "/bin/sh";
-    return std.mem.span(value);
-}
-
 fn handleConnection(app: *App, stream: std.Io.net.Stream) void {
     defer stream.close(app.io);
+    // Zig 0.16 std.Io.net exposes no TCP_NODELAY socket option; keep this POSIX-only tuning at the boundary.
     var tcp_nodelay: c_int = 1;
     std.posix.setsockopt(stream.socket.handle, std.posix.IPPROTO.TCP, std.posix.TCP.NODELAY, std.mem.asBytes(&tcp_nodelay)) catch |err| {
         std.log.warn("failed to enable TCP_NODELAY: {t}", .{err});

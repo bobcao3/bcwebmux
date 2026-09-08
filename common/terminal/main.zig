@@ -6,6 +6,27 @@ const Terminal = @import("Terminal.zig");
 
 pub const std_options_debug_io: std.Io = std.Io.failing;
 
+// Freestanding WASM has no stderr or cancellation backend. std.log.defaultLog
+// calls debug_io.swapCancelProtection even with Io.failing, which traps before
+// it can discard a failed write. Route diagnostics through the browser host.
+pub const std_options: std.Options = .{ .logFn = log };
+
+extern "host" fn terminal_log(level: u32, ptr: [*]const u8, len: usize) void;
+
+fn log(
+    comptime level: std.log.Level,
+    comptime scope: @EnumLiteral(),
+    comptime format: []const u8,
+    args: anytype,
+) void {
+    // Bounded, allocation-free diagnostics; a long message keeps its prefix.
+    var buffer: [2048]u8 = undefined;
+    var writer: std.Io.Writer = .fixed(&buffer);
+    writer.print("(" ++ @tagName(scope) ++ "): " ++ format, args) catch {};
+    const message = writer.buffered();
+    terminal_log(@intFromEnum(level), message.ptr, message.len);
+}
+
 // A WebAssembly instance exposes one terminal through this C-shaped ABI.
 // Each new WebAssembly instance calls term_bootstrap exactly once before any terminal method.
 var terminal: Terminal = undefined;

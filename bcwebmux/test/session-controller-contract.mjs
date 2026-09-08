@@ -77,10 +77,19 @@ class MockTransport {
     this.failAttach = false;
     this.active = null;
     this.lastAttachOptions = null;
+    this.statusListeners = new Set();
+    this.errorListeners = new Set();
+    this.attachmentListeners = new Set();
   }
 
-  onStatus() { return disposable(); }
-  onError() { return disposable(); }
+  onStatus(listener) { this.statusListeners.add(listener); return { dispose: () => this.statusListeners.delete(listener) }; }
+  onError(listener) { this.errorListeners.add(listener); return { dispose: () => this.errorListeners.delete(listener) }; }
+  onAttachmentChanged(listener) { this.attachmentListeners.add(listener); return { dispose: () => this.attachmentListeners.delete(listener) }; }
+  emitStatus(label = "ready") {
+    this.state.status = label;
+    for (const listener of [...this.statusListeners]) listener(label, this.state);
+  }
+  emitAttachment(record) { for (const listener of [...this.attachmentListeners]) listener(record, this.state); }
   onSessionChanged() { return disposable(); }
   activate() {}
   async connect() {}
@@ -238,6 +247,103 @@ async function harness(values, coreLimit = 4) {
   await controller.rename("a", "ignored");
   assert.equal(controller.get("a").name, "Current");
   controller.dispose();
+}
+
+{
+  const terminal = new MockTerminal();
+  const transport = new MockTransport();
+  const api = new MockApi([metadata("a")]);
+  const failure = new Error("metadata temporarily unavailable");
+  api.listOverride = async () => { throw failure; };
+  const controller = new SessionController({ terminal, transport, api, storage: null });
+  const errors = [];
+  controller.onError(error => errors.push(error));
+  const first = controller.start();
+  assert.equal(controller.start(), first, "concurrent callers share startup");
+  await assert.rejects(first, error => error === failure);
+  assert.deepEqual(errors, [], "operation failure belongs to caller, not another emitter");
+  assert.equal(controller.state.started, false);
+  api.listOverride = null;
+  await controller.start();
+  assert.equal(controller.activeSessionId, "a", "failed startup may be explicitly retried");
+  controller.dispose();
+}
+
+{
+  const { controller, terminal, transport } = await harness([metadata("a"), metadata("b")]);
+  const errors = [];
+  controller.onError(error => errors.push(error));
+  terminal.failAttachCore = true;
+  await assert.rejects(controller.switchTo("b"), /renderer handoff failure/);
+  assert.deepEqual(errors, [], "switch rollback does not also emit its caller-owned failure");
+  const statusCount = transport.statusListeners.size;
+  const errorCount = transport.errorListeners.size;
+  controller.activeAttachment.live = false;
+  const waiting = controller.switchTo("a");
+  controller.activeAttachment.live = true;
+  transport.emitAttachment(controller.activeAttachment);
+  await waiting;
+  assert.equal(transport.statusListeners.size, statusCount);
+  assert.equal(transport.errorListeners.size, errorCount);
+  controller.activeAttachment.live = false;
+  const canceled = controller.switchTo("a");
+  controller.dispose();
+  await assert.rejects(canceled, /disposed/);
+  assert.equal(transport.statusListeners.size, 0);
+  assert.equal(transport.errorListeners.size, 0);
+  assert.equal(transport.attachmentListeners.size, 0);
+}
+
+{
+  const { controller, terminal } = await harness([metadata("a"), metadata("b")]);
+  let entered, release;
+  const creating = new Promise(resolve => { entered = resolve; });
+  const delayed = new Promise(resolve => { release = resolve; });
+  terminal.createCore = async () => {
+    entered();
+    await delayed;
+    return new MockCore(terminal, "late-core");
+  };
+  const switching = controller.switchTo("b");
+  await creating;
+  controller.dispose();
+  release();
+  await assert.rejects(switching, /core creation was canceled/);
+  assert.equal(terminal.live.size, 0, "late owned core is disposed, not published after cancellation");
+  assert.equal(controller.coreCount, 0);
+}
+
+{
+  const { controller, terminal, transport } = await harness([metadata("a"), metadata("b")]);
+  let entered;
+  const attaching = new Promise(resolve => { entered = resolve; });
+  let operationSignal;
+  transport.attach = (_metadata, _core, options) => new Promise((_, reject) => {
+    operationSignal = options.signal;
+    operationSignal.addEventListener("abort", () => reject(operationSignal.reason), { once: true });
+    entered();
+  });
+  const switching = controller.switchTo("b");
+  await attaching;
+  controller.dispose();
+  await assert.rejects(switching, /attachment operation canceled/);
+  assert.equal(operationSignal.aborted, true);
+  assert.equal(terminal.live.size, 0);
+  assert.equal(controller.coreCount, 0);
+}
+
+{
+  const terminal = new MockTerminal();
+  const transport = new MockTransport();
+  transport.connect = ({ signal }) => new Promise((_, reject) => {
+    signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+  });
+  const controller = new SessionController({ terminal, transport, api: new MockApi([metadata("a")]), storage: null });
+  const starting = controller.start();
+  controller.dispose();
+  await assert.rejects(starting, /controller is disposed/);
+  assert.equal(controller.coreCount, 0);
+  assert.equal(controller.activeSessionId, null);
 }
 
 console.log(JSON.stringify({ sessionControllerContract: "ok" }));

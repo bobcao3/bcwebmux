@@ -3,7 +3,7 @@
 
 const std = @import("std");
 
-pub const subprotocol = "bcw.sessions";
+pub const subprotocol = @import("session_manifest.zig").protocol;
 pub const magic: u32 = 0x53574342;
 pub const header_length: usize = 64;
 pub const max_payload_length: usize = 1024 * 1024;
@@ -79,82 +79,31 @@ pub const Frame = struct {
 };
 
 pub fn writeU16LE(bytes: []u8, offset: usize, value: u16) void {
-    bytes[offset] = @truncate(value);
-    bytes[offset + 1] = @truncate(value >> 8);
+    std.mem.writeInt(u16, bytes[offset..][0..2], value, .little);
 }
 
 pub fn writeU32LE(bytes: []u8, offset: usize, value: u32) void {
-    bytes[offset] = @truncate(value);
-    bytes[offset + 1] = @truncate(value >> 8);
-    bytes[offset + 2] = @truncate(value >> 16);
-    bytes[offset + 3] = @truncate(value >> 24);
+    std.mem.writeInt(u32, bytes[offset..][0..4], value, .little);
 }
 
 pub fn writeU64LE(bytes: []u8, offset: usize, value: u64) void {
-    bytes[offset] = @truncate(value);
-    bytes[offset + 1] = @truncate(value >> 8);
-    bytes[offset + 2] = @truncate(value >> 16);
-    bytes[offset + 3] = @truncate(value >> 24);
-    bytes[offset + 4] = @truncate(value >> 32);
-    bytes[offset + 5] = @truncate(value >> 40);
-    bytes[offset + 6] = @truncate(value >> 48);
-    bytes[offset + 7] = @truncate(value >> 56);
+    std.mem.writeInt(u64, bytes[offset..][0..8], value, .little);
 }
 
 pub fn readU16LE(bytes: []const u8, offset: usize) u16 {
-    return @as(u16, bytes[offset]) | (@as(u16, bytes[offset + 1]) << 8);
+    return std.mem.readInt(u16, bytes[offset..][0..2], .little);
 }
 
 pub fn readU32LE(bytes: []const u8, offset: usize) u32 {
-    return @as(u32, bytes[offset]) |
-        (@as(u32, bytes[offset + 1]) << 8) |
-        (@as(u32, bytes[offset + 2]) << 16) |
-        (@as(u32, bytes[offset + 3]) << 24);
+    return std.mem.readInt(u32, bytes[offset..][0..4], .little);
 }
 
 pub fn readU64LE(bytes: []const u8, offset: usize) u64 {
-    return @as(u64, bytes[offset]) |
-        (@as(u64, bytes[offset + 1]) << 8) |
-        (@as(u64, bytes[offset + 2]) << 16) |
-        (@as(u64, bytes[offset + 3]) << 24) |
-        (@as(u64, bytes[offset + 4]) << 32) |
-        (@as(u64, bytes[offset + 5]) << 40) |
-        (@as(u64, bytes[offset + 6]) << 48) |
-        (@as(u64, bytes[offset + 7]) << 56);
-}
-
-fn frameTypeFromByte(value: u8) CodecError!FrameType {
-    return switch (value) {
-        1 => .hello,
-        2 => .welcome,
-        3 => .error_frame,
-        4 => .session_changed,
-        5 => .attach,
-        6 => .attach_begin,
-        7 => .detach,
-        8 => .checkpoint_begin,
-        9 => .checkpoint_chunk,
-        10 => .checkpoint_end,
-        11 => .event_batch,
-        12 => .live_barrier,
-        13 => .ack,
-        14 => .credit,
-        15 => .resync_required,
-        16 => .claim_control,
-        17 => .lease_changed,
-        18 => .input,
-        19 => .input_ack,
-        20 => .resize_request,
-        21 => .canonical_resize,
-        22 => .exited,
-        23 => .ping,
-        24 => .pong,
-        else => error.UnknownType,
-    };
+    return std.mem.readInt(u64, bytes[offset..][0..8], .little);
 }
 
 pub fn frameTypeFromInt(value: u8) CodecError!FrameType {
-    return frameTypeFromByte(value);
+    return std.enums.fromInt(FrameType, value) orelse error.UnknownType;
 }
 
 fn allowsCompression(frame_type: FrameType) bool {
@@ -171,7 +120,6 @@ pub fn encodeFrame(frame: Frame, output: []u8) CodecError![]u8 {
     try validateFlags(frame.frame_type, frame.flags);
     if (frame.connection_sequence == 0) return error.ZeroConnectionSequence;
     if (frame.payload.len > max_payload_length) return error.PayloadTooLarge;
-    if (frame.session_id.len != session_id_length) unreachable;
     const total_length = header_length + frame.payload.len;
     if (output.len < total_length) return error.OutputTooSmall;
     writeU32LE(output, magic_offset, magic);
@@ -192,7 +140,7 @@ pub fn encodeFrame(frame: Frame, output: []u8) CodecError![]u8 {
 pub fn decodeFrame(message: []const u8) CodecError!Frame {
     if (message.len < header_length) return error.FrameTooShort;
     if (readU32LE(message, magic_offset) != magic) return error.InvalidMagic;
-    const frame_type = try frameTypeFromByte(message[type_offset]);
+    const frame_type = try frameTypeFromInt(message[type_offset]);
     const flags = message[flags_offset];
     try validateFlags(frame_type, flags);
     if (readU16LE(message, header_length_offset) != header_length) return error.InvalidHeaderLength;

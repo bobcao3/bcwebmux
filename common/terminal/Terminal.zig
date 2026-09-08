@@ -4,6 +4,7 @@
 const std = @import("std");
 const ghostty = @import("ghostty-vt");
 const Wgpu = @import("Wgpu.zig");
+const FontEngine = @import("FontEngine.zig");
 
 const Self = @This();
 
@@ -66,18 +67,12 @@ pub fn bootstrap(self: *Self) void {
 }
 
 pub fn bc_font_alloc(len: u32) u32 {
-    const total = std.math.add(usize, @as(usize, len), 16) catch return 0;
-    const memory = alloc.alignedAlloc(u8, .@"16", total) catch return 0;
-    const header: *usize = @ptrCast(@alignCast(memory.ptr));
-    header.* = total;
-    return @intCast(@intFromPtr(memory.ptr) + 16);
+    const pointer = FontEngine.cAlloc(len) orelse return 0;
+    return @intCast(@intFromPtr(pointer));
 }
 
 pub fn bc_font_free(ptr: u32) void {
-    if (ptr == 0) return;
-    const base: [*]align(16) u8 = @ptrFromInt(@as(usize, ptr) - 16);
-    const header: *usize = @ptrCast(@alignCast(base));
-    alloc.free(base[0..header.*]);
+    FontEngine.cFree(if (ptr == 0) null else @ptrFromInt(ptr));
 }
 
 pub fn term_set_font(self: *Self, font_raw: u32, ligatures_raw: u32) i32 {

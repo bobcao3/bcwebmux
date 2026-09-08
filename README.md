@@ -1,37 +1,44 @@
 # bcwebmux
 
-A fast browser terminal built with Ghostty's terminal engine, WebAssembly with WebGPU and an automatic WebGL2 fallback, and a small Zig server.
+A fast browser terminal built with Ghostty's terminal engine, WebAssembly with WebGPU and an automatic WebGL2 fallback, and a Go HTTPS server with a Zig session core.
 
 ## Get started
 
-Prerequisites: Zig 0.16, Node/npm, GNU tar, zstd and development headers, Linux, and a modern Chromium browser with WebGPU or WebGL2.
+- [`bcwebmux/README.md`](bcwebmux/README.md) covers running, configuring, and developing the complete application.
+- [`wgpuTerminal/README.md`](wgpuTerminal/README.md) covers building and embedding the standalone terminal.
 
-```sh
-npm install
-cd bcwebmux
-zig build -Doptimize=ReleaseSmall
-./zig-out/bin/bcwebmux-server
-```
+## What lives where?
 
-Open <http://localhost:8080>. Use `--help` for server options. Remote use should sit behind authenticated TLS and requires explicit host/origin options.
+This repository contains both a **complete remote-terminal application** and the
+**reusable browser terminal it is built on**. They are not the same component:
 
-## Find your way around
+- [`bcwebmux/`](bcwebmux/) is the complete application, including the browser UI, session management, transport, and Go/native server that runs shells in PTYs.
+- [`wgpuTerminal/`](wgpuTerminal/) is the reusable JavaScript terminal frontend with its public API, browser input, selection, scrolling, and rendering. It provides no PTY, server, or transport.
+- [`common/terminal/`](common/terminal/) is the low-level WASM engine integrating Ghostty with terminal emulation, font shaping/rasterization, render batches, and shaders.
 
-- [`common/`](common/) — shared Zig terminal code
-- [`wgpuTerminal/`](wgpuTerminal/) — embeddable package; see its [README](wgpuTerminal/README.md)
-- [`bcwebmux/`](bcwebmux/) — application, server, assets, and tests
+The browser stack is `bcwebmux/web` → `wgpuTerminal` → `terminal.wasm` built
+from `common/terminal`. Separately, the application connects to the Go server →
+native Zig session core/PTY worker → shell. The native server also uses Ghostty,
+but does not run the browser WASM wrapper.
 
-## Develop
+## Just want something like xterm.js?
 
-From `bcwebmux/`:
+Use **[`wgpuTerminal/`](wgpuTerminal/)**, not the complete bcwebmux application.
+It fills the embeddable-terminal role; it is **not an xterm.js-compatible drop-in
+API**. See the [package README](wgpuTerminal/README.md) for an integration example
+and [`index.d.ts`](wgpuTerminal/index.d.ts) for the public API.
 
-```sh
-zig build
-zig build test
-zig build e2e
-```
+## Where do I make a change?
 
-Browser tests require a physical Vulkan GPU. Intentional golden updates use `UPDATE_GOLDEN=1 zig build e2e`.
+- Application UI and session/reconnect behavior: [`bcwebmux/web/`](bcwebmux/web/); see the [connection lifecycle](bcwebmux/docs/connection-lifecycle.md) documentation.
+- HTTP/TLS, WebSockets, and server configuration: [`bcwebmux/go/`](bcwebmux/go/).
+- Native sessions, persistence, and PTYs: [`bcwebmux/src/`](bcwebmux/src/).
+- Embeddable API, browser input, selection, scrolling, and GPU rendering: [`wgpuTerminal/src/`](wgpuTerminal/src/); API types are in [`index.d.ts`](wgpuTerminal/index.d.ts).
+- WASM terminal emulation, fonts, and render data: [`common/terminal/`](common/terminal/); see the [glyph-cache design](docs/glyph_cache_design.md).
+- Builds and tests: [`bcwebmux/build.zig`](bcwebmux/build.zig) and [`bcwebmux/test/`](bcwebmux/test/). Tests cover the application and reusable terminal; Go and Zig tests also live alongside their sources.
+
+Edit source directories, not generated `zig-out/`, `wgpuTerminal/dist/`,
+dependency caches (`zig-pkg/`, `node_modules/`), or vendored Go dependencies.
 
 ## License
 
