@@ -22,6 +22,10 @@ render_state: ghostty.RenderState = .empty,
 staging: [staging_capacity]u8 = undefined,
 snapshot_staging: ?[]u8 = null,
 busy: bool = false,
+frame_token: u32 = 0,
+frame_revision: u32 = 0,
+core_generation: u32 = 0,
+config_generation: u32 = 0,
 replay_mode: bool = false,
 deinit_pending: bool = false,
 cell_width_px: u32 = 8,
@@ -53,6 +57,10 @@ pub fn bootstrap(self: *Self) void {
     self.render_state = .empty;
     self.snapshot_staging = null;
     self.busy = false;
+    self.frame_token = 0;
+    self.frame_revision = 0;
+    self.core_generation = 0;
+    self.config_generation = 0;
     self.replay_mode = false;
     self.deinit_pending = false;
     self.cell_width_px = 8;
@@ -75,28 +83,39 @@ pub fn bc_font_free(ptr: u32) void {
 }
 
 pub fn term_set_font(self: *Self, font_raw: u32, ligatures_raw: u32) i32 {
+    if (self.frame_token != 0 or self.busy) return 0;
+    self.config_generation +%= 1;
+    self.render_requested = true;
     if (font_raw != 0) return 0;
     self.renderer.setFont(ligatures_raw != 0);
     return 1;
 }
 
 pub fn term_set_renderer(self: *Self, renderer_raw: u32) i32 {
+    if (self.frame_token != 0 or self.busy) return 0;
+    self.config_generation +%= 1;
+    self.render_requested = true;
     if (!self.renderer.setTextBackend(renderer_raw)) return 0;
     self.render_requested = true;
     return 1;
 }
 
 pub fn term_invalidate_text_view(self: *Self) void {
+    if (self.frame_token != 0 or self.busy) return;
     self.renderer.invalidateTextView();
     self.render_requested = true;
 }
 
-pub fn term_invalidate_frame_cache(self: *Self) void {
-    self.renderer.invalidateFrameCache();
+pub fn term_invalidate_frame_cache(self: *Self, glyphs: u32) void {
+    if (self.frame_token != 0 or self.busy) return;
+    if (glyphs != 0) self.renderer.invalidateRenderCache() else self.renderer.invalidateFrameCache();
     self.render_requested = true;
 }
 
 pub fn term_set_glyph_partition(self: *Self, base_slot: u32, slot_capacity: u32, atlas_columns: u16, generation: u32) i32 {
+    if (self.frame_token != 0 or self.busy) return 0;
+    self.config_generation +%= 1;
+    self.render_requested = true;
     if (self.busy) return 0;
     if (!self.renderer.setGlyphPartition(base_slot, slot_capacity, atlas_columns, generation)) return 0;
     self.render_requested = true;
@@ -104,13 +123,18 @@ pub fn term_set_glyph_partition(self: *Self, base_slot: u32, slot_capacity: u32,
 }
 
 pub fn term_set_text_view_enabled(self: *Self, enabled_raw: u32) i32 {
+    if (self.frame_token != 0 or self.busy) return 0;
+    self.config_generation +%= 1;
+    self.render_requested = true;
     if (enabled_raw > 1) return 0;
     if (self.renderer.setTextViewEnabled(enabled_raw != 0)) self.render_requested = true;
     return 1;
 }
 
 pub fn term_init(self: *Self, cols: u16, rows: u16) i32 {
+    if (self.frame_token != 0 or self.busy) return 0;
     if (self.busy or self.terminal != null or cols == 0 or rows == 0) return 0;
+    self.core_generation +%= 1;
     self.replay_mode = false;
     self.deinit_pending = false;
     self.terminal = ghostty.Terminal.init(io, alloc, .{
@@ -140,16 +164,21 @@ pub fn term_init(self: *Self, cols: u16, rows: u16) i32 {
 }
 
 pub fn term_set_replay_mode(self: *Self, enabled_raw: u32) i32 {
+    if (self.frame_token != 0 or self.busy) return 0;
     if (self.busy or enabled_raw > 1) return 0;
     self.replay_mode = enabled_raw != 0;
     return 1;
 }
 
 pub fn term_theme_ptr(self: *Self) u32 {
+    if (self.frame_token != 0 or self.busy) return 0;
     return @intCast(@intFromPtr(&self.theme_staging));
 }
 
 pub fn term_apply_theme(self: *Self) i32 {
+    if (self.frame_token != 0 or self.busy) return 0;
+    self.config_generation +%= 1;
+    self.render_requested = true;
     if (self.busy or self.terminal == null) return 0;
     const value = if (self.terminal) |*t| t else return 0;
     var palette = ghostty.color.default;
@@ -164,6 +193,7 @@ pub fn term_apply_theme(self: *Self) i32 {
 }
 
 pub fn term_deinit(self: *Self) void {
+    if (self.frame_token != 0) return;
     if (self.busy) {
         self.deinit_pending = true;
         return;
@@ -192,6 +222,7 @@ fn finishBusy(self: *Self) void {
 }
 
 pub fn term_snapshot_reserve(self: *Self, len: u32) u32 {
+    if (self.frame_token != 0 or self.busy) return 0;
     if (self.busy or len == 0 or len > snapshot_capacity) return 0;
     const size: usize = len;
     if (self.snapshot_staging) |buffer| {
@@ -204,6 +235,7 @@ pub fn term_snapshot_reserve(self: *Self, len: u32) u32 {
 }
 
 pub fn term_snapshot_restore(self: *Self, len: u32) i32 {
+    if (self.frame_token != 0 or self.busy) return 0;
     if (self.busy or len == 0 or len > snapshot_capacity) return 0;
     const staged = self.snapshot_staging orelse return 0;
     if (staged.len != len) return 0;
@@ -259,11 +291,13 @@ pub fn term_snapshot_restore(self: *Self, len: u32) i32 {
 }
 
 pub fn term_reserve(self: *Self, len: u32) u32 {
+    if (self.frame_token != 0 or self.busy) return 0;
     if (self.busy or len == 0 or len > self.staging.len) return 0;
     return @intCast(@intFromPtr(&self.staging));
 }
 
 pub fn term_feed(self: *Self, len: u32) i32 {
+    if (self.frame_token != 0 or self.busy) return 0;
     if (self.busy or len > self.staging.len) return 0;
     const value = if (self.stream) |*s| s else return 0;
     self.busy = true;
@@ -273,6 +307,7 @@ pub fn term_feed(self: *Self, len: u32) i32 {
 }
 
 pub fn term_resize(self: *Self, cols: u16, rows: u16, cell_width: u16, cell_height: u16, glyph_cell_width: u16, glyph_cell_height: u16, glyph_font_size_px: u16) i32 {
+    if (self.frame_token != 0 or self.busy) return 0;
     if (self.term_set_render_metrics(
         cell_width,
         cell_height,
@@ -284,6 +319,9 @@ pub fn term_resize(self: *Self, cols: u16, rows: u16, cell_width: u16, cell_heig
 }
 
 pub fn term_set_render_metrics(self: *Self, cell_width: u16, cell_height: u16, glyph_cell_width: u16, glyph_cell_height: u16, glyph_font_size_px: u16) i32 {
+    if (self.frame_token != 0 or self.busy) return 0;
+    self.config_generation +%= 1;
+    self.render_requested = true;
     if (self.busy) return 0;
     self.busy = true;
     defer self.finishBusy();
@@ -298,6 +336,7 @@ pub fn term_set_render_metrics(self: *Self, cell_width: u16, cell_height: u16, g
 }
 
 pub fn term_resize_canonical(self: *Self, cols: u16, rows: u16, cell_width: u16, cell_height: u16) i32 {
+    if (self.frame_token != 0 or self.busy) return 0;
     if (self.busy or cols == 0 or rows == 0) return 0;
     const stream_value = if (self.stream) |*s| s else return 0;
     if (self.terminal == null) return 0;
@@ -308,11 +347,14 @@ pub fn term_resize_canonical(self: *Self, cols: u16, rows: u16, cell_width: u16,
         .rows = rows,
         .cell_size_px = .{ .width = @max(1, @as(u32, cell_width)), .height = @max(1, @as(u32, cell_height)) },
     }) catch return 0;
+    self.config_generation +%= 1;
+    self.render_requested = true;
     self.last_mouse_cell = null;
     return 1;
 }
 
 pub fn term_scroll_row(self: *Self, row: u32) i32 {
+    if (self.frame_token != 0 or self.busy) return 0;
     if (self.busy) return 0;
     const value = if (self.terminal) |*t| t else return 0;
     const bar = value.screens.active.pages.scrollbar();
@@ -323,6 +365,7 @@ pub fn term_scroll_row(self: *Self, row: u32) i32 {
 }
 
 pub fn term_scroll_delta(self: *Self, rows: i32) i32 {
+    if (self.frame_token != 0 or self.busy) return 0;
     if (self.busy) return 0;
     const value = if (self.terminal) |*t| t else return 0;
     value.scrollViewport(.{ .delta = @intCast(rows) });
@@ -331,6 +374,7 @@ pub fn term_scroll_delta(self: *Self, rows: i32) i32 {
 
 // Return values: viewport=1, mouse-report=2, alternate-scroll=3.
 pub fn term_scroll_input(self: *Self, rows: i32, mods_raw: u16, x: f32, y: f32) i32 {
+    if (self.frame_token != 0 or self.busy) return 0;
     if (self.busy) return 0;
     const value = if (self.terminal) |*t| t else return 0;
     if (rows == 0) return 1;
@@ -392,6 +436,7 @@ pub fn term_scroll_input(self: *Self, rows: i32, mods_raw: u16, x: f32, y: f32) 
 }
 
 pub fn term_scroll_bottom(self: *Self) i32 {
+    if (self.frame_token != 0 or self.busy) return 0;
     if (self.busy) return 0;
     const value = if (self.terminal) |*t| t else return 0;
     value.scrollViewport(.bottom);
@@ -399,6 +444,7 @@ pub fn term_scroll_bottom(self: *Self) i32 {
 }
 
 pub fn term_text(self: *Self, len: u32, paste_mode: u32) i32 {
+    if (self.frame_token != 0 or self.busy) return 0;
     if (self.busy or len > self.staging.len) return 0;
     const value = if (self.terminal) |*t| t else return 0;
     self.busy = true;
@@ -420,6 +466,7 @@ pub fn term_text(self: *Self, len: u32, paste_mode: u32) i32 {
 }
 
 pub fn term_key(self: *Self, action_raw: u8, mods_raw: u16, consumed_raw: u16, code_len: u16, text_len: u16) i32 {
+    if (self.frame_token != 0 or self.busy) return 0;
     const total_len = @as(usize, code_len) + @as(usize, text_len);
     if (self.busy or action_raw > 2 or total_len > self.staging.len) return 0;
     const value = if (self.terminal) |*t| t else return 0;
@@ -448,6 +495,7 @@ pub fn term_key(self: *Self, action_raw: u8, mods_raw: u16, consumed_raw: u16, c
 }
 
 pub fn term_mouse(self: *Self, action_raw: u8, button_raw: u8, mods_raw: u16, x: f32, y: f32, any_button_pressed: u32) i32 {
+    if (self.frame_token != 0 or self.busy) return 0;
     if (action_raw > 2 or (button_raw != 0xff and button_raw > 11) or self.busy) return 0;
     const value = if (self.terminal) |*t| t else return 0;
     self.busy = true;
@@ -524,6 +572,7 @@ fn selectionPin(self: *Self, value: *ghostty.Terminal, x: f32, y: f32) ?ghostty.
 }
 
 pub fn term_selection(self: *Self, action_raw: u8, x: f32, y: f32) i32 {
+    if (self.frame_token != 0 or self.busy) return 0;
     if (self.busy or action_raw > 3) return 0;
     const value = if (self.terminal) |*t| t else return 0;
     if (action_raw == 3) {
@@ -575,6 +624,7 @@ pub fn term_selection(self: *Self, action_raw: u8, x: f32, y: f32) i32 {
 }
 
 pub fn term_selection_word(self: *Self, x: f32, y: f32) i32 {
+    if (self.frame_token != 0 or self.busy) return 0;
     if (self.busy) return 0;
     const value = if (self.terminal) |*t| t else return 0;
     const pin = self.selectionPin(value, x, y) orelse return 0;
@@ -591,6 +641,7 @@ pub fn term_selection_word(self: *Self, x: f32, y: f32) i32 {
 }
 
 pub fn term_selection_clear(self: *Self) i32 {
+    if (self.frame_token != 0 or self.busy) return 0;
     if (self.busy) return 0;
     const value = if (self.terminal) |*t| t else return 0;
     const had_selection = value.screens.active.selection != null;
@@ -602,6 +653,7 @@ pub fn term_selection_clear(self: *Self) i32 {
 }
 
 pub fn term_selection_set_range(self: *Self, start_row: u32, start_col: u32, end_row: u32, end_col: u32) i32 {
+    if (self.frame_token != 0 or self.busy) return 0;
     if (self.busy) return 0;
     const value = if (self.terminal) |*t| t else return 0;
     if (start_row >= @as(u32, value.rows) or end_row >= @as(u32, value.rows) or
@@ -639,6 +691,7 @@ pub fn term_selection_set_range(self: *Self, start_row: u32, start_col: u32, end
 }
 
 pub fn term_selection_snapshot(self: *Self) i32 {
+    if (self.frame_token != 0 or self.busy) return 0;
     if (self.busy) return -1;
     self.freeSelectionSnapshot();
     const value = if (self.terminal) |*t| t else return -1;
@@ -656,18 +709,22 @@ pub fn term_selection_snapshot(self: *Self) i32 {
 }
 
 pub fn term_selection_snapshot_ptr(self: *Self) u32 {
+    if (self.frame_token != 0 or self.busy) return 0;
     return if (self.selection_snapshot) |snapshot| @intCast(@intFromPtr(snapshot.ptr)) else 0;
 }
 
 pub fn term_selection_snapshot_len(self: *Self) u32 {
+    if (self.frame_token != 0 or self.busy) return 0;
     return if (self.selection_snapshot) |snapshot| @intCast(snapshot.len) else 0;
 }
 
 pub fn term_selection_snapshot_release(self: *Self) void {
+    if (self.frame_token != 0 or self.busy) return;
     self.freeSelectionSnapshot();
 }
 
 pub fn term_hyperlink_at(self: *Self, x: f32, y: f32) i32 {
+    if (self.frame_token != 0 or self.busy) return 0;
     if (self.busy) return 0;
     const value = if (self.terminal) |*t| t else return 0;
     if (!std.math.isFinite(x) or !std.math.isFinite(y) or x < 0 or y < 0) return 0;
@@ -697,14 +754,17 @@ pub fn term_hyperlink_at(self: *Self, x: f32, y: f32) i32 {
 }
 
 pub fn term_hyperlink_ptr(self: *Self) u32 {
+    if (self.frame_token != 0 or self.busy) return 0;
     return @intCast(@intFromPtr(&self.hyperlink_snapshot));
 }
 
 pub fn term_hyperlink_len(self: *Self) u32 {
+    if (self.frame_token != 0 or self.busy) return 0;
     return self.hyperlink_snapshot_len;
 }
 
 pub fn term_focus(self: *Self, focused: u32) i32 {
+    if (self.frame_token != 0 or self.busy) return 0;
     if (self.busy) return 0;
     const value = if (self.terminal) |*t| t else return 0;
     self.busy = true;
@@ -719,7 +779,8 @@ pub fn term_focus(self: *Self, focused: u32) i32 {
     return user_write(data.ptr, data.len);
 }
 
-pub fn term_frame(self: *Self) i32 {
+pub fn term_frame_prepare(self: *Self) i32 {
+    if (self.frame_token != 0) return -2;
     if (self.busy) return -2;
     const value = if (self.terminal) |*t| t else return 0;
     self.busy = true;
@@ -728,14 +789,44 @@ pub fn term_frame(self: *Self) i32 {
     const previous_cursor_visible = self.render_state.cursor.visible;
     const previous_cursor_blinking = self.render_state.cursor.blinking;
     const previous_cursor_style = self.render_state.cursor.visual_style;
-    self.render_state.update(alloc, value) catch return -1;
+    self.render_state.update(alloc, value) catch {
+        self.rejectFrame();
+        return -1;
+    };
     const cursor_changed =
         !cursorViewportEqual(previous_cursor_viewport, self.render_state.cursor.viewport) or
         previous_cursor_visible != self.render_state.cursor.visible or
         previous_cursor_blinking != self.render_state.cursor.blinking or
         previous_cursor_style != self.render_state.cursor.visual_style;
     if (self.render_state.dirty == .false and !cursor_changed and !self.render_requested) return 0;
-    self.renderer.submit(&self.render_state, value) catch return -1;
+    self.renderer.prepare(&self.render_state, value) catch {
+        self.rejectFrame();
+        return -1;
+    };
+    self.frame_revision +%= 1;
+    if (self.frame_revision == 0) self.frame_revision = 1;
+    self.frame_token = self.frame_revision;
+    self.renderer.packet.token = self.frame_token;
+    self.renderer.packet.revision = self.frame_revision;
+    self.renderer.packet.core_generation = self.core_generation;
+    self.renderer.packet.config_generation = self.config_generation;
+    return @intCast(@intFromPtr(&self.renderer.packet));
+}
+
+fn rejectFrame(self: *Self) void {
+    self.renderer.invalidateRenderCache();
+    self.render_requested = true;
+}
+
+pub fn term_frame_finish(self: *Self, token: u32, accepted: u32) i32 {
+    if (self.frame_token == 0) return -2;
+    const valid = token == self.frame_token and accepted <= 1;
+    self.frame_token = 0;
+    if (!valid or accepted == 0) {
+        self.rejectFrame();
+        return if (valid) 1 else -2;
+    }
+    self.renderer.accept();
     self.render_requested = false;
     self.render_state.clean();
     return 1;

@@ -173,7 +173,7 @@ async function run() {
   const colorA = averageCell(imageA, terminal, 0, 0);
 
   const coreB = await terminal.createCore();
-  const coreBMemoryBeforeRender = coreB.wasm.memory.buffer.byteLength;
+  const coreBMemoryBeforeRender = coreB.memoryBytes;
   coreB.write("\x1b[2J\x1b[H\x1b[48;2;20;190;210m  \x1b[0m CORE-B-ACTIVE");
   terminal.attachCore(coreB);
   const imageB = await pixels(terminal);
@@ -185,7 +185,7 @@ async function run() {
   if (renderer.glyphPartitions.reservedSlots !== partitionA.slotCapacity + partitionB.slotCapacity) {
     throw new Error("shared atlas required slot count mismatch");
   }
-  const coreBMemoryAfterRender = coreB.wasm.memory.buffer.byteLength;
+  const coreBMemoryAfterRender = coreB.memoryBytes;
   const colorB = averageCell(imageB, terminal, 0, 0);
 
   const hiddenFrames = coreA.state.frames;

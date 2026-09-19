@@ -5,10 +5,8 @@ import { generateGrain, GRAIN_SIZE } from "../Grain.js";
 import { CELL_SIZE, STYLE_SIZE } from "../FrameSchema.js";
 
 import {
-  parseRendererSubmission,
   decodeCanvasRequestText,
-  applyRendererSubmission,
-} from "../RendererSubmission.js";
+} from "../../../FramePacket.js";
 import {
   initializeWebGl,
   resizeWebGl,
@@ -130,22 +128,8 @@ export class WebGlTerminal {
       scrollOffset: 0,
       scrollLength: 0,
       viewportMode: "active",
-      textRowsPtr: 0,
-      textCellsPtr: 0,
-      textBytesPtr: 0,
-      textBytesLen: 0,
-      textChanged: false,
+
     };
-    this.submissionMemory = null;
-    this.submissionCellsPtr = 0;
-    this.submissionDirtyRangesPtr = 0;
-    this.submissionDirtyRangesCount = 0;
-    this.submissionStylesPtr = 0;
-    this.submissionStylesFirst = 0;
-    this.submissionStylesCount = 0;
-    this.submissionSelectionsPtr = 0;
-    this.submissionCanvasRequestsPtr = 0;
-    this.submissionCanvasRequestsCount = 0;
     this.contextLostListener = event => {
       event.preventDefault();
       this.error = "WebGL context lost; reload required";
@@ -248,10 +232,15 @@ export class WebGlTerminal {
     return this.atlas.columns;
   }
 
-  submitWasm(terminal, memory, submissionPtr) {
-    const parsed = parseRendererSubmission(this, terminal, memory, submissionPtr);
+  submitPacket(terminal, parsed) {
+    if (!this.initialized || this.activeTerminal !== terminal) throw new Error("invalid renderer terminal");
     this.glyphSlotsUsed = parsed.glyphSlotsUsed;
-    const metadata = applyRendererSubmission(this, parsed);
+    for (const key of ["cols", "rows", "cacheHits", "cacheMisses", "background", "foreground",
+      "cursorX", "cursorY", "cursorFlags", "cursorStyle"]) this[key] = parsed[key];
+    const metadata = this.submissionMetadata;
+    for (const key of ["cols", "rows", "viewportMode", "scrollTotal", "scrollOffset", "scrollLength"]) {
+      metadata[key] = parsed[key];
+    }
     for (let index = 0; index < parsed.bitmapUploadsCount; index += 1) {
       const offset = index * 16;
       this.atlas.uploadBitmap(
@@ -273,11 +262,7 @@ export class WebGlTerminal {
       );
     }
     if (parsed.stylesCount > 0) {
-      const styles = new Uint32Array(
-        memory,
-        parsed.stylesPtr + parsed.stylesFirst * this.styleSize,
-        parsed.stylesCount * 3,
-      );
+      const styles = parsed.styles;
       uploadIntegerRecords(
         this.gl,
         this.styleTexture,
@@ -300,7 +285,7 @@ export class WebGlTerminal {
       this.gl.bufferSubData(
         this.gl.ARRAY_BUFFER,
         cellOffset,
-        new Uint8Array(memory, parsed.cellsPtr + cellOffset, cellCount * this.cellSize),
+        parsed.cells.subarray(cellOffset, cellOffset + cellCount * this.cellSize),
       );
       uploadIntegerRecords(
         this.gl,
@@ -310,12 +295,10 @@ export class WebGlTerminal {
         rowCount,
         1,
         this.gl.RED_INTEGER,
-        new Uint32Array(memory, parsed.selectionsPtr + firstRow * 4, rowCount),
+        parsed.selections.subarray(firstRow, firstRow + rowCount),
       );
     }
     this.drawnCellCount = parsed.frameCells;
-    this.draw();
-    this.updateBlinkTimer();
     return metadata;
   }
 

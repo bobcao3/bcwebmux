@@ -45,12 +45,15 @@ const { instance } = await WebAssembly.instantiate(wasmBytes, {
     terminal_reply() { return 1; },
     clipboard_write() { return 1; },
     desktop_notification() {},
-    gpu_submit(submissionPtr) {
+
+  },
+});
+function capturePacket(submissionPtr) {
       const mem = instance.exports.memory.buffer;
-      const submission = new DataView(mem, submissionPtr, 112);
+      const submission = new DataView(mem, submissionPtr, 156);
       if (submission.getUint32(0, true) !== 0x5355424d ||
-          submission.getUint32(4, true) !== 4 ||
-          submission.getUint32(8, true) !== 112) {
+          submission.getUint32(4, true) !== 5 ||
+          submission.getUint32(8, true) !== 156) {
         throw new Error("invalid GPU submission");
       }
       const framePtr = submission.getUint32(16, true);
@@ -91,10 +94,18 @@ const { instance } = await WebAssembly.instantiate(wasmBytes, {
         if (active) cellList.push({ x: i % cols, y: Math.floor(i / cols), w: wide ? 2 : 1, glyph });
       }
       return 1;
-    },
-  },
-});
+}
+
 const e = instance.exports;
+e.term_bootstrap();
+function renderFrame() {
+  const ptr = e.term_frame_prepare();
+  if (ptr <= 0) return ptr;
+  const token = e.term_frame_token();
+  let accepted = false;
+  try { capturePacket(ptr); accepted = true; return 1; }
+  finally { e.term_frame_finish(token, accepted ? 1 : 0); }
+}
 const bitmaps = [];
 const frames = [];
 const cellList = [];
@@ -155,7 +166,7 @@ e.term_set_glyph_partition(0, 400, 40, 1);
 e.term_resize(40, 10, 8, 16, 8, 16, 15);
 cellList.length = 0; bitmaps.length = 0; frames.length = 0;
 feed("\x1b[2J\x1b[HABC");
-if (e.term_frame() !== 1) console.log("term_frame failed for ASCII");
+if (renderFrame() !== 1) console.log("term_frame failed for ASCII");
 assert.equal(bitmaps.length, 3);
 assert.ok(bitmaps.every(b => b.width === 8 && b.height === 16));
 report("ASCII 'ABC'");
@@ -163,7 +174,7 @@ report("ASCII 'ABC'");
 // CJK
 cellList.length = 0; bitmaps.length = 0; frames.length = 0;
 feed("\x1b[2J\x1b[H中");
-if (e.term_frame() !== 1) console.log("term_frame failed for CJK");
+if (renderFrame() !== 1) console.log("term_frame failed for CJK");
 assert.equal(bitmaps.length, 2);
 assert.equal(bitmaps[1].slot, bitmaps[0].slot + 1);
 assert.ok(bitmaps.every(b => b.width === 8 && b.height === 16));
@@ -172,7 +183,7 @@ report("CJK '中' (U+4E2D)");
 // Emoji
 cellList.length = 0; bitmaps.length = 0; frames.length = 0;
 feed("\x1b[2J\x1b[H😀");
-if (e.term_frame() !== 1) console.log("term_frame failed for emoji");
+if (renderFrame() !== 1) console.log("term_frame failed for emoji");
 assert.equal(bitmaps.length, 2);
 assert.equal(bitmaps[1].slot, bitmaps[0].slot + 1);
 assert.ok(bitmaps.every(b => b.width === 8 && b.height === 16));
@@ -181,19 +192,19 @@ report("Emoji '😀' (U+1F600)");
 // Mixed ASCII+CJK
 cellList.length = 0; bitmaps.length = 0; frames.length = 0;
 feed("\x1b[2J\x1b[Ha中b");
-if (e.term_frame() !== 1) console.log("term_frame failed for mixed");
+if (renderFrame() !== 1) console.log("term_frame failed for mixed");
 report("Mixed 'a中b'");
 
 // Nerd Font icons
 const iconCodepoints = [0xe0a0, 0xe0b0, 0xe700, 0xe7ae, 0xe7c3, 0xe736, 0xf0001, 0xf1af0, 0xf533];
 cellList.length = 0; bitmaps.length = 0; frames.length = 0;
 feedRaw("\x1b[2J\x1b[H" + iconCodepoints.map(utf8For).join(""));
-if (e.term_frame() !== 1) console.log("term_frame failed for Nerd Font icons");
+if (renderFrame() !== 1) console.log("term_frame failed for Nerd Font icons");
 report("Nerd Font icons", iconCodepoints);
 
 // Classic Font Awesome brand codepoint, absent from this font
 const missingCodepoint = 0xf09b;
 cellList.length = 0; bitmaps.length = 0; frames.length = 0;
 feedRaw("\x1b[2J\x1b[H" + utf8For(missingCodepoint));
-if (e.term_frame() !== 1) console.log("term_frame failed for missing FA icon");
+if (renderFrame() !== 1) console.log("term_frame failed for missing FA icon");
 report("Missing FA brand icon", [missingCodepoint]);

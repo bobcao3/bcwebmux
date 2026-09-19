@@ -48,19 +48,12 @@ export class TerminalTextView {
     return true;
   }
 
-  update(memory, metadata, rowsPtr, cellsPtr, textPtr, textLen, changed) {
-    if (!this.enabled || !changed) return;
+  update(packet) {
+    if (!this.enabled || !packet.textChanged) return;
     this.generation += 1;
     this.desired.length = 0;
-    const { cols, rows } = metadata;
-    const cellCount = cols * rows;
-    this.validateRange(memory, rowsPtr, rows * ROW_SIZE, "text rows");
-    this.validateRange(memory, cellsPtr, cellCount * CELL_SIZE, "text cells");
-    this.validateRange(memory, textPtr, textLen, "text bytes");
-
-    const rowData = new DataView(memory, rowsPtr, rows * ROW_SIZE);
-    const cellData = new DataView(memory, cellsPtr, cellCount * CELL_SIZE);
-    const textData = new Uint8Array(memory, textPtr, textLen);
+    const { cols, rows, textRows: rowData, textCells: cellData, textBytes: textData } = packet;
+    const textLen = textData.length;
     for (let y = 0; y < rows; y += 1) {
       const rowOffset = y * ROW_SIZE;
       const byteOffset = rowData.getUint32(rowOffset, true);
@@ -176,14 +169,6 @@ export class TerminalTextView {
       const cell = row.lastElementChild;
       cell.remove();
       this.cellPool.push(cell);
-    }
-  }
-
-  validateRange(memory, pointer, length, label) {
-    if (!Number.isSafeInteger(pointer) || pointer < 0 ||
-        !Number.isSafeInteger(length) || length < 0 ||
-        pointer > memory.byteLength || length > memory.byteLength - pointer) {
-      throw new Error(`invalid ${label}`);
     }
   }
 

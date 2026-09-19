@@ -153,11 +153,84 @@ export interface TerminalCoreState {
   wasmFrameMs: number | null;
 }
 
+export interface GlyphPartition {
+  baseSlot: number;
+  slotCapacity: number;
+  generation: number;
+}
+
+export interface FrameExpectations {
+  abi?: 5;
+  coreGeneration?: number;
+  configGeneration?: number;
+  partition?: GlyphPartition;
+  cellSize: number;
+  styleSize: number;
+  frameSize: number;
+  packetSize: number;
+  maxCells: number;
+  maxStyles: number;
+  atlas: { columns: number; tileWidth: number; tileHeight: number };
+}
+
+/** Views are borrowed only for the synchronous consumeFrame callback. Do not retain them. */
+export interface FramePacket {
+  readonly token: number;
+  readonly coreGeneration: number;
+  readonly configGeneration: number;
+  readonly leaseGeneration: number;
+  readonly fullFrame: boolean;
+  readonly revision: number;
+  readonly graphicsRevision: number;
+  readonly graphicsDraws: DataView;
+  readonly graphicsResources: DataView;
+  readonly cells: Uint8Array;
+  readonly dirtyRanges: DataView;
+  readonly dirtyRangesCount: number;
+  readonly styles: Uint32Array;
+  readonly styleBytes: Uint8Array;
+  readonly stylesFirst: number;
+  readonly stylesCount: number;
+  readonly selections: Uint32Array;
+  readonly selectionBytes: Uint8Array;
+  readonly bitmapUploads: DataView;
+  readonly bitmapUploadsCount: number;
+  readonly bitmapUploadPixels: Uint8Array;
+  readonly canvasRequests: DataView;
+  readonly canvasRequestsCount: number;
+  readonly canvasText: Uint8Array;
+  readonly textRows: DataView;
+  readonly textCells: DataView;
+  readonly textBytes: Uint8Array;
+  readonly textChanged: boolean;
+  readonly cols: number;
+  readonly rows: number;
+  readonly frameCells: number;
+  readonly cacheHits: number;
+  readonly cacheMisses: number;
+  readonly background: number;
+  readonly foreground: number;
+  readonly cursorX: number;
+  readonly cursorY: number;
+  readonly cursorFlags: number;
+  readonly cursorStyle: number;
+  readonly scrollTotal: number;
+  readonly scrollOffset: number;
+  readonly scrollLength: number;
+  readonly viewportMode: "active" | "top" | "pinned";
+  readonly glyphPartitionBase: number;
+  readonly glyphPartitionCapacity: number;
+  readonly glyphPartitionGeneration: number;
+  readonly glyphSlotsUsed: number;
+}
+
 export declare class TerminalCore implements IDisposable {
   constructor(options?: TerminalCoreOptions);
   readonly options: TerminalCoreOptions;
   readonly opened: boolean;
   readonly disposed: boolean;
+  readonly ready: boolean;
+  readonly memoryBytes: number;
   readonly cols: number;
   readonly rows: number;
   readonly state: TerminalCoreState;
@@ -177,6 +250,20 @@ export declare class TerminalCore implements IDisposable {
   setFont(font: Partial<TerminalFont>): void;
   setRenderer(renderer: TerminalRenderer): void;
   setRenderMetrics(layout: { cellWidth: number; cellHeight: number; fontSize: number }): number;
+  setGlyphPartition(partition: GlyphPartition, atlasColumns: number): number;
+  consumeFrame(consumer: (packet: FramePacket) => void | boolean, expectations: FrameExpectations): 0 | 1;
+  invalidateFrame(): void;
+  invalidateTextView(): void;
+  setTextViewEnabled(enabled: boolean): number;
+  scrollBottom(): number;
+  scrollRow(row: number): number;
+  scrollDelta(rows: number): number;
+  scrollInput(rows: number, mods: number, x: number, y: number): number;
+  mouse(action: number, button: number, mods: number, x: number, y: number, pressed: number): number;
+  selection(action: number, x: number, y: number): number;
+  selectWord(x: number, y: number): number;
+  focus(focused: boolean): number;
+  hyperlinkAt(x: number, y: number): string | null;
   resizeCanonical(options: { cols: number; rows: number; cellWidthPx?: number; cellHeightPx?: number }): number;
   setReplayMode(enabled: boolean): number;
   getSelection(): string | null;

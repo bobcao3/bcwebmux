@@ -2,6 +2,7 @@
 // Copyright (c) 2026 Cheng Cao
 
 import { TerminalCore } from "./TerminalCore.js";
+import { FRAME_SIZE, SUBMISSION_SIZE } from "./browser/render/FrameSchema.js";
 import {
   createCore as createHostedCore,
   attachCore as attachHostedCore,
@@ -79,7 +80,6 @@ export class Terminal {
     this._cores = new Set();
     this._core = null;
     this._renderingCore = null;
-    this._wasm = null;
     this._renderer = null;
     this._view = null;
     this._viewportController = null;
@@ -206,7 +206,7 @@ export class Terminal {
       scrollbar: this._view.scrollbar,
       scrollbarThumb: this._view.scrollbarThumb,
       screen: this._view.screen,
-      getWasm: () => this._wasm,
+      getCore: () => this._core,
       getRenderer: () => this._renderer,
       getInputController: () => this._inputController,
       resizeTerminal: (layout) => this._resizeActiveCore(layout),
@@ -252,7 +252,6 @@ export class Terminal {
       await this._renderer.initialize(initialLayout.cols * initialLayout.rows);
       await core.open({ cols: initialLayout.cols, rows: initialLayout.rows, host: this });
       this._core = core;
-      this._wasm = core.wasm;
       this._renderer.selectTerminal(core);
     } catch (error) {
       this._releaseTerminal(core);
@@ -264,13 +263,13 @@ export class Terminal {
 
     this._textView = new TerminalTextView(this._view.textView, {
       setSelection: (start, end) => {
-        const handled = this._wasm.term_selection_set_range(start.row, start.col, end.row, end.col) === 1;
+        const handled = this._core.setSelectionRange(start, end);
         if (handled) this._scheduler.schedule(true);
         return handled;
       },
       clearSelection: () => {
-        if (!this._wasm) return false;
-        const handled = this._wasm.term_selection_clear() === 1;
+        if (!this._core?.ready) return false;
+        const handled = this._core.clearSelection();
         if (handled) this._scheduler.schedule(true);
         return handled;
       },
@@ -297,12 +296,12 @@ export class Terminal {
       input: this._view.input,
       inputController: this._inputController,
       textView: this._textView,
-      getWasm: () => this._wasm,
+      getCore: () => this._core,
     });
     this._pointerController = new PointerController({
       surface: this._view.surface,
       screen: this._view.screen,
-      getWasm: () => this._wasm,
+      getCore: () => this._core,
       getRenderer: () => this._renderer,
       getSelectionMode: () => this._selectionMode,
       enterSelectionMode: (clientX, clientY) => {
@@ -310,7 +309,7 @@ export class Terminal {
         const rect = this._view.surface.getBoundingClientRect();
         const x = Math.max(0, clientX - rect.left) * this._renderer.pixelScaleX;
         const y = Math.max(0, clientY - rect.top) * this._renderer.pixelScaleY;
-        if (this._wasm.term_selection_word(x, y) === 1) this._scheduler.schedule(true);
+        if (this._core.selectWord(x, y) === 1) this._scheduler.schedule(true);
         cancelAnimationFrame(this._selectionFallbackFrame);
         let attempts = 0;
         const selectFromMirror = () => {
@@ -365,21 +364,16 @@ export class Terminal {
   _ensureFrameCapacity(visibleCells) {
     if (!this._renderer.ensureFrameCapacity(visibleCells)) return false;
     for (const core of this._cores) {
-      if (core.wasm) core.wasm.term_invalidate_frame_cache();
+      if (core.ready) core.invalidateFrame();
     }
     return true;
   }
 
   _installGlyphPartition(core) {
-    if (!core.wasm) return 1;
+    if (!core.ready) return 1;
     const partition = this._renderer?.glyphPartition(core);
     if (!partition) return 0;
-    return core.wasm.term_set_glyph_partition(
-      partition.baseSlot,
-      partition.slotCapacity,
-      this._renderer.atlasColumns,
-      partition.generation,
-    );
+    return core.setGlyphPartition(partition, this._renderer.atlasColumns);
   }
 
   _installGlyphPartitions() {
@@ -406,7 +400,7 @@ export class Terminal {
 
   _resizeActiveCore(layout) {
     const core = this._renderingCore ?? this._core;
-    if (core?.wasm) {
+    if (core?.ready) {
       const visibleCells = this.options.canonicalGeometry
         ? Math.max(layout.cols * layout.rows, core.cols * core.rows)
         : layout.cols * layout.rows;
@@ -423,28 +417,43 @@ export class Terminal {
     return 1;
   }
 
-  _gpuSubmit(core, submissionPtr) {
+  _assertMutable() {
+    for (const core of this._cores) core.assertMutable();
+  }
+
+  _consumeCoreFrame(core) {
     if (!this._isCoreActive(core)) return 0;
+    const renderer = this._renderer;
+    let fullFrame = false;
+    let consumed = false;
     try {
-      const memory = core.wasm.memory.buffer;
-      const metadata = this._renderer.submitWasm(core, memory, submissionPtr);
-      this._submitFrameMetadata(metadata);
-      this._viewportController.submitFrameMetadata(metadata);
-      this._textView?.update(
-        memory,
-        metadata,
-        metadata.textRowsPtr,
-        metadata.textCellsPtr,
-        metadata.textBytesPtr,
-        metadata.textBytesLen,
-        metadata.textChanged,
-      );
-      return 1;
+      const result = core.consumeFrame((packet) => {
+        fullFrame = packet.fullFrame;
+        if (renderer.error && !fullFrame) throw new Error("renderer requires a full replacement frame");
+        renderer.submitPacket(core, packet);
+        this._textView?.update(packet);
+      }, {
+        cellSize: renderer.cellSize, styleSize: renderer.styleSize,
+        frameSize: FRAME_SIZE, packetSize: SUBMISSION_SIZE,
+        maxCells: renderer.maxCells, maxStyles: renderer.maxStyles,
+        partition: renderer.glyphPartition(core),
+        atlas: { columns: renderer.atlas.columns, tileWidth: renderer.atlas.tileWidth, tileHeight: renderer.atlas.tileHeight },
+      });
+      if (result === 1) {
+        consumed = true;
+        if (fullFrame) renderer.error = null;
+        this._submitFrameMetadata(renderer.submissionMetadata);
+        this._viewportController.submitFrameMetadata(renderer.submissionMetadata);
+        renderer.draw();
+        renderer.updateBlinkTimer();
+      }
+      return result;
     } catch (error) {
+      if (consumed) core.invalidateFrame();
       console.error(error);
-      this._renderer.error = error.message;
+      renderer.error = error.message;
       this._errorEmitter.emit(error);
-      return 0;
+      throw error;
     }
   }
 
@@ -472,7 +481,6 @@ export class Terminal {
     if (this._core === core) {
       this._viewportController?.cancelScrollGesture();
       this._core = null;
-      this._wasm = null;
     }
     if (this._renderingCore === core) this._renderingCore = null;
   }
@@ -510,9 +518,9 @@ export class Terminal {
 
   _renderFrame() {
     const core = this._core;
-    if (!core) return;
+    if (!core || this._renderer?.error) return;
     const startedAt = performance.now();
-    core.wasm.term_frame();
+    try { core.renderFrame(); } catch { return; }
     const elapsed = performance.now() - startedAt;
     if (Number.isFinite(elapsed)) {
       core._state.wasmFrameMs = core._state.wasmFrameMs == null
@@ -554,6 +562,7 @@ export class Terminal {
   }
 
   setTheme(theme) {
+    this._assertMutable();
     this.options.theme = theme;
     if (!this._terminalElement) return;
     this._applyCssTheme(theme);
@@ -562,6 +571,7 @@ export class Terminal {
   }
 
   async setFont(fontOptions) {
+    this._assertMutable();
     const previousFont = this.options.font;
     const font = normalizeFont({ ...this.options.font, ...(fontOptions || {}) });
     if (font.canvasOnly && this._activeTextRenderer !== "kb-canvas") {
@@ -577,7 +587,7 @@ export class Terminal {
     try {
       await Promise.all(loadTerminalFonts(font));
       await document.fonts.ready;
-      if (generation !== this._fontChangeGeneration || !this._wasm) return;
+      if (generation !== this._fontChangeGeneration || !this._core?.ready) return;
       for (const core of this._cores) core.setFont(font);
       this._viewportController.remeasureCells();
       this._viewportController.resize(this._viewportController.latestPixelViewport);
@@ -602,11 +612,12 @@ export class Terminal {
   }
 
   setRenderer(rendererName) {
+    this._assertMutable();
     const normalized = rendererName === "kb-canvas" ? "kb-canvas" : "kb-stb";
     if (normalized !== "kb-canvas" && (this._pendingFont ?? this.options.font).canvasOnly) {
       throw new Error("Canvas-only font requires the kb-canvas renderer");
     }
-    if (!this._wasm || !this._renderer) {
+    if (!this._core?.ready || !this._renderer) {
       this.options.renderer = normalized;
       this._activeTextRenderer = normalized;
       return normalized;
@@ -749,7 +760,7 @@ export class Terminal {
   }
 
   sendKey(code, key, modifiers = this._softModifiers) {
-    if (!this._wasm) return 0;
+    if (!this._core?.ready) return 0;
     let effectiveKey = key;
     if ((modifiers & 1) && /^[a-z]$/.test(effectiveKey)) effectiveKey = effectiveKey.toUpperCase();
     const codepoint = effectiveKey.codePointAt(0);
@@ -810,7 +821,8 @@ export class Terminal {
   }
 
   enterSelectionMode() {
-    if (this._selectionMode || !this._wasm || !this._coarsePointer.matches) return false;
+    this._assertMutable();
+    if (this._selectionMode || !this._core?.ready || !this._coarsePointer.matches) return false;
     this._restoreInputFocus = document.activeElement === this._view.input;
     this._pointerController.resetGestures();
     this.clearSoftModifiers();
@@ -819,14 +831,15 @@ export class Terminal {
     this._view.viewport.classList.add("selection-mode");
     this._focusController.suspend();
     this._textView.setEnabled(true);
-    this._wasm.term_set_text_view_enabled(1);
-    this._wasm.term_invalidate_text_view();
+    this._core.setTextViewEnabled(true);
+    this._core.invalidateTextView();
     this._selectionModeEmitter.emit({ active: true, flush: true });
     this._scheduler.schedule(true);
     return true;
   }
 
   exitSelectionMode({ flush = true, restoreFocus = true } = {}) {
+    this._assertMutable();
     if (!this._selectionMode) return false;
     cancelAnimationFrame(this._selectionFallbackFrame);
     this._selectionFallbackFrame = null;
@@ -834,7 +847,7 @@ export class Terminal {
     this._restoreInputFocus = false;
     this._textView.clearBrowserSelection(true);
     this._textView.setEnabled(false);
-    this._wasm.term_set_text_view_enabled(0);
+    this._core.setTextViewEnabled(false);
     this._selectionMode = false;
     this._state.selectionMode = false;
     this._view.viewport.classList.remove("selection-mode");
@@ -848,7 +861,7 @@ export class Terminal {
   focus() { this._focusController?.focus(); }
   blur() {
     this._view?.input?.blur();
-    if (this._wasm) this._wasm.term_focus(0);
+    if (this._core?.ready) this._core.focus(false);
   }
   commitComposition() {
     if (!this._inputController?.isComposing && !this._inputController?.isSendingComposition) return false;
@@ -862,15 +875,18 @@ export class Terminal {
   }
 
   resize() {
+    this._assertMutable();
     return this._viewportController?.resize();
   }
 
   reset() {
+    this._assertMutable();
     const core = this._core;
     if (!core) return false;
     if (this._selectionMode) this.exitSelectionMode({ flush: false, restoreFocus: false });
     this.clearPendingLatency();
     core.reset();
+    this._renderer.error = null;
     this._viewportController.resize();
     return true;
   }
@@ -887,6 +903,7 @@ export class Terminal {
   }
 
   dispose() {
+    this._assertMutable();
     if (this._disposed) return;
     this._disposed = true;
     for (const addon of [...this._addons].reverse()) {
@@ -903,6 +920,7 @@ export class Terminal {
   }
 
   _disposeRuntime() {
+    this._assertMutable();
     this._windowListenerController?.abort();
     this._windowListenerController = null;
     cancelAnimationFrame(this._selectionFallbackFrame);
@@ -917,7 +935,6 @@ export class Terminal {
     this._cores.clear();
     this._core = null;
     this._renderingCore = null;
-    this._wasm = null;
     releaseRenderBackend(this, this._renderer);
     this._view?.dispose();
     this._renderer = null;

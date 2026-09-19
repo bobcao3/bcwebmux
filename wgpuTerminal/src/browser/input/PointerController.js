@@ -14,7 +14,7 @@ export class PointerController {
   constructor(options) {
     this.surface = options.surface;
     this.screen = options.screen;
-    this.getWasm = options.getWasm;
+    this.getCore = options.getCore;
     this.getRenderer = options.getRenderer;
     this.getSelectionMode = options.getSelectionMode;
     this.textView = options.textView;
@@ -76,42 +76,31 @@ export class PointerController {
 
   sendMouse(event, action, button, anyButtonPressed = event.buttons !== 0) {
     const renderer = this.getRenderer();
-    const wasm = this.getWasm();
+    const core = this.getCore();
     const rect = this.surface.getBoundingClientRect();
     const x = Math.max(0, event.clientX - rect.left) * renderer.pixelScaleX;
     const y = Math.max(0, event.clientY - rect.top) * renderer.pixelScaleY;
-    return wasm.term_mouse(action, button, modifierBits(event), x, y, anyButtonPressed ? 1 : 0) === 1;
+    return core.mouse(action, button, modifierBits(event), x, y, anyButtonPressed ? 1 : 0) === 1;
   }
 
   sendSelection(event, action) {
     const renderer = this.getRenderer();
-    const wasm = this.getWasm();
+    const core = this.getCore();
     const rect = this.surface.getBoundingClientRect();
     const x = Math.max(0, event.clientX - rect.left) * renderer.pixelScaleX;
     const y = Math.max(0, event.clientY - rect.top) * renderer.pixelScaleY;
-    const handled = wasm.term_selection(action, x, y) === 1;
+    const handled = core.selection(action, x, y) === 1;
     if (handled) this.scheduleFrame(true);
     return handled;
   }
 
   hyperlinkAtEvent(event) {
     const renderer = this.getRenderer();
-    const wasm = this.getWasm();
+    const core = this.getCore();
     const rect = this.surface.getBoundingClientRect();
     const x = Math.max(0, event.clientX - rect.left) * renderer.pixelScaleX;
     const y = Math.max(0, event.clientY - rect.top) * renderer.pixelScaleY;
-    const status = wasm.term_hyperlink_at(x, y);
-    if (status < 0) throw new Error(`WASM hyperlink lookup failed: ${status}`);
-    if (status !== 1) return null;
-    const ptr = wasm.term_hyperlink_ptr();
-    const len = wasm.term_hyperlink_len();
-    const bytes = new Uint8Array(wasm.memory.buffer, ptr, len).slice();
-    try {
-      return this.strictDecoder.decode(bytes);
-    } catch (error) {
-      console.warn("invalid hyperlink URI encoding", error);
-      return null;
-    }
+    return core.hyperlinkAt(x, y);
   }
 
   finishMouseGesture(event, cancelled = false) {

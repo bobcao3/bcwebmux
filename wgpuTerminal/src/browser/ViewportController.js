@@ -18,7 +18,7 @@ export class ViewportController {
     this.terminalElement = options.terminalElement;
     this.viewport = options.viewport;
     this.screen = options.screen;
-    this.getWasm = options.getWasm;
+    this.getCore = options.getCore;
     this.getRenderer = options.getRenderer;
     this.getInputController = options.getInputController;
     this.resizeTerminal = options.resizeTerminal;
@@ -125,8 +125,8 @@ export class ViewportController {
 
   resize(pixelViewport = this.nativePixelViewport()) {
     const renderer = this.getRenderer();
-    const wasm = this.getWasm();
-    if (!renderer || !wasm) return null;
+    const core = this.getCore();
+    if (!renderer || !core) return null;
     this.cancelScrollGesture();
     this.onBeforeResize();
     this.latestPixelViewport = pixelViewport;
@@ -145,15 +145,7 @@ export class ViewportController {
     this.semanticScrollbar.render(this.adjustment);
     const result = this.resizeTerminal
       ? this.resizeTerminal(layout)
-      : wasm.term_resize(
-        layout.cols,
-        layout.rows,
-        layout.cellWidth,
-        layout.cellHeight,
-        layout.cellWidth,
-        layout.cellHeight,
-        layout.fontSize,
-      );
+      : core.resize(layout);
     if (result !== 1) throw new Error("terminal resize failed");
     this.onResize({ cols: layout.cols, rows: layout.rows });
     this.scheduleFrame();
@@ -179,11 +171,11 @@ export class ViewportController {
     this.cancelMomentum();
     if (!Number.isFinite(row) || this.adjustment.maximum === 0) return false;
     const target = Math.max(0, Math.min(this.adjustment.maximum, Math.round(row)));
-    const wasm = this.getWasm();
-    if (!wasm) return false;
+    const core = this.getCore();
+    if (!core) return false;
     const result = target === this.adjustment.maximum
-      ? wasm.term_scroll_bottom()
-      : wasm.term_scroll_row(target);
+      ? core.scrollBottom()
+      : core.scrollRow(target);
     if (result !== 1) return false;
     this.semanticScrollbar.reveal();
     this.scheduleFrame(true);
@@ -195,8 +187,8 @@ export class ViewportController {
     if (!Number.isFinite(rows) || this.adjustment.maximum === 0) return false;
     const delta = Math.max(-0x80000000, Math.min(0x7fffffff, Math.trunc(rows)));
     if (delta === 0) return false;
-    const wasm = this.getWasm();
-    if (!wasm || wasm.term_scroll_delta(delta) !== 1) return false;
+    const core = this.getCore();
+    if (!core || core.scrollDelta(delta) !== 1) return false;
     this.semanticScrollbar.reveal();
     this.scheduleFrame(true);
     return true;
@@ -206,9 +198,9 @@ export class ViewportController {
     if (!Number.isFinite(rows) || rows === 0) return 0;
     const delta = Math.max(-0x80000000, Math.min(0x7fffffff, Math.trunc(rows)));
     if (delta === 0) return 0;
-    const wasm = this.getWasm();
-    if (!wasm) return 0;
-    const route = wasm.term_scroll_input(
+    const core = this.getCore();
+    if (!core) return 0;
+    const route = core.scrollInput(
       delta,
       context?.mods ?? 0,
       context?.x ?? 0,

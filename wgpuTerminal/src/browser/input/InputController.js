@@ -537,7 +537,7 @@ export class FocusController {
     this.input = options.input;
     this.inputController = options.inputController;
     this.textView = options.textView;
-    this.getWasm = options.getWasm;
+    this.getCore = options.getCore;
     this.suspended = false;
   }
 
@@ -545,8 +545,8 @@ export class FocusController {
     if (this.suspended || document.hidden || this.textView.hasSelection()) return;
     this.input.focus({ preventScroll: true });
     this.inputController.sync();
-    const wasm = this.getWasm();
-    if (wasm && document.hasFocus()) wasm.term_focus(1);
+    const core = this.getCore();
+    if (core && document.hasFocus()) core.focus(1);
   }
 
   restore() {
@@ -561,25 +561,25 @@ export class FocusController {
   suspend() {
     this.suspended = true;
     if (document.activeElement === this.input) this.input.blur();
-    const wasm = this.getWasm();
-    if (wasm) wasm.term_focus(0);
+    const core = this.getCore();
+    if (core) core.focus(0);
   }
 
   resume() {
     this.suspended = false;
-    const wasm = this.getWasm();
-    if (wasm) wasm.term_focus(document.hasFocus() ? 1 : 0);
+    const core = this.getCore();
+    if (core) core.focus(document.hasFocus() ? 1 : 0);
   }
 
   windowFocus() {
-    const wasm = this.getWasm();
-    if (wasm) wasm.term_focus(this.suspended ? 0 : 1);
+    const core = this.getCore();
+    if (core) core.focus(this.suspended ? 0 : 1);
     this.restore();
   }
 
   windowBlur() {
     this.inputController.releaseModifiers();
-    const wasm = this.getWasm();
-    if (wasm) wasm.term_focus(0);
+    const core = this.getCore();
+    if (core) core.focus(0);
   }
 }

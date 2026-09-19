@@ -135,6 +135,7 @@ pub fn build(b: *std.Build) void {
         const font = jetbrains_mono_nerd_font.path(b.fmt("{s}.ttf", .{basename}));
         const font_install = b.addInstallFile(font, b.fmt("wgpu-terminal/fonts/{s}.ttf", .{basename}));
         terminal_wasm_step.dependOn(&font_install.step);
+        render_frame_contract_cmd.step.dependOn(&font_install.step);
         _ = web_assets.addCopyFile(font, b.fmt("fonts/{s}.ttf", .{basename}));
     }
     const font_license_install = b.addInstallFile(b.path("web/fonts/OFL.txt"), "wgpu-terminal/fonts/OFL.txt");

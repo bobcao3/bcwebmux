@@ -21,10 +21,8 @@ import {
   selectTerminal as selectTerminalGlyphAtlas,
 } from "../GlyphAtlasRuntime.js";
 import {
-  parseRendererSubmission,
   decodeCanvasRequestText,
-  applyRendererSubmission,
-} from "../RendererSubmission.js";
+} from "../../../FramePacket.js";
 
 import { generateGrain, GRAIN_SIZE } from "../Grain.js";
 import { CELL_SIZE, STYLE_SIZE } from "../FrameSchema.js";
@@ -127,22 +125,8 @@ export class GpuTerminal {
       scrollOffset: 0,
       scrollLength: 0,
       viewportMode: "active",
-      textRowsPtr: 0,
-      textCellsPtr: 0,
-      textBytesPtr: 0,
-      textBytesLen: 0,
-      textChanged: false,
+
     };
-    this.submissionMemory = null;
-    this.submissionCellsPtr = 0;
-    this.submissionDirtyRangesPtr = 0;
-    this.submissionDirtyRangesCount = 0;
-    this.submissionStylesPtr = 0;
-    this.submissionStylesFirst = 0;
-    this.submissionStylesCount = 0;
-    this.submissionSelectionsPtr = 0;
-    this.submissionCanvasRequestsPtr = 0;
-    this.submissionCanvasRequestsCount = 0;
     this.device.lost.then(info => {
       if (!this.disposed) this.error = `WebGPU device lost: ${info.message}`;
     });
@@ -290,10 +274,15 @@ export class GpuTerminal {
     return this.atlas.columns;
   }
 
-  submitWasm(terminal, memory, submissionPtr) {
-    const parsed = parseRendererSubmission(this, terminal, memory, submissionPtr);
+  submitPacket(terminal, parsed) {
+    if (!this.initialized || this.activeTerminal !== terminal) throw new Error("invalid renderer terminal");
     this.glyphSlotsUsed = parsed.glyphSlotsUsed;
-    const metadata = applyRendererSubmission(this, parsed);
+    for (const key of ["cols", "rows", "cacheHits", "cacheMisses", "background", "foreground",
+      "cursorX", "cursorY", "cursorFlags", "cursorStyle"]) this[key] = parsed[key];
+    const metadata = this.submissionMetadata;
+    for (const key of ["cols", "rows", "viewportMode", "scrollTotal", "scrollOffset", "scrollLength"]) {
+      metadata[key] = parsed[key];
+    }
     this.flushAtlasGrowthCopies();
     for (let index = 0; index < parsed.bitmapUploadsCount; index += 1) {
       const offset = index * 16;
@@ -335,13 +324,12 @@ export class GpuTerminal {
       this.indirectData[1] = parsed.frameCells;
       this.indirectDirty = true;
     }
-    this.draw(true);
-    this.updateBlinkTimer();
+    this.draw(parsed);
     return metadata;
   }
 
-  draw(hasSubmission = false) {
-    if (this.disposed || !this.offscreen || !this.rows || this.error) return;
+  draw(packet = null) {
+    if (this.disposed || !this.offscreen || !this.rows || (!packet && this.error)) return;
     const drawStartedAt = performance.now();
     this.uniformU32[0] = this.cols;
     this.uniformU32[1] = this.rows;
@@ -366,12 +354,12 @@ export class GpuTerminal {
     let dirtyRangesView = null;
     let styleStagingOffset = 0;
     let rangesStagingOffset = 0;
-    if (hasSubmission) {
-      dirtyRangesView = new DataView(this.submissionMemory, this.submissionDirtyRangesPtr, this.submissionDirtyRangesCount * 8);
+    if (packet) {
+      dirtyRangesView = packet.dirtyRanges;
       styleStagingOffset = Math.ceil(stagingSize / 4) * 4;
-      stagingSize = styleStagingOffset + this.submissionStylesCount * this.styleSize;
+      stagingSize = styleStagingOffset + packet.stylesCount * this.styleSize;
       rangesStagingOffset = stagingSize;
-      for (let index = 0; index < this.submissionDirtyRangesCount; index += 1) {
+      for (let index = 0; index < packet.dirtyRangesCount; index += 1) {
         const firstRow = dirtyRangesView.getUint32(index * 8, true);
         const rowCount = dirtyRangesView.getUint32(index * 8 + 4, true);
         const cellLength = rowCount * this.cols * this.cellSize;
@@ -386,14 +374,12 @@ export class GpuTerminal {
     const staging = this.frameUploadBytes;
     staging.set(new Uint8Array(this.uniformData), 0);
     if (indirectOffset !== null) staging.set(new Uint8Array(this.indirectData.buffer), indirectOffset);
-    if (hasSubmission) {
-      if (this.submissionStylesCount > 0) {
-        const length = this.submissionStylesCount * this.styleSize;
-        const offset = this.submissionStylesFirst * this.styleSize;
-        staging.set(new Uint8Array(this.submissionMemory, this.submissionStylesPtr + offset, length), styleStagingOffset);
+    if (packet) {
+      if (packet.stylesCount > 0) {
+        staging.set(packet.styleBytes, styleStagingOffset);
       }
       let rangeStagingOffset = rangesStagingOffset;
-      for (let index = this.submissionDirtyRangesCount - 1; index >= 0; index -= 1) {
+      for (let index = packet.dirtyRangesCount - 1; index >= 0; index -= 1) {
         const firstRow = dirtyRangesView.getUint32(index * 8, true);
         const rowCount = dirtyRangesView.getUint32(index * 8 + 4, true);
         const cellOffset = firstRow * this.cols * this.cellSize;
@@ -401,9 +387,9 @@ export class GpuTerminal {
         const selectionOffset = firstRow * 4;
         const selectionLength = rowCount * 4;
         rangeStagingOffset -= selectionLength;
-        staging.set(new Uint8Array(this.submissionMemory, this.submissionSelectionsPtr + selectionOffset, selectionLength), rangeStagingOffset);
+        staging.set(packet.selectionBytes.subarray(selectionOffset, selectionOffset + selectionLength), rangeStagingOffset);
         rangeStagingOffset -= cellLength;
-        staging.set(new Uint8Array(this.submissionMemory, this.submissionCellsPtr + cellOffset, cellLength), rangeStagingOffset);
+        staging.set(packet.cells.subarray(cellOffset, cellOffset + cellLength), rangeStagingOffset);
       }
     }
     const queue = this.device.queue;
@@ -422,19 +408,19 @@ export class GpuTerminal {
         [copy.width, copy.height, 1],
       );
     }
-    if (hasSubmission) {
-      if (this.submissionStylesCount > 0) {
-        const length = this.submissionStylesCount * this.styleSize;
+    if (packet) {
+      if (packet.stylesCount > 0) {
+        const length = packet.stylesCount * this.styleSize;
         encoder.copyBufferToBuffer(
           this.frameUploadBuffer,
           styleStagingOffset,
           this.styleBuffer,
-          this.submissionStylesFirst * this.styleSize,
+          packet.stylesFirst * this.styleSize,
           length,
         );
       }
       let rangeStagingOffset = rangesStagingOffset;
-      for (let index = this.submissionDirtyRangesCount - 1; index >= 0; index -= 1) {
+      for (let index = packet.dirtyRangesCount - 1; index >= 0; index -= 1) {
         const firstRow = dirtyRangesView.getUint32(index * 8, true);
         const rowCount = dirtyRangesView.getUint32(index * 8 + 4, true);
         const cellOffset = firstRow * this.cols * this.cellSize;
@@ -446,6 +432,11 @@ export class GpuTerminal {
         rangeStagingOffset -= cellLength;
         encoder.copyBufferToBuffer(this.frameUploadBuffer, rangeStagingOffset, this.cellBuffer, cellOffset, cellLength);
       }
+    }
+    if (packet) {
+      queue.submit([encoder.finish()]);
+      for (const copy of textureCopies) copy.source.destroy();
+      return;
     }
     const r = (this.background >> 16 & 255) / 255;
     const g = (this.background >> 8 & 255) / 255;

@@ -33,6 +33,10 @@ font_engine: FontEngine = .{},
 text_view: TextView = .{},
 bitmap_batch: BitmapBatch = .{},
 frame: Frame = undefined,
+packet: Submission = undefined,
+pending_text_hash: ?u64 = null,
+pending_cursor_x: ?u16 = null,
+pending_cursor_y: ?u16 = null,
 cells: std.ArrayListUnmanaged(Cell) = .empty,
 styles: std.ArrayListUnmanaged(Style) = .empty,
 selections: std.ArrayListUnmanaged(u32) = .empty,
@@ -85,6 +89,9 @@ pub fn bootstrap(self: *Self) void {
     self.bitmap_cache_reset = true;
     self.canvas_requests = .empty;
     self.canvas_text = .empty;
+    self.pending_text_hash = null;
+    self.pending_cursor_x = null;
+    self.pending_cursor_y = null;
     self.font_engine.bootstrap();
     self.text_view.bootstrap();
     self.bitmap_batch.bootstrap();
@@ -195,6 +202,17 @@ pub const Submission = extern struct {
     text_text_offset: u32,
     text_text_len: u32,
     text_changed: u32,
+    token: u32,
+    core_generation: u32,
+    config_generation: u32,
+    lease_generation: u32,
+    flags: u32,
+    revision: u32,
+    graphics_revision: u32,
+    graphics_draws_offset: u32,
+    graphics_draws_count: u32,
+    graphics_resources_offset: u32,
+    graphics_resources_count: u32,
 };
 
 // Ordinary graphemes are cached independently; contextual punctuation runs use exact source-sequence keys.
@@ -369,10 +387,8 @@ comptime {
     std.debug.assert(@sizeOf(OrdinaryKey) == 8);
     std.debug.assert(@sizeOf(Style) == 12);
     std.debug.assert(@sizeOf(DirtyRange) == 8);
-    std.debug.assert(@sizeOf(Submission) == 112);
+    std.debug.assert(@sizeOf(Submission) == 156);
 }
-
-extern "host" fn gpu_submit(submission_ptr: *const Submission) i32;
 
 pub fn setFontMetrics(self: *Self, cell_width: u16, cell_height: u16, font_size_px_value: u16) void {
     if (self.font_cell_width != cell_width or self.font_cell_height != cell_height or self.font_size_px != font_size_px_value)
@@ -553,17 +569,16 @@ fn rebuildCompactRow(self: *Self, state: *const ghostty.RenderState, render_cell
     }
 }
 
-pub fn submit(self: *Self, state: *ghostty.RenderState, terminal: *ghostty.Terminal) !void {
+pub fn prepare(self: *Self, state: *ghostty.RenderState, terminal: *ghostty.Terminal) !void {
     return (switch (self.text_backend) {
-        .kb_stb, .kb_canvas => self.submitCached(state, terminal),
+        .kb_stb, .kb_canvas => self.prepareCached(state, terminal),
     }) catch |err| {
-        self.render_cache_reset = true;
-        self.bitmap_cache_reset = true;
+        self.invalidateRenderCache();
         return err;
     };
 }
 
-fn submitCached(self: *Self, state: *ghostty.RenderState, terminal: *ghostty.Terminal) !void {
+fn prepareCached(self: *Self, state: *ghostty.RenderState, terminal: *ghostty.Terminal) !void {
     self.canvas_requests.clearRetainingCapacity();
     self.canvas_text.clearRetainingCapacity();
     self.bitmap_batch.reset();
@@ -756,7 +771,7 @@ fn submitCached(self: *Self, state: *ghostty.RenderState, terminal: *ghostty.Ter
     const cursor_x: u32 = if (cursor) |pos| if (pos.wide_tail and pos.x > 0) pos.x - 1 else pos.x else std.math.maxInt(u16);
     self.frame = .{
         .magic = 0x46574342,
-        .version = 4,
+        .version = 5,
         .cols = state.cols,
         .rows = state.rows,
         .cell_count = @intCast(cell_count),
@@ -791,9 +806,9 @@ fn submitCached(self: *Self, state: *ghostty.RenderState, terminal: *ghostty.Ter
         self.text_view.inactiveSnapshot();
     const bitmap_uploads = self.bitmap_batch.uploads();
     const bitmap_upload_pixels = self.bitmap_batch.uploadPixels();
-    const submission = Submission{
+    self.packet = .{
         .magic = 0x5355424d,
-        .version = 4,
+        .version = 5,
         .byte_size = @sizeOf(Submission),
         .reserved = 0,
         .frame_offset = try wasmOffset(&self.frame),
@@ -820,16 +835,32 @@ fn submitCached(self: *Self, state: *ghostty.RenderState, terminal: *ghostty.Ter
         .text_text_offset = try wasmOffset(snapshot.text),
         .text_text_len = @intCast(snapshot.text_len),
         .text_changed = @intFromBool(snapshot.changed),
+        .token = 0,
+        .core_generation = 0,
+        .config_generation = 0,
+        .lease_generation = self.glyph_partition_generation,
+        .flags = @intFromBool(full_rebuild),
+        .revision = 0,
+        .graphics_revision = 0,
+        .graphics_draws_offset = 0,
+        .graphics_draws_count = 0,
+        .graphics_resources_offset = 0,
+        .graphics_resources_count = 0,
     };
-    if (gpu_submit(&submission) != 1) {
-        self.bitmap_cache_reset = true;
-        return error.SubmitFailed;
-    }
-    if (build_text_snapshot) self.text_view.commit(snapshot.hash);
-    self.previous_cols = cols;
-    self.previous_rows = rows_count;
-    self.previous_cursor_x = current_cursor_x;
-    self.previous_cursor_y = current_cursor_y;
+    self.pending_text_hash = if (build_text_snapshot) snapshot.hash else null;
+    self.pending_cursor_x = current_cursor_x;
+    self.pending_cursor_y = current_cursor_y;
+}
+
+pub fn accept(self: *Self) void {
+    if (self.pending_text_hash) |hash| self.text_view.commit(hash);
+    self.pending_text_hash = null;
+    self.previous_cols = @intCast(self.frame.cols);
+    self.previous_rows = @intCast(self.frame.rows);
+    self.previous_cursor_x = self.pending_cursor_x;
+    self.previous_cursor_y = self.pending_cursor_y;
+    self.pending_cursor_x = null;
+    self.pending_cursor_y = null;
     self.render_cache_reset = false;
 }
 

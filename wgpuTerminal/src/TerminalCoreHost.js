@@ -5,7 +5,8 @@ import { TerminalCore } from "./TerminalCore.js";
 import { normalizeFont } from "./TerminalOptions.js";
 
 export async function createCore(host, options = {}) {
-  if (!host._opened || !host._wasm) throw new Error("terminal is not open");
+  host._core?.assertMutable();
+  if (!host._opened || !host._core?.ready) throw new Error("terminal is not open");
   if (options.wasmUrl !== undefined && String(options.wasmUrl) !== String(host.options.wasmUrl)) {
     throw new Error("terminal core WASM build does not match host");
   }
@@ -39,10 +40,12 @@ export async function createCore(host, options = {}) {
 }
 
 export function attachCore(host, core) {
+  host._core?.assertMutable();
   if (!host._opened) throw new Error("terminal is not open");
-  if (!(core instanceof TerminalCore) || !core.wasm) {
+  if (!(core instanceof TerminalCore) || !core.ready) {
     throw new TypeError("an opened terminal core is required");
   }
+  core.assertMutable();
   if (String(core.options.wasmUrl) !== String(host.options.wasmUrl)) {
     throw new Error("terminal core WASM build does not match host");
   }
@@ -50,7 +53,6 @@ export function attachCore(host, core) {
   host._viewportController.cancelScrollGesture();
   core._setHost(host);
   const previousCore = host._core;
-  const previousWasm = host._wasm;
   const wasOwned = host._cores.has(core);
   host._cores.add(core);
   const pixelViewport = host._viewportController.latestPixelViewport;
@@ -71,13 +73,11 @@ export function attachCore(host, core) {
       : core.resize(layout)) !== 1) throw new Error("terminal core resize failed");
     if (core.renderFrame() !== 1) throw new Error("terminal core render failed");
     host._core = core;
-    host._wasm = core.wasm;
     host.clearPendingLatency();
     host._renderingCore = null;
   } catch (error) {
     host._renderingCore = previousCore;
     host._core = previousCore;
-    host._wasm = previousWasm;
     try {
       host._renderer.selectTerminal(previousCore);
       previousCore.setRenderer(host.options.renderer);
@@ -100,7 +100,7 @@ export function attachCore(host, core) {
 }
 
 export function restoreSnapshot(host, data, core = host._core) {
-  if (!host._opened || !host._cores.has(core) || !core?.wasm) {
+  if (!host._opened || !host._cores.has(core) || !core?.ready) {
     throw new Error("an opened terminal core is required");
   }
   if (core === host._core) host._pendingRxAt = performance.now();

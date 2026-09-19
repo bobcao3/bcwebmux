@@ -104,13 +104,11 @@ export function selectTerminal(renderer, terminal) {
   renderer.blinkTimer = 0;
   Object.assign(renderer.submissionMetadata, {
     cols: 0, rows: 0, viewportMode: "active", scrollTotal: 0, scrollOffset: 0, scrollLength: 0,
-    textRowsPtr: 0, textCellsPtr: 0, textBytesPtr: 0, textBytesLen: 0, textChanged: false,
+
   });
   for (const field of [
-    "submissionMemory", "submissionCellsPtr", "submissionDirtyRangesPtr", "submissionDirtyRangesCount",
-    "submissionStylesPtr", "submissionStylesFirst", "submissionStylesCount", "submissionSelectionsPtr",
-    "submissionCanvasRequestsPtr", "submissionCanvasRequestsCount", "cols", "rows", "cursorFlags", "drawnCellCount",
-  ]) renderer[field] = field === "submissionMemory" ? null : 0;
+    "cols", "rows", "cursorFlags", "drawnCellCount",
+  ]) renderer[field] = 0;
   if (renderer.indirectData) {
     renderer.indirectData[1] = 0;
     renderer.indirectDirty = true;

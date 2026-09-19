@@ -30,12 +30,15 @@ fn log(
 // A WebAssembly instance exposes one terminal through this C-shaped ABI.
 // Each new WebAssembly instance calls term_bootstrap exactly once before any terminal method.
 var terminal: Terminal = undefined;
+var bootstrapped: bool = false;
 
 export fn bc_font_alloc(len: u32) u32 {
+    if (terminal.frame_token != 0) return 0;
     return Terminal.bc_font_alloc(len);
 }
 
 export fn bc_font_free(ptr: u32) void {
+    if (terminal.frame_token != 0) return;
     Terminal.bc_font_free(ptr);
 }
 
@@ -51,8 +54,8 @@ export fn term_invalidate_text_view() void {
     terminal.term_invalidate_text_view();
 }
 
-export fn term_invalidate_frame_cache() void {
-    terminal.term_invalidate_frame_cache();
+export fn term_invalidate_frame_cache(glyphs: u32) void {
+    terminal.term_invalidate_frame_cache(glyphs);
 }
 
 export fn term_set_text_view_enabled(enabled_raw: u32) i32 {
@@ -60,7 +63,9 @@ export fn term_set_text_view_enabled(enabled_raw: u32) i32 {
 }
 
 export fn term_bootstrap() void {
+    if (bootstrapped) return;
     terminal.bootstrap();
+    bootstrapped = true;
 }
 
 export fn term_init(cols: u16, rows: u16) i32 {
@@ -191,6 +196,20 @@ export fn term_focus(focused: u32) i32 {
     return terminal.term_focus(focused);
 }
 
-export fn term_frame() i32 {
-    return terminal.term_frame();
+export fn term_frame_prepare() i32 {
+    return terminal.term_frame_prepare();
+}
+
+export fn term_frame_finish(token: u32, accepted: u32) i32 {
+    return terminal.term_frame_finish(token, accepted);
+}
+
+export fn term_frame_token() u32 {
+    return terminal.frame_token;
+}
+export fn term_core_generation() u32 {
+    return terminal.core_generation;
+}
+export fn term_config_generation() u32 {
+    return terminal.config_generation;
 }

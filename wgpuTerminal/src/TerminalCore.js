@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Cheng Cao
 
+import { parseFramePacket } from "./FramePacket.js";
 import { EventEmitter } from "./common/EventEmitter.js";
 import {
   DEFAULT_FONT,
@@ -49,6 +50,11 @@ export class TerminalCore {
       theme: options.theme || DEFAULT_THEME,
       clipboardWrite: options.clipboardWrite,
     };
+    this._borrow = false;
+    this._inWasm = false;
+    this._partition = null;
+    this._partitionAtlasColumns = 0;
+    this._renderLayout = null;
     this._wasm = null;
     this._fontFaces = null;
     this._host = null;
@@ -75,7 +81,8 @@ export class TerminalCore {
     this._errorEmitter = createEmitter();
   }
 
-  get wasm() { return this._wasm; }
+  get ready() { return this._wasm !== null; }
+  get memoryBytes() { return this._wasm?.memory.buffer.byteLength ?? 0; }
   get opened() { return this._opened; }
   get disposed() { return this._disposed; }
   get cols() { return this._state.cols; }
@@ -90,6 +97,7 @@ export class TerminalCore {
   onError(listener) { return this._errorEmitter.event(listener); }
 
   async open(options = {}) {
+    this.assertMutable();
     if (this._disposed) throw new Error("terminal core is disposed");
     if (this._opened) throw new Error("terminal core is already open");
     if (this._opening) return this._opening;
@@ -106,7 +114,7 @@ export class TerminalCore {
       return this;
     } catch (error) {
       this._errorEmitter.emit(error);
-      this._wasm?.term_deinit?.();
+      if (this._wasm) this._invoke("term_deinit");
       this._wasm = null;
       this._fontFaces = null;
       throw error;
@@ -123,8 +131,8 @@ export class TerminalCore {
     this._fontFaces = fontFaces;
     const instance = await WebAssembly.instantiate(module, this._createWasmImports());
     this._wasm = instance.exports;
-    this._wasm.term_bootstrap();
-    if (this._wasm.term_init(cols, rows) !== 1) throw new Error("terminal core initialization failed");
+    this._invoke("term_bootstrap");
+    if (this._invoke("term_init", cols, rows) !== 1) throw new Error("terminal core initialization failed");
     if ((this._host?._installGlyphPartition(this) ?? 1) !== 1) {
       throw new Error("terminal glyph partition installation failed");
     }
@@ -170,7 +178,6 @@ export class TerminalCore {
           const method = ["error", "warn", "info", "debug"][level] ?? "log";
           console[method]("terminal WASM:", message);
         },
-        gpu_submit: (submissionPtr) => this._host?._gpuSubmit(this, submissionPtr) ?? 0,
         font_size: (style) => {
           if (!Number.isInteger(style) || style < 0 || style >= (this._fontFaces?.length ?? 0)) return 0;
           return this._fontFaces[style]?.byteLength ?? 0;
@@ -225,11 +232,13 @@ export class TerminalCore {
   }
 
   _setHost(host) {
+    this.assertMutable();
     if (this._host && this._host !== host) throw new Error("terminal core already belongs to another host");
     this._host = host;
   }
 
   _clearHost(host) {
+    this.assertMutable();
     if (this._host === host) this._host = null;
   }
 
@@ -242,12 +251,96 @@ export class TerminalCore {
     if (this._host?._core === this) this._host._scheduler?.schedule(immediate);
   }
 
-  renderFrame() {
+  assertMutable() {
+    if (this._borrow || this._inWasm) throw new Error("terminal mutation during live frame borrow or reentrant operation");
+  }
+
+  _invoke(name, ...args) {
+    this.assertMutable();
     if (!this._wasm) return 0;
+    this._inWasm = true;
+    try { return this._wasm[name](...args); }
+    finally { this._inWasm = false; }
+  }
+
+  consumeFrame(consumer, expectations) {
+    this.assertMutable();
+    if (!this._wasm) return 0;
+    if (typeof consumer !== "function") throw new TypeError("frame consumer must be synchronous");
     const startedAt = performance.now();
-    const result = this._wasm.term_frame();
-    this._sampleMetric("wasmFrameMs", performance.now() - startedAt);
+    let token = 0;
+    let accepted = false;
+    this._borrow = true;
+    try {
+      const ptr = this._wasm.term_frame_prepare();
+      if (ptr === 0) return 0;
+      if (ptr < 0) throw new Error(`frame preparation failed: ${ptr}`);
+      token = this._wasm.term_frame_token();
+      const packet = parseFramePacket(this._wasm.memory.buffer, ptr, {
+        abi: 5,
+        coreGeneration: this._wasm.term_core_generation(),
+        configGeneration: this._wasm.term_config_generation(),
+        partition: this._partition,
+        token,
+        ...expectations,
+      });
+      const result = consumer(packet);
+      if (result != null && typeof result.then === "function") {
+        // Observe rejected promises without extending the borrowed lifetime.
+        Promise.resolve(result).catch(() => {});
+        throw new TypeError("frame consumer returned a thenable");
+      }
+      if (result === false) throw new Error("frame consumer rejected packet");
+      accepted = true;
+      return 1;
+    } finally {
+      try {
+        if (token && this._wasm.term_frame_finish(token, accepted ? 1 : 0) !== 1) {
+          throw new Error("frame finish token mismatch");
+        }
+      } finally {
+        this._borrow = false;
+        this._sampleMetric("wasmFrameMs", performance.now() - startedAt);
+      }
+    }
+  }
+
+  renderFrame() {
+    this.assertMutable();
+    return this._host?._consumeCoreFrame(this) ?? 0;
+  }
+
+  setGlyphPartition(partition, atlasColumns) {
+    this.assertMutable();
+    const result = this._invoke("term_set_glyph_partition", partition.baseSlot, partition.slotCapacity, atlasColumns, partition.generation);
+    if (result === 1) {
+      this._partition = { ...partition };
+      this._partitionAtlasColumns = atlasColumns;
+    }
     return result;
+  }
+
+  invalidateFrame() { return this._invoke("term_invalidate_frame_cache", 1); }
+  invalidateTextView() { return this._invoke("term_invalidate_text_view"); }
+  setTextViewEnabled(enabled) { return this._invoke("term_set_text_view_enabled", enabled ? 1 : 0); }
+  scrollBottom() { return this._invoke("term_scroll_bottom"); }
+  scrollRow(row) { return this._invoke("term_scroll_row", row); }
+  scrollDelta(rows) { return this._invoke("term_scroll_delta", rows); }
+  scrollInput(rows, mods, x, y) { return this._invoke("term_scroll_input", rows, mods, x, y); }
+  mouse(action, button, mods, x, y, pressed) { return this._invoke("term_mouse", action, button, mods, x, y, pressed); }
+  selection(action, x, y) { return this._invoke("term_selection", action, x, y); }
+  selectWord(x, y) { return this._invoke("term_selection_word", x, y); }
+  focus(focused) { return this._invoke("term_focus", focused ? 1 : 0); }
+
+  hyperlinkAt(x, y) {
+    this.assertMutable();
+    const status = this._invoke("term_hyperlink_at", x, y);
+    if (status < 0) throw new Error(`WASM hyperlink lookup failed: ${status}`);
+    if (status !== 1) return null;
+    try {
+      return strictDecoder.decode(new Uint8Array(this._wasm.memory.buffer,
+        this._invoke("term_hyperlink_ptr"), this._invoke("term_hyperlink_len")));
+    } catch { return null; }
   }
 
   frameSubmitted() {
@@ -255,6 +348,7 @@ export class TerminalCore {
   }
 
   write(data) {
+    this.assertMutable();
     if (!this._wasm) throw new Error("terminal core is not open");
     const bytes = normalizeBinary(data);
     if (!bytes.length) return;
@@ -263,11 +357,11 @@ export class TerminalCore {
     let offset = 0;
     while (offset < bytes.length) {
       const length = Math.min(WASM_STAGING_CAPACITY, bytes.length - offset);
-      const ptr = this._wasm.term_reserve(length);
+      const ptr = this._invoke("term_reserve", length);
       if (!ptr) throw new Error("WASM receive buffer exhausted");
       const chunk = offset === 0 && length === bytes.length ? bytes : bytes.subarray(offset, offset + length);
       new Uint8Array(this._wasm.memory.buffer, ptr, length).set(chunk);
-      if (this._wasm.term_feed(length) !== 1) throw new Error("WASM terminal feed failed");
+      if (this._invoke("term_feed", length) !== 1) throw new Error("WASM terminal feed failed");
       offset += length;
     }
     this._sampleMetric("wasmParseMs", performance.now() - parseStartedAt);
@@ -276,16 +370,17 @@ export class TerminalCore {
   }
 
   _input(text, paste) {
+    this.assertMutable();
     if (!this._wasm) throw new Error("terminal core is not open");
     let remaining = String(text ?? "");
     if (!remaining.length) return;
     while (remaining.length) {
-      const ptr = this._wasm.term_reserve(TEXT_STAGING_CHUNK);
+      const ptr = this._invoke("term_reserve", TEXT_STAGING_CHUNK);
       if (!ptr) throw new Error("WASM staging buffer exhausted");
       const buffer = new Uint8Array(this._wasm.memory.buffer, ptr, TEXT_STAGING_CHUNK);
       const result = encoder.encodeInto(remaining, buffer);
       if (!result.read && !result.written) throw new Error("text encoding made no progress");
-      if (this._wasm.term_text(result.written, paste ? 1 : 0) !== 1) {
+      if (this._invoke("term_text", result.written, paste ? 1 : 0) !== 1) {
         throw new Error("WASM text submission failed");
       }
       remaining = result.read < remaining.length ? remaining.slice(result.read) : "";
@@ -302,22 +397,24 @@ export class TerminalCore {
   }
 
   sendEncodedKey(code, text, action, modifiers, consumed) {
+    this.assertMutable();
     if (!this._wasm) return 0;
-    const ptr = this._wasm.term_reserve(512);
+    const ptr = this._invoke("term_reserve", 512);
     if (!ptr) return 0;
     const buffer = new Uint8Array(this._wasm.memory.buffer, ptr, 512);
     const codeResult = encoder.encodeInto(code, buffer);
     if (codeResult.read !== code.length) return 0;
     const textResult = encoder.encodeInto(text, buffer.subarray(codeResult.written));
     if (textResult.read !== text.length) return 0;
-    const result = this._wasm.term_key(action, modifiers, consumed ? 1 : 0, codeResult.written, textResult.written);
+    const result = this._invoke("term_key", action, modifiers, consumed ? 1 : 0, codeResult.written, textResult.written);
     if (result === 1) this._schedule(true);
     return result;
   }
 
   resize(layout) {
+    this.assertMutable();
     if (!this._wasm) return 0;
-    const result = this._wasm.term_resize(
+    const result = this._invoke("term_resize",
       layout.cols,
       layout.rows,
       layout.cellWidth,
@@ -329,22 +426,27 @@ export class TerminalCore {
     if (result === 1) {
       this._state.cols = layout.cols;
       this._state.rows = layout.rows;
+      this._renderLayout = { ...layout };
     }
     return result;
   }
 
   setRenderMetrics(layout) {
+    this.assertMutable();
     if (!this._wasm) throw new Error("terminal core is not open");
-    return this._wasm.term_set_render_metrics(
+    const result = this._invoke("term_set_render_metrics",
       layout.cellWidth,
       layout.cellHeight,
       layout.cellWidth,
       layout.cellHeight,
       layout.fontSize,
     );
+    if (result === 1) this._renderLayout = { ...layout };
+    return result;
   }
 
   resizeCanonical(geometry) {
+    this.assertMutable();
     if (!this._wasm) throw new Error("terminal core is not open");
     const cols = Number(geometry?.cols);
     const rows = Number(geometry?.rows);
@@ -352,7 +454,7 @@ export class TerminalCore {
       throw new TypeError("terminal core dimensions must be positive integers");
     }
     this._host?._prepareTerminalFrame(this, cols * rows);
-    const result = this._wasm.term_resize_canonical(
+    const result = this._invoke("term_resize_canonical",
       cols,
       rows,
       geometry?.cellWidthPx ?? 8,
@@ -367,95 +469,109 @@ export class TerminalCore {
   }
 
   setReplayMode(enabled) {
+    this.assertMutable();
     if (!this._wasm) throw new Error("terminal core is not open");
-    const result = this._wasm.term_set_replay_mode(enabled ? 1 : 0);
+    const result = this._invoke("term_set_replay_mode", enabled ? 1 : 0);
     if (result !== 1) throw new Error(`WASM replay mode configuration failed: ${result}`);
     return result;
   }
 
   setTheme(theme) {
+    this.assertMutable();
     this.options.theme = theme;
     if (!this._wasm) return;
     const colors = [theme.background, theme.foreground, ...(theme.ansi || [])];
     if (colors.length !== 18) throw new TypeError("terminal theme must provide 16 ANSI colors");
     const view = new DataView(this._wasm.memory.buffer);
-    const ptr = this._wasm.term_theme_ptr();
+    const ptr = this._invoke("term_theme_ptr");
     colors.forEach((color, index) => view.setUint32(ptr + index * 4, packedColor(color), true));
-    const result = this._wasm.term_apply_theme();
+    const result = this._invoke("term_apply_theme");
     if (result !== 1) throw new Error(`WASM theme application failed: ${result}`);
     this._schedule(true);
   }
 
   setFont(fontOptions) {
+    this.assertMutable();
     const font = normalizeFont({ ...this.options.font, ...(fontOptions || {}) });
     this.options.font = font;
-    if (this._wasm && this._wasm.term_set_font(font.wasmId, font.ligatures ? 1 : 0) !== 1) {
+    if (this._wasm && this._invoke("term_set_font", font.wasmId, font.ligatures ? 1 : 0) !== 1) {
       throw new Error("WASM font configuration failed");
     }
     return font;
   }
 
   setRenderer(rendererName) {
+    this.assertMutable();
     const renderer = rendererName === "kb-canvas" ? "kb-canvas" : "kb-stb";
     this.options.renderer = renderer;
-    if (this._wasm && this._wasm.term_set_renderer(renderer === "kb-canvas" ? 1 : 0) !== 1) {
+    if (this._wasm && this._invoke("term_set_renderer", renderer === "kb-canvas" ? 1 : 0) !== 1) {
       throw new Error("WASM renderer configuration failed");
     }
     return renderer;
   }
 
   restoreSnapshot(data) {
+    this.assertMutable();
     if (!this._wasm) throw new Error("terminal core is not open");
     const bytes = normalizeBinary(data);
     if (!bytes.length) throw new TypeError("terminal snapshot must not be empty");
-    const ptr = this._wasm.term_snapshot_reserve(bytes.length);
+    const ptr = this._invoke("term_snapshot_reserve", bytes.length);
     if (!ptr) throw new Error("terminal snapshot exceeds the WASM restore limit");
     new Uint8Array(this._wasm.memory.buffer, ptr, bytes.length).set(bytes);
-    if (this._wasm.term_snapshot_restore(bytes.length) !== 1) throw new Error("terminal snapshot restore failed");
+    if (this._invoke("term_snapshot_restore", bytes.length) !== 1) throw new Error("terminal snapshot restore failed");
     this._pendingRxAt = 0;
-    this._wasm.term_invalidate_frame_cache();
+    this._invoke("term_invalidate_frame_cache");
     if (this._host) this._host._coreRestored(this);
     else this._schedule(true);
   }
 
   invalidateForAttach() {
+    this.assertMutable();
     if (!this._wasm) throw new Error("terminal core is not open");
-    this._wasm.term_invalidate_frame_cache();
-    this._wasm.term_invalidate_text_view();
+    this._invoke("term_invalidate_frame_cache", 0);
+    this._invoke("term_invalidate_text_view");
   }
 
   getSelection() {
+    this.assertMutable();
     if (!this._wasm) return null;
-    const status = this._wasm.term_selection_snapshot();
+    const status = this._invoke("term_selection_snapshot");
     if (status === 0) return null;
     if (status < 0) throw new Error(`WASM selection snapshot failed: ${status}`);
     try {
-      const ptr = this._wasm.term_selection_snapshot_ptr();
-      const len = this._wasm.term_selection_snapshot_len();
+      const ptr = this._invoke("term_selection_snapshot_ptr");
+      const len = this._invoke("term_selection_snapshot_len");
       return strictDecoder.decode(new Uint8Array(this._wasm.memory.buffer, ptr, len));
     } finally {
-      this._wasm.term_selection_snapshot_release();
+      this._invoke("term_selection_snapshot_release");
     }
   }
 
   clearSelection() {
-    return Boolean(this._wasm && this._wasm.term_selection_clear() === 1);
+    this.assertMutable();
+    return Boolean(this._wasm && this._invoke("term_selection_clear") === 1);
   }
 
   setSelectionRange(start, end) {
-    return Boolean(this._wasm && this._wasm.term_selection_set_range(start.row, start.col, end.row, end.col) === 1);
+    this.assertMutable();
+    return Boolean(this._wasm && this._invoke("term_selection_set_range", start.row, start.col, end.row, end.col) === 1);
   }
 
   reset() {
+    this.assertMutable();
+    this._host?._assertMutable();
     if (!this._wasm) return false;
-    this._wasm.term_deinit();
-    if (this._wasm.term_init(this._state.cols, this._state.rows) !== 1) throw new Error("terminal core reset failed");
-    if ((this._host?._installGlyphPartition(this) ?? 1) !== 1) {
+    this._invoke("term_deinit");
+    if (this._invoke("term_init", this._state.cols, this._state.rows) !== 1) throw new Error("terminal core reset failed");
+    const installed = this._host ? this._host._installGlyphPartition(this)
+      : this._partition ? this.setGlyphPartition(this._partition, this._partitionAtlasColumns) : 1;
+    if (installed !== 1) {
       throw new Error("terminal glyph partition installation failed");
     }
     this.setTheme(this.options.theme);
     this.setRenderer(this.options.renderer);
     this.setFont(this.options.font);
+    if (this._renderLayout) this.setRenderMetrics(this._renderLayout);
     this._pendingRxAt = 0;
     this._schedule(true);
     return true;
@@ -466,9 +582,11 @@ export class TerminalCore {
   }
 
   dispose() {
+    this.assertMutable();
+    this._host?._assertMutable();
     if (this._disposed) return;
     this._disposed = true;
-    this._wasm?.term_deinit?.();
+    if (this._wasm) this._invoke("term_deinit");
     this._wasm = null;
     this._fontFaces = null;
     this._host?._coreDisposed(this);
