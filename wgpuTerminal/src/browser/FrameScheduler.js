@@ -22,7 +22,8 @@ export class FrameScheduler {
   }
 
   get blocked() {
-    return this._disposed || this._suspended || this._document.hidden || this._terminal?._renderer?.error;
+    return this._disposed || this._suspended || this._document.hidden || this._terminal?._opened === false ||
+      this._terminal?._recovering || this._terminal?._renderer?.error;
   }
 
   schedule(immediate = false) {
@@ -43,6 +44,7 @@ export class FrameScheduler {
   // Attach transactions need synchronous validation, but still share presentation authority.
   flushImmediate() {
     this.coreDirty = true;
+    if (this._terminal?._recovering) throw new Error("renderer recovery in progress");
     if (this._disposed) return 0;
     if (this._document.hidden) { this._cancel(); return 1; }
     this._suspended = false;

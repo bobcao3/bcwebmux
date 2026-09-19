@@ -18,8 +18,11 @@ export class ViewportController {
     this.terminalElement = options.terminalElement;
     this.viewport = options.viewport;
     this.screen = options.screen;
-    this.getCore = options.getCore;
-    this.getRenderer = options.getRenderer;
+    this.isReady = options.isReady;
+    this.scrollBottom = options.scrollBottom;
+    this.scrollRow = options.scrollRow;
+    this.scrollDelta = options.scrollDelta;
+    this.inputRows = options.inputRows;
     this.getInputController = options.getInputController;
     this.resizeTerminal = options.resizeTerminal;
     this.onResize = options.onResize || (() => {});
@@ -124,29 +127,18 @@ export class ViewportController {
   }
 
   resize(pixelViewport = this.nativePixelViewport()) {
-    const renderer = this.getRenderer();
-    const core = this.getCore();
-    if (!renderer || !core) return null;
+    if (!this.isReady()) return null;
     this.cancelScrollGesture();
     this.onBeforeResize();
     this.latestPixelViewport = pixelViewport;
     const layout = this.physicalLayout(pixelViewport);
     this.cssCellMetrics.width = layout.cellWidth / layout.scaleX;
     this.cssCellMetrics.height = layout.cellHeight / layout.scaleY;
-    renderer.setPhysicalCellMetrics(
-      layout.cellWidth,
-      layout.cellHeight,
-      layout.fontSize,
-      layout.cols,
-      layout.cols * layout.rows,
-    );
-    renderer.resize(pixelViewport.width, pixelViewport.height);
     this._applyCssCellMetrics();
     this.semanticScrollbar.render(this.adjustment);
-    const result = this.resizeTerminal
-      ? this.resizeTerminal(layout)
-      : core.resize(layout);
-    if (result !== 1) throw new Error("terminal resize failed");
+    if (!this.resizeTerminal(layout, pixelViewport)) {
+      throw new Error("terminal resize failed");
+    }
     this.onResize({ cols: layout.cols, rows: layout.rows });
     this.scheduleFrame();
     return layout;
@@ -171,12 +163,10 @@ export class ViewportController {
     this.cancelMomentum();
     if (!Number.isFinite(row) || this.adjustment.maximum === 0) return false;
     const target = Math.max(0, Math.min(this.adjustment.maximum, Math.round(row)));
-    const core = this.getCore();
-    if (!core) return false;
     const result = target === this.adjustment.maximum
-      ? core.scrollBottom()
-      : core.scrollRow(target);
-    if (result !== 1) return false;
+      ? this.scrollBottom()
+      : this.scrollRow(target);
+    if (!result) return false;
     this.semanticScrollbar.reveal();
     this.scheduleFrame(true);
     return true;
@@ -187,8 +177,7 @@ export class ViewportController {
     if (!Number.isFinite(rows) || this.adjustment.maximum === 0) return false;
     const delta = Math.max(-0x80000000, Math.min(0x7fffffff, Math.trunc(rows)));
     if (delta === 0) return false;
-    const core = this.getCore();
-    if (!core || core.scrollDelta(delta) !== 1) return false;
+    if (!this.scrollDelta(delta)) return false;
     this.semanticScrollbar.reveal();
     this.scheduleFrame(true);
     return true;
@@ -198,14 +187,8 @@ export class ViewportController {
     if (!Number.isFinite(rows) || rows === 0) return 0;
     const delta = Math.max(-0x80000000, Math.min(0x7fffffff, Math.trunc(rows)));
     if (delta === 0) return 0;
-    const core = this.getCore();
-    if (!core) return 0;
-    const route = core.scrollInput(
-      delta,
-      context?.mods ?? 0,
-      context?.x ?? 0,
-      context?.y ?? 0,
-    );
+    const routeName = this.inputRows(delta, context);
+    const route = { viewport: 1, mouse: 2, keys: 3 }[routeName] ?? 0;
     if (route < 1 || route > 3) return 0;
     if (route === 1) this.semanticScrollbar.reveal();
     this.scheduleFrame(true);

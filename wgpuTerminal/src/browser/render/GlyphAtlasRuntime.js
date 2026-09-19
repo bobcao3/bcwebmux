@@ -101,10 +101,6 @@ export function reconfigureGlyphAtlas(renderer, nextMetrics, textRenderer, fontF
 export function selectTerminal(renderer, terminal) {
   if (!renderer.initialized) throw new Error("GPU terminal is not initialized");
   if (!renderer.glyphPartitions.get(terminal)) throw new Error("terminal has no glyph partition");
-  Object.assign(renderer.submissionMetadata, {
-    cols: 0, rows: 0, viewportMode: "active", scrollTotal: 0, scrollOffset: 0, scrollLength: 0,
-
-  });
   for (const field of [
     "cols", "rows", "cursorFlags", "drawnCellCount",
   ]) renderer[field] = 0;

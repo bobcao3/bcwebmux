@@ -1,21 +1,26 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Cheng Cao
 
-import { modifierBits } from "./InputController.js";
+function pointerModifiers(event) {
+  return { shiftKey: Boolean(event.shiftKey), altKey: Boolean(event.altKey),
+    ctrlKey: Boolean(event.ctrlKey), metaKey: Boolean(event.metaKey) };
+}
 
 function mouseButton(button) {
-  if (button === 0) return 1;
-  if (button === 2) return 2;
-  if (button === 1) return 3;
-  return 0xff;
+  if (button === 0) return "left";
+  if (button === 2) return "right";
+  if (button === 1) return "middle";
+  return "none";
 }
 
 export class PointerController {
   constructor(options) {
     this.surface = options.surface;
     this.screen = options.screen;
-    this.getCore = options.getCore;
-    this.getRenderer = options.getRenderer;
+    this.getMetrics = options.getMetrics;
+    this.mouse = options.mouse;
+    this.selection = options.selection;
+    this.hyperlinkAt = options.hyperlinkAt;
     this.getSelectionMode = options.getSelectionMode;
     this.textView = options.textView;
     this.focusController = options.focusController;
@@ -28,7 +33,6 @@ export class PointerController {
     this.cancelScrollGesture = options.cancelScrollGesture;
     this.enterSelectionMode = options.enterSelectionMode || (() => false);
     this.onLink = options.onLink || (() => {});
-    this.strictDecoder = new TextDecoder("utf-8", { fatal: true });
     this.encodedRightClick = false;
     this.activeMouseGesture = null;
     this.suppressNextTerminalClick = false;
@@ -65,42 +69,46 @@ export class PointerController {
   }
 
   scrollContext(event) {
-    const renderer = this.getRenderer();
+    const metrics = this.getMetrics();
     const rect = this.surface.getBoundingClientRect();
     return {
-      mods: modifierBits(event),
-      x: Math.max(0, event.clientX - rect.left) * renderer.pixelScaleX,
-      y: Math.max(0, event.clientY - rect.top) * renderer.pixelScaleY,
+      modifiers: pointerModifiers(event),
+      x: Math.max(0, event.clientX - rect.left) * metrics.scaleX,
+      y: Math.max(0, event.clientY - rect.top) * metrics.scaleY,
     };
   }
 
   sendMouse(event, action, button, anyButtonPressed = event.buttons !== 0) {
-    const renderer = this.getRenderer();
-    const core = this.getCore();
+    const metrics = this.getMetrics();
     const rect = this.surface.getBoundingClientRect();
-    const x = Math.max(0, event.clientX - rect.left) * renderer.pixelScaleX;
-    const y = Math.max(0, event.clientY - rect.top) * renderer.pixelScaleY;
-    return core.mouse(action, button, modifierBits(event), x, y, anyButtonPressed ? 1 : 0) === 1;
+    const x = Math.max(0, event.clientX - rect.left) * metrics.scaleX;
+    const y = Math.max(0, event.clientY - rect.top) * metrics.scaleY;
+    return this.mouse(
+      action,
+      button,
+      pointerModifiers(event),
+      x,
+      y,
+      Boolean(anyButtonPressed),
+    );
   }
 
   sendSelection(event, action) {
-    const renderer = this.getRenderer();
-    const core = this.getCore();
+    const metrics = this.getMetrics();
     const rect = this.surface.getBoundingClientRect();
-    const x = Math.max(0, event.clientX - rect.left) * renderer.pixelScaleX;
-    const y = Math.max(0, event.clientY - rect.top) * renderer.pixelScaleY;
-    const handled = core.selection(action, x, y) === 1;
+    const x = Math.max(0, event.clientX - rect.left) * metrics.scaleX;
+    const y = Math.max(0, event.clientY - rect.top) * metrics.scaleY;
+    const handled = this.selection(action, x, y);
     if (handled) this.scheduleFrame(true);
     return handled;
   }
 
   hyperlinkAtEvent(event) {
-    const renderer = this.getRenderer();
-    const core = this.getCore();
+    const metrics = this.getMetrics();
     const rect = this.surface.getBoundingClientRect();
-    const x = Math.max(0, event.clientX - rect.left) * renderer.pixelScaleX;
-    const y = Math.max(0, event.clientY - rect.top) * renderer.pixelScaleY;
-    return core.hyperlinkAt(x, y);
+    const x = Math.max(0, event.clientX - rect.left) * metrics.scaleX;
+    const y = Math.max(0, event.clientY - rect.top) * metrics.scaleY;
+    return this.hyperlinkAt(x, y);
   }
 
   finishMouseGesture(event, cancelled = false) {
@@ -115,9 +123,9 @@ export class PointerController {
       }, 0);
       if (!cancelled && !gesture.moved) this.onLink({ uri: gesture.uri, event });
     } else if (gesture.owner === "terminal") {
-      this.sendMouse(event, 1, gesture.button);
+      this.sendMouse(event, "release", gesture.button);
     } else {
-      this.sendSelection(event, cancelled ? 3 : 1);
+      this.sendSelection(event, cancelled ? "cancel" : "end");
     }
     if (this.surface.hasPointerCapture(event.pointerId)) this.surface.releasePointerCapture(event.pointerId);
     return true;
@@ -158,7 +166,11 @@ export class PointerController {
             if (this.touchCandidate !== candidate || candidate.moved || candidate.ended) return;
             candidate.longPressTimer = null;
             candidate.suppress = true;
-            if (this.enterSelectionMode(candidate.startX, candidate.startY) &&
+            const rect = this.surface.getBoundingClientRect();
+            const metrics = this.getMetrics();
+            const x = Math.max(0, candidate.startX - rect.left) * metrics.scaleX;
+            const y = Math.max(0, candidate.startY - rect.top) * metrics.scaleY;
+            if (this.enterSelectionMode(candidate.startX, candidate.startY, x, y) &&
                 this.surface.hasPointerCapture(candidate.pointerId)) {
               this.surface.releasePointerCapture(candidate.pointerId);
             }
@@ -198,7 +210,7 @@ export class PointerController {
       }
       if (event.button === 0 && event.shiftKey) {
         this.encodedRightClick = false;
-        if (this.sendSelection(event, 0)) {
+        if (this.sendSelection(event, "start")) {
           event.preventDefault();
           this.activeMouseGesture = { pointerId: event.pointerId, button: 1, owner: "selection" };
           this.surface.setPointerCapture(event.pointerId);
@@ -206,13 +218,13 @@ export class PointerController {
         return;
       }
       const button = mouseButton(event.button);
-      const encoded = this.sendMouse(event, 0, button);
-      this.encodedRightClick = button === 2 && encoded;
+      const encoded = this.sendMouse(event, "press", button);
+      this.encodedRightClick = button === "right" && encoded;
       if (encoded) {
         this.activeMouseGesture = { pointerId: event.pointerId, button, owner: "terminal" };
         event.preventDefault();
         this.surface.setPointerCapture(event.pointerId);
-      } else if (event.button === 0 && this.sendSelection(event, 0)) {
+      } else if (event.button === 0 && this.sendSelection(event, "start")) {
         this.activeMouseGesture = { pointerId: event.pointerId, button: 1, owner: "selection" };
         event.preventDefault();
         this.surface.setPointerCapture(event.pointerId);
@@ -249,7 +261,7 @@ export class PointerController {
         return;
       }
       if (!this.isTerminalPointer(event)) return;
-      const encoded = this.sendMouse(event, 1, mouseButton(event.button));
+      const encoded = this.sendMouse(event, "release", mouseButton(event.button));
       if (encoded) event.preventDefault();
     }, { passive: false });
 
@@ -275,19 +287,19 @@ export class PointerController {
       }
       if (this.activeMouseGesture && this.activeMouseGesture.pointerId === event.pointerId) {
         if (this.activeMouseGesture.owner === "terminal") {
-          this.sendMouse(event, 2, this.activeMouseGesture.button);
+          this.sendMouse(event, "move", this.activeMouseGesture.button);
         } else if (this.activeMouseGesture.owner === "hyperlink") {
           const dx = event.clientX - this.activeMouseGesture.startX;
           const dy = event.clientY - this.activeMouseGesture.startY;
           if (Math.hypot(dx, dy) > this.touchMoveThreshold) this.activeMouseGesture.moved = true;
         } else {
-          this.sendSelection(event, 2);
+          this.sendSelection(event, "extend");
         }
         event.preventDefault();
         return;
       }
       if (!this.isTerminalPointer(event)) return;
-      const encoded = this.sendMouse(event, 2, 0xff);
+      const encoded = this.sendMouse(event, "move", "none");
       if (encoded) event.preventDefault();
     }, { passive: false });
 
@@ -341,8 +353,8 @@ export class PointerController {
         const suppress = this.touchCandidate.suppress;
         this.clearTouchCandidate();
         if (suppress) return;
-        this.sendMouse(event, 0, 1, true);
-        this.sendMouse(event, 1, 1, false);
+        this.sendMouse(event, "press", "left", true);
+        this.sendMouse(event, "release", "left", false);
       }
       event.preventDefault();
       this.focusController.focus();

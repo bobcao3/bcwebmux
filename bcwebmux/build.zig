@@ -120,6 +120,8 @@ pub fn build(b: *std.Build) void {
     const terminal_wasm_step = b.step("terminal-wasm", "Build the embeddable terminal WASM package asset");
     terminal_wasm_step.dependOn(&terminal_wasm_install.step);
     const render_frame_contract_cmd = b.addSystemCommand(&.{ "node", "test/render-frame-contract.mjs" });
+    const renderer_integration_contract_cmd = b.addSystemCommand(&.{ "node", "test/renderer-integration-contract.mjs" });
+    render_frame_contract_cmd.step.dependOn(&renderer_integration_contract_cmd.step);
     const frame_presenter_contract_cmd = b.addSystemCommand(&.{ "node", "test/frame-presenter-contract.mjs" });
     const canvas_path_contract_cmd = b.addSystemCommand(&.{ "node", "test/canvas-path-contract.mjs" });
     render_frame_contract_cmd.step.dependOn(&canvas_path_contract_cmd.step);
@@ -231,7 +233,18 @@ pub fn build(b: *std.Build) void {
     const network_relay_step = b.step("network-relay-test", "Run network relay tests");
     network_relay_step.dependOn(&network_relay_cmd.step);
 
+    const visual_compare_cmd = b.addSystemCommand(&.{ "node", "--test", "test/visual-compare.test.mjs" });
+    const visual_cmd = b.addSystemCommand(&.{ "node", "test/visual-e2e.mjs" });
+    visual_cmd.step.dependOn(b.getInstallStep());
+    visual_cmd.step.dependOn(&visual_compare_cmd.step);
+    visual_cmd.addArgs(&.{
+        b.getInstallPath(.bin, "bcwebmux-server"),
+        b.getInstallPath(.prefix, "web"),
+    });
+    const visual_step = b.step("visual-test", "Run full-viewport desktop/mobile screenshot regressions on both GPU backends");
+    visual_step.dependOn(&visual_cmd.step);
     const e2e_cmd = b.addSystemCommand(&.{ "node", "test/gpu-e2e.mjs" });
+    e2e_cmd.step.dependOn(&visual_cmd.step);
     e2e_cmd.step.dependOn(b.getInstallStep());
     e2e_cmd.addArgs(&.{
         b.getInstallPath(.bin, "bcwebmux-server"),

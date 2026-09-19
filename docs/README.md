@@ -9,9 +9,9 @@ repository-root `docs/` directory.
   liveness, recovery, backpressure, and replay contracts.
 - [Glyph cache design](glyph-cache-design.md): cell-sized glyph slots, shared
   atlas ownership, capacity limits, and terminal partitions.
-- [Kitty graphics and client rendering](kitty-graphics.md): proposed WASM/JS
-  boundary simplification, shared presentation pipeline, browser image decoding,
-  checkpoints, and reconnect changes; not implemented.
+- [Kitty graphics and client rendering](kitty-graphics.md): implemented prerequisite
+  WASM/JS ownership split, shared presentation and device/context recovery;
+  Kitty image protocol, image decoding, checkpoints and reconnect changes remain proposals.
 
 ## Component guides
 

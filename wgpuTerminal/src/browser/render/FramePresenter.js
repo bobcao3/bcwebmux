@@ -13,6 +13,7 @@ export class FramePresenter {
     this.valid = false;
     this.core = null;
     this.revision = null;
+    this.submissionMetadata = {};
   }
 
   invalidate(recover = true) {
@@ -20,7 +21,7 @@ export class FramePresenter {
     this.valid = false;
     this.revision = null;
     if (wasValid && this.core?.ready) this.core.invalidateFrame();
-    if (recover) this.host._scheduler?.recover();
+    if (recover && !this.host._recovering && !this.host._renderer?.error) this.host._scheduler?.recover();
   }
 
   registerTerminal(...args) { return this.changeAtlas("registerTerminal", args); }
@@ -35,6 +36,7 @@ export class FramePresenter {
   }
   selectTerminal(core) {
     this.invalidate();
+    this.submissionMetadata = {};
     this.core = core;
     atlasRuntime.selectTerminal(this.backend, core);
     core.invalidateFrame();
@@ -45,7 +47,7 @@ export class FramePresenter {
     for (const key of ["glyphSlotsUsed", "cols", "rows", "cacheHits", "cacheMisses", "background", "foreground",
       "cursorX", "cursorY", "cursorFlags", "cursorStyle"]) b[key] = packet[key];
     for (const key of ["cols", "rows", "viewportMode", "scrollTotal", "scrollOffset", "scrollLength"]) {
-      b.submissionMetadata[key] = packet[key];
+      this.submissionMetadata[key] = packet[key];
     }
     for (let i = 0; i < packet.bitmapUploadsCount; i++) {
       const v = packet.bitmapUploads, o = i * 16;
@@ -97,8 +99,8 @@ export class FramePresenter {
         this.revision = revision;
         this.valid = true;
         if (full) b.error = null;
-        this.host._submitFrameMetadata(b.submissionMetadata);
-        this.host._viewportController?.submitFrameMetadata(b.submissionMetadata);
+        this.host._submitFrameMetadata(this.submissionMetadata);
+        this.host._viewportController?.submitFrameMetadata(this.submissionMetadata);
 
       } else if (revision !== undefined) {
         this.invalidate();

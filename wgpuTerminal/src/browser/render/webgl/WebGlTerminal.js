@@ -38,18 +38,21 @@ function uploadIntegerRecords(gl, texture, textureWidth, first, count, component
 }
 
 export class WebGlTerminal {
-  static async create(canvas, pixelViewport, textRenderer, glyphCacheMaxBytes) {
-    const gl = canvas.getContext("webgl2", {
+  get available() { return !this.disposed && !this.gl.isContextLost(); }
+
+  static async create(canvas, pixelViewport, textRenderer, glyphCacheMaxBytes, powerPreference) {
+    const contextOptions = {
       alpha: false,
       antialias: false,
       depth: false,
       desynchronized: true,
       failIfMajorPerformanceCaveat: true,
-      powerPreference: "high-performance",
       premultipliedAlpha: false,
       preserveDrawingBuffer: false,
       stencil: false,
-    });
+    };
+    if (powerPreference !== undefined) contextOptions.powerPreference = powerPreference;
+    const gl = canvas.getContext("webgl2", contextOptions);
     if (!gl) throw new Error("WebGL2 context unavailable");
     let terminal = null;
     try {
@@ -113,23 +116,14 @@ export class WebGlTerminal {
     this.cacheMisses = 0;
     this.error = null;
     this.initialized = false;
-    this.submissionMetadata = {
-      cols: 0,
-      rows: 0,
-      scrollTotal: 0,
-      scrollOffset: 0,
-      scrollLength: 0,
-      viewportMode: "active",
-
-    };
     this.contextLostListener = event => {
       event.preventDefault();
-      this.error = "WebGL context lost; reload required";
-      this.presenter?.host._scheduler?.suspend();
+      this.contextLost = true;
+      this.error = "WebGL context lost";
+      this.onContextLost?.(this.error);
     };
     this.contextRestoredListener = () => {
-      this.error = "WebGL context restored; reload required";
-      this.presenter?.host._scheduler?.suspend();
+      if (!this.disposed) this.onContextRestored?.();
     };
     canvas.addEventListener("webglcontextlost", this.contextLostListener);
     canvas.addEventListener("webglcontextrestored", this.contextRestoredListener);

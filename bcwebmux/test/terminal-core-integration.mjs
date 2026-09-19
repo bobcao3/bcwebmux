@@ -13,6 +13,7 @@ assert.ok(serverPath && webRoot, "usage: terminal-core-integration.mjs SERVER WE
 const deviceScaleFactor = Number(process.env.DEVICE_SCALE_FACTOR ?? "1.25");
 assert.ok(Number.isFinite(deviceScaleFactor) && deviceScaleFactor > 0, "DEVICE_SCALE_FACTOR must be a positive number");
 const backend = process.env.RENDER_BACKEND ?? "webgpu";
+const recoveryQuery = process.env.RENDER_RECOVERY === "1" ? "&recovery=1" : "";
 assert.ok(backend === "webgl2" || backend === "webgpu", "RENDER_BACKEND must be webgl2 or webgpu");
 const serverPort = await freePort();
 const debugPort = await freePort();
@@ -46,7 +47,7 @@ try {
     "--disable-background-networking",
     `--remote-debugging-port=${debugPort}`,
     `--user-data-dir=${profile}`,
-    `http://127.0.0.1:${serverPort}/terminal-core/index.html?backend=${backend}`,
+    `http://127.0.0.1:${serverPort}/terminal-core/index.html?backend=${backend}${recoveryQuery}`,
   ], { stdio: ["ignore", "ignore", "pipe"] });
   let chromiumLog = "";
   chromium.stderr.on("data", (data) => { chromiumLog += data; });

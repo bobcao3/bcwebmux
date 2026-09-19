@@ -44,6 +44,13 @@ export function packedColor(color) {
   return Number.parseInt(color.slice(1), 16) >>> 0;
 }
 
+export function normalizePowerPreference(value) {
+  if (value !== undefined && value !== "low-power" && value !== "high-performance") {
+    throw new TypeError("invalid power preference");
+  }
+  return value;
+}
+
 export function renderFontFamily(families) {
   return families.map((family) => {
     const generic = family.toLowerCase();

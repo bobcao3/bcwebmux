@@ -24,14 +24,21 @@ const UNIFORM_BUFFER_SIZE = 68;
 
 // JS drives WebGPU, but WASM owns the data-driven frame/cell/bitmap buffers shared across this boundary. CSS/DPR is converted once to integer raw-pixel font/cell metrics, which are then the single source of truth for both WASM rasterization and GPU uniforms.
 export class GpuTerminal {
-  static async create(canvas, pixelViewport, textRenderer, glyphCacheMaxBytes) {
+  static async create(canvas, pixelViewport, textRenderer, glyphCacheMaxBytes, powerPreference, isCurrent = () => true) {
     if (!navigator.gpu) throw new Error("WebGPU is unavailable; use an HTTPS or loopback origin with WebGPU support");
-    const adapter = await navigator.gpu.requestAdapter();
+    const adapter = powerPreference === undefined
+      ? await navigator.gpu.requestAdapter()
+      : await navigator.gpu.requestAdapter({ powerPreference });
+    if (!isCurrent()) throw new Error("render backend acquisition cancelled");
     if (!adapter) throw new Error("WebGPU adapter unavailable");
     const shaderF16 = adapter.features.has("shader-f16");
     const device = await adapter.requestDevice({
       requiredFeatures: shaderF16 ? ["shader-f16"] : [],
     });
+    if (!isCurrent()) {
+      device.destroy();
+      throw new Error("render backend acquisition cancelled");
+    }
     let terminal = null;
     try {
       terminal = new GpuTerminal(canvas, device, adapter, textRenderer, shaderF16, glyphCacheMaxBytes);
@@ -109,32 +116,26 @@ export class GpuTerminal {
     this.indirectData = new Uint32Array([6, 0, 0, 0]);
     this.error = null;
     this.initialized = false;
-    this.submissionMetadata = {
-      cols: 0,
-      rows: 0,
-      scrollTotal: 0,
-      scrollOffset: 0,
-      scrollLength: 0,
-      viewportMode: "active",
-
-    };
     this.device.lost.then(info => {
-      if (!this.disposed) { this.error = `WebGPU device lost: ${info.message}`; this.presenter?.host._scheduler?.suspend(); }
+      if (!this.disposed) { this.error = `WebGPU device lost: ${info.message}`; this.onDeviceLost?.(this.error); }
     });
     this.onUncapturedError = event => {
-      if (!this.disposed && this.error === null) { this.error = event.error.message; this.presenter?.host._scheduler?.suspend(); }
+      if (!this.disposed && this.error === null) { this.error = event.error.message; this.onFailure?.(this.error); }
     };
     this.device.addEventListener("uncapturederror", this.onUncapturedError);
   }
 
   async initialize(maxCells) {
+    if (this.disposed) throw new Error("WebGPU renderer disposed during initialization");
     if (this.initialized) {
       this.ensureFrameCapacity(maxCells);
       return 1;
     }
     const response = await fetch(new URL("./shaders/cell.wgsl", import.meta.url));
+    if (this.disposed) throw new Error("WebGPU renderer disposed during initialization");
     if (!response.ok) throw new Error(`cell shader load failed: ${response.status}`);
     const cellSource = await response.text();
+    if (this.disposed) throw new Error("WebGPU renderer disposed during initialization");
     return initializeResources(this, cellSource, generateGrain(), GRAIN_SIZE,
       maxCells, Math.min(65536, maxCells + 1), STYLE_SIZE, CELL_SIZE);
   }
@@ -156,7 +157,7 @@ export class GpuTerminal {
       this.rebuildCellBundle();
     } catch (error) {
       this.error = error.message;
-        this.presenter?.host._scheduler?.suspend();
+        this.onFailure?.(this.error);
       throw error;
     }
   }
@@ -355,7 +356,7 @@ export class GpuTerminal {
         if (this.disposed) return;
         this.queueProbePending = false;
         this.error = error.message;
-        this.presenter?.host._scheduler?.suspend();
+        this.onFailure?.(this.error);
       });
     }
     this.frames += 1;

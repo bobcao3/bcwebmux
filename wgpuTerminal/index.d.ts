@@ -94,6 +94,8 @@ export interface TerminalOptions {
   wasmFontUrls?: readonly [string | URL, string | URL, string | URL, string | URL];
   renderer?: TerminalRenderer;
   renderBackend?: TerminalRenderBackend;
+  /** Optional GPU power hint; omitted uses browser default policy. */
+  powerPreference?: "low-power" | "high-performance";
   canonicalGeometry?: boolean;
   font?: Partial<TerminalFont>;
   theme?: TerminalTheme;

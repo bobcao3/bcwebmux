@@ -260,7 +260,13 @@ export class TerminalCore {
     if (!this._wasm) return 0;
     this._inWasm = true;
     try { return this._wasm[name](...args); }
-    finally { this._inWasm = false; }
+    finally {
+      this._inWasm = false;
+      if (this._disposeRequested) {
+        this._disposeRequested = false;
+        this.dispose();
+      }
+    }
   }
 
   consumeFrame(consumer, expectations) {
@@ -362,6 +368,7 @@ export class TerminalCore {
       const chunk = offset === 0 && length === bytes.length ? bytes : bytes.subarray(offset, offset + length);
       new Uint8Array(this._wasm.memory.buffer, ptr, length).set(chunk);
       if (this._invoke("term_feed", length) !== 1) throw new Error("WASM terminal feed failed");
+      if (this._disposed) return;
       offset += length;
     }
     this._sampleMetric("wasmParseMs", performance.now() - parseStartedAt);
@@ -383,6 +390,7 @@ export class TerminalCore {
       if (this._invoke("term_text", result.written, paste ? 1 : 0) !== 1) {
         throw new Error("WASM text submission failed");
       }
+      if (this._disposed) return;
       remaining = result.read < remaining.length ? remaining.slice(result.read) : "";
     }
     this._schedule(true);
@@ -426,7 +434,7 @@ export class TerminalCore {
     if (result === 1) {
       this._state.cols = layout.cols;
       this._state.rows = layout.rows;
-      this._renderLayout = { ...layout };
+      this._renderLayout = Object.isFrozen(layout) ? layout : Object.freeze({ ...layout });
     }
     return result;
   }
@@ -441,7 +449,7 @@ export class TerminalCore {
       layout.cellHeight,
       layout.fontSize,
     );
-    if (result === 1) this._renderLayout = { ...layout };
+    if (result === 1) this._renderLayout = Object.isFrozen(layout) ? layout : Object.freeze({ ...layout });
     return result;
   }
 
@@ -582,6 +590,11 @@ export class TerminalCore {
   }
 
   dispose() {
+    // Host effects may request disposal, but deinit must wait until WASM unwinds.
+    if (this._inWasm && !this._borrow) {
+      this._disposeRequested = true;
+      return;
+    }
     this.assertMutable();
     this._host?._assertMutable();
     if (this._disposed) return;

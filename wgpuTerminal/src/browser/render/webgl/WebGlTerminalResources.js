@@ -373,10 +373,17 @@ export function readWebGlPixels(renderer) {
 }
 
 export function disposeWebGl(renderer) {
-  if (renderer.error === "disposed") return;
+  if (renderer.disposed) return;
+  renderer.disposed = true;
   const gl = renderer.gl;
   renderer.canvas.removeEventListener("webglcontextlost", renderer.contextLostListener);
   renderer.canvas.removeEventListener("webglcontextrestored", renderer.contextRestoredListener);
+  // Restored contexts have already destroyed these handles; deleting them pollutes GL error state.
+  if (renderer.contextLost) {
+    renderer.error = "disposed";
+    renderer.initialized = false;
+    return;
+  }
   renderer.atlas?.dispose();
   gl.deleteTexture(renderer.styleTexture);
   gl.deleteTexture(renderer.selectionTexture);

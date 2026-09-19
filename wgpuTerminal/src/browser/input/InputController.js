@@ -537,7 +537,7 @@ export class FocusController {
     this.input = options.input;
     this.inputController = options.inputController;
     this.textView = options.textView;
-    this.getCore = options.getCore;
+    this.setFocused = options.setFocused;
     this.suspended = false;
   }
 
@@ -545,8 +545,7 @@ export class FocusController {
     if (this.suspended || document.hidden || this.textView.hasSelection()) return;
     this.input.focus({ preventScroll: true });
     this.inputController.sync();
-    const core = this.getCore();
-    if (core && document.hasFocus()) core.focus(1);
+    if (document.hasFocus()) this.setFocused(true);
   }
 
   restore() {
@@ -561,25 +560,21 @@ export class FocusController {
   suspend() {
     this.suspended = true;
     if (document.activeElement === this.input) this.input.blur();
-    const core = this.getCore();
-    if (core) core.focus(0);
+    this.setFocused(false);
   }
 
   resume() {
     this.suspended = false;
-    const core = this.getCore();
-    if (core) core.focus(document.hasFocus() ? 1 : 0);
+    this.setFocused(document.hasFocus());
   }
 
   windowFocus() {
-    const core = this.getCore();
-    if (core) core.focus(this.suspended ? 0 : 1);
+    this.setFocused(!this.suspended);
     this.restore();
   }
 
   windowBlur() {
     this.inputController.releaseModifiers();
-    const core = this.getCore();
-    if (core) core.focus(0);
+    this.setFocused(false);
   }
 }

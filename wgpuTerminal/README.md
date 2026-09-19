@@ -67,8 +67,23 @@ terminal.focus();
 
 `auto` is the default and tries WebGPU before WebGL2. Set `renderBackend` to
 `webgpu` or `webgl2` to force a backend for diagnostics. Backend choice does
-not change the `kb-stb`/`kb-canvas` text renderer. Context or device loss
-requires a reload rather than live migration.
+not change the `kb-stb`/`kb-canvas` text renderer. Optional `powerPreference:
+"low-power"` or `"high-performance"` hints GPU selection; omitting it leaves
+the hint unset and uses the browser's default policy.
+
+Device loss suspends presentation while Terminal recreates the selected backend
+on the same canvas. WebGL waits for `webglcontextrestored`. Pipelines, grain,
+glyph partitions and full text masks are rebuilt from retained cores/font state;
+terminal identities and logical state are not reset or replayed. Recovery errors
+emit `onError` and leave presentation suspended. `readPixels()` retains its
+last-presentation capture behavior when the backend is available.
+
+`TerminalCore` and `FramePacket` alone access WASM exports/memory. Controllers use
+semantic callbacks and perform DOM coordinate conversion. Terminal versions one
+frozen render-metric configuration shared with cores, backend, pointer and IME;
+CSS cell metrics also drive the text mirror. `FramePresenter` owns submission
+state and `FrameScheduler` alone schedules presentation. Canvas rasterizes paths
+from WASM's shared kb layout; it does not shape terminal text.
 
 ## WASM fonts
 
@@ -120,4 +135,8 @@ For server-authoritative session transports, set `canonicalGeometry: true`, send
 - [../bcwebmux/test/](../bcwebmux/test/): browser and contract tests shared with the application. See the [application README](../bcwebmux/README.md#develop) for test commands.
 
 Rebuild WASM assets after changing the low-level engine. See the [repository overview](../README.md) for component boundaries.
+`zig build render-frame-test` in `bcwebmux/` includes fake-backend recovery and
+architecture contracts. The physical terminal-core browser test also accepts
+`RENDER_RECOVERY=1` with `RENDER_BACKEND=webgpu` or `webgl2` to force device/context
+loss and verify recovery before running the normal core/atlas/capture checks.
 Architecture and design documents live in the repository-root [docs/](../docs/README.md).

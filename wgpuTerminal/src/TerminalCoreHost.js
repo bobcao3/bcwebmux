@@ -5,6 +5,7 @@ import { TerminalCore } from "./TerminalCore.js";
 import { normalizeFont } from "./TerminalOptions.js";
 
 export async function createCore(host, options = {}) {
+  if (host._recovering || host._renderer?.error) throw new Error("renderer unavailable");
   host._core?.assertMutable();
   if (!host._opened || !host._core?.ready) throw new Error("terminal is not open");
   if (options.wasmUrl !== undefined && String(options.wasmUrl) !== String(host.options.wasmUrl)) {
@@ -20,11 +21,15 @@ export async function createCore(host, options = {}) {
     clipboardWrite: options.clipboardWrite ?? host.options.clipboardWrite,
   });
   const pixelViewport = host._viewportController.latestPixelViewport;
-  const layout = host._viewportController.physicalLayout(pixelViewport);
+  const layout = host._renderMetrics ?? host._viewportController.physicalLayout(pixelViewport);
   host._cores.add(core);
   try {
     host._registerTerminal(core, layout);
+    const recoveryGeneration = host._recoveryGeneration;
     await core.open({ cols: layout.cols, rows: layout.rows, host });
+    if (host._disposed || recoveryGeneration !== host._recoveryGeneration) {
+      throw new Error("terminal changed during core creation");
+    }
     if ((host.options.canonicalGeometry
       ? core.setRenderMetrics(layout)
       : core.resize(layout)) !== 1) {
@@ -40,6 +45,7 @@ export async function createCore(host, options = {}) {
 }
 
 export function attachCore(host, core) {
+  if (host._recovering || host._renderer?.error) throw new Error("renderer unavailable");
   host._core?.assertMutable();
   if (!host._opened) throw new Error("terminal is not open");
   if (!(core instanceof TerminalCore) || !core.ready) {
@@ -56,7 +62,7 @@ export function attachCore(host, core) {
   const wasOwned = host._cores.has(core);
   host._cores.add(core);
   const pixelViewport = host._viewportController.latestPixelViewport;
-  const layout = host._viewportController.physicalLayout(pixelViewport);
+  const layout = host._renderMetrics ?? host._viewportController.physicalLayout(pixelViewport);
   if (host._selectionMode) host.exitSelectionMode({ restoreFocus: false });
   host._renderingCore = core;
   try {

@@ -1,6 +1,6 @@
 # Kitty graphics and client rendering design
 
-Status: graphics proposal; prerequisite text refactor progress is recorded in section 7. Based on Ghostty `b32f20f3e8d25bb925ec545c54498e93518e7ced`. All source paths below are repository-root-relative.
+Status: graphics proposal; prerequisite text refactor progress and the proposed correction to browser font rendering are recorded in section 7. The `canvas` text path described here is a design target, not the current outline-based `kb-canvas` implementation. Based on Ghostty `b32f20f3e8d25bb925ec545c54498e93518e7ced`. All source paths below are repository-root-relative.
 
 This includes the prerequisite WASM/JS boundary refactor in section 7. The target is one client frame pipeline for text and graphics, not a second renderer bolted onto the current one. Native image admission/checkpoint rules remain independent of presentation.
 
@@ -237,27 +237,27 @@ Keep deferred visible misses as bounded resource references. Job completion, rel
 
 ### 7.1 Why refactor first
 
-The existing bulk frame ABI and dirty-row uploads are worth keeping. The inconsistency is ownership and control flow, not simply the number of WASM exports. Source inspection found:
+The existing bulk frame ABI and dirty-row uploads are worth keeping. The inconsistency is ownership and control flow, not simply the number of WASM exports. The original, pre-refactor source inspection found:
 
-| Current implementation | Adjustment |
+| Pre-refactor implementation | Adjustment |
 | --- | --- |
 | `common/terminal/Wgpu.zig` builds cells/styles, caches/rasterizes text, embeds WGSL, calls `gpu_init`, and calls `gpu_submit` | Keep the CPU frame builder; remove GPU initialization, shader assets, and host submission callbacks from it |
 | `Terminal.js`, `TerminalCoreHost.js`, viewport/focus/pointer controllers, and both GPU backends know about WASM exports or raw submission memory | Make `TerminalCore` the only client ABI entry point; controllers use semantic methods and backends receive validated data |
 | Both `GpuTerminal.submitWasm` and `WebGlTerminal.submitWasm` walk glyph requests, apply metadata, draw, and manage blink | Move orchestration into one shared presenter; keep only GPU-specific operations in the two backends |
 | `FrameScheduler` gates hidden-document work, but each backend independently rearms a blink timer and draws | Give one visibility-aware scheduler exclusive presentation authority |
-| The inspected STB branch calls the combined kb-shaping/STB-raster function, while the Canvas branch emits text for `fillText` | Reconcile this implementation gap with the shared kb shaping/layout contract; do not redefine Canvas as a separate layout engine |
+| The inspected STB branch calls the combined kb-shaping/STB-raster function, while the Canvas branch emits text for `fillText` | Make these explicit, independent text paths: `kb-stb` uses supplied font bytes in WASM; `canvas` sends bounded UTF-8 runs for browser shaping and rasterization |
 | `RendererSubmission.js` scans every cell even for small dirty updates; Canvas masks use per-tile readback; WebGPU stages buffer uploads and copies an offscreen frame to the swapchain | Preserve correctness first, then remove avoidable work with measurements rather than duplicating rendering paths |
 
-These are static source findings, not measured speed or power results. Relevant sources are `common/terminal/Wgpu.zig`'s `submitCached` and, under `wgpuTerminal/src/`, `Terminal.js`'s `_gpuSubmit`, `browser/FrameScheduler.js`, `browser/render/RendererSubmission.js`, `browser/render/CanvasAlphaMask.js`, and both backend `submitWasm`/`draw` methods.
+These are historical static source findings, not measured speed or power results. Relevant sources were `common/terminal/Wgpu.zig`'s `submitCached` and, under `wgpuTerminal/src/`, `Terminal.js`'s `_gpuSubmit`, `browser/FrameScheduler.js`, `browser/render/RendererSubmission.js`, `browser/render/CanvasAlphaMask.js`, and both backend `submitWasm`/`draw` methods. The subsequent outline-based Canvas refactor removed browser font fallback; section 7.4 supersedes that shared-kb design without undoing the bridge, presenter, or scheduler separation.
 
 ### 7.2 Target ownership: CPU frame preparation versus browser presentation
 
-**WASM interprets terminal state and prepares bounded frame data. JS owns the browser, resource residency, and presentation.** This is not “all rendering in JS,” nor “all rendering in WASM.” kb shaping/layout stays in WASM for both text rasterizers; browser-only operations stay in the browser. The same rule applies to both GPU backends.
+**WASM interprets terminal state and prepares bounded frame data. JS owns the browser, resource residency, and presentation.** This is not “all rendering in JS,” nor “all rendering in WASM.” WASM retains canonical cells, cell widths, grapheme boundaries, run spans, and slot assignments. `kb-stb` additionally shapes and rasterizes from supplied TTF/OTF bytes in WASM; `canvas` lets browser `fillText` shape and rasterize UTF-8 runs using a CSS font stack. The same ownership rule applies to both GPU backends.
 
 | Owner | Authoritative responsibilities | Must not do |
 | --- | --- | --- |
 | Native/WASM Ghostty and shared graphics code | VT/Kitty parsing, canonical grid, modes, input encoding, selection, scrolling, image admission, placement semantics, checkpoint state | Depend on device capabilities, browser raster validity, or texture residency for protocol outcomes |
-| WASM `RenderFrame.zig` (renamed from `Wgpu.zig`) | Derive cells/styles/runs, dirty ranges, optional text mirror, cursor/blink requirements, and visible image geometry from terminal state; shared kb shaping/layout, CPU text caches, and rasterizer-specific mask/drawing batches | Initialize a GPU, contain shaders, schedule frames, decode image pixels, or interpret DOM events |
+| WASM `RenderFrame.zig` (renamed from `Wgpu.zig`) | Derive canonical cells/styles/graphemes/runs, dirty ranges, optional text mirror, cursor/blink requirements, and visible image geometry; produce `kb-stb` masks or bounded `canvas` UTF-8 requests | Initialize a GPU, contain shaders, schedule frames, decode image pixels, interpret DOM events, or require browser-shaped runs to match kb shaping |
 | JS `TerminalCore` and its `FramePacket.js` decoder | All exports/imports, range/version/generation checks, borrowed-memory lifetime, source copying, semantic client methods | Own a canvas/device or let raw WASM exports escape to browser controllers/backends |
 | JS `ViewportController` | DOM/CSS measurement, DPR, physical cell/font metrics, coordinate conversion | Independently derive terminal column widths, image placement semantics, or authoritative session geometry |
 | JS `FramePresenter` | Shared frame consumption, glyph partition leases, Canvas text materialization, image-resource requests, current presentation state and ordered draw plan | Parse terminal commands or respecify Ghostty's placement/selection rules |
@@ -266,11 +266,11 @@ These are static source findings, not measured speed or power results. Relevant 
 
 `RenderFrame` is client-only derived state, not another terminal model and not part of the native checkpoint. Do not move native graphics admission into this module. Keep the existing one-core-per-WASM-instance arrangement; merging all cores into a new WASM runtime or introducing shared-memory threading is not required for this refactor.
 
-Keep the compact, bulk numeric streams. Do not expand every cell into a JS object, move shaping loops into JS, or introduce per-glyph WASM calls. A controller may still call a small semantic method such as `core.scrollRows`, `core.pointer`, `core.focus`, or `core.selectRange`; that is a sensible control boundary, unlike a controller knowing ABI pointers and status codes. Font-loading helpers receive narrowly scoped bridge callbacks rather than exposing exports.
+Keep the compact, bulk numeric streams. Do not expand every cell into a JS object or introduce per-glyph WASM calls. Browser shaping in the `canvas` path occurs through bounded `fillText` runs, not a JS reimplementation of terminal layout. `ViewportController`, `PointerController`, and `FocusController` receive narrowly scoped semantic callbacks supplied by `Terminal`, never a core or raw bridge; DOM conversions remain in the controllers. Font-loading helpers receive narrowly scoped bridge callbacks rather than exposing exports.
 
 ### 7.3 One frame path, with explicit borrowed-memory lifetime
 
-Replace the rendering-specific `gpu_init`, `gpu_text_backend`, and `gpu_submit` imports with explicit configuration plus a pull frame interface. Retain bounded host capabilities for terminal replies/effects, logging, and font bytes; this change does not require an asynchronous effects bus.
+Replace the rendering-specific `gpu_init`, `gpu_text_backend`, and `gpu_submit` imports with explicit configuration plus a pull frame interface. Retain bounded host capabilities for terminal replies/effects and logging. Font-byte loading is a conditional `kb-stb` capability and is not initialized or required for `canvas`; this change does not require an asynchronous effects bus.
 
 ```text
 output / input / resize / scroll
@@ -293,7 +293,7 @@ decode ready / blink deadline / later animation deadline
 
 `consumeFrame` is one synchronous JS operation, not an async iterator or a general transaction framework. The two ABI calls replace the existing callback's implicit success/clean contract:
 
-Layer-2 ABI v5 uses `term_frame_prepare() -> i32`: zero means unchanged, `-1` means preparation failure, `-2` means busy, and a positive value is the core-owned packet header address. `term_frame_token()` supplies its nonzero `u32` token. `term_frame_finish(token, accepted)` returns `1` on acceptance/rejection and `-2` on invalid token/acceptance value; even a mismatched finish releases the outstanding borrow and invalidates its caches. Tokens/revisions advance per prepared packet and survive terminal reset; core generation advances on initialization, configuration generation on configuration operations, and lease generation identifies the glyph partition. All are `u32`.
+The implemented layer-2 ABI v5 uses `term_frame_prepare() -> i32`: zero means unchanged, `-1` means preparation failure, `-2` means busy, and a positive value is the core-owned packet header address. `term_frame_token()` supplies its nonzero `u32` token. `term_frame_finish(token, accepted)` returns `1` on acceptance/rejection and `-2` on invalid token/acceptance value; even a mismatched finish releases the outstanding borrow and invalidates its caches. Tokens/revisions advance per prepared packet and survive terminal reset; core generation advances on initialization, configuration generation on configuration operations, and lease generation identifies the glyph partition. All are `u32`. The proposed text-payload ABI v6 in section 7.4 preserves this lifetime contract.
 
 The header is 156 bytes, retaining the compact 80-byte frame, 8-byte cell, and 12-byte style records. Header bytes 112–152 hold token, core/config/lease generations, full-frame flag, frame revision, graphics revision, graphics draw pointer/count, and graphics resource pointer/count. Graphics fields are currently zero. `TerminalCore.consumeFrame` fills core identities into explicit decoder expectations; consumers get borrowed views and scalar metadata, never packet addresses. Both backends upload synchronously and present only after accepted finish. WebGPU currently submits uploads separately from presentation; merging that orchestration remains a later-layer optimization.
 
@@ -307,48 +307,108 @@ The decoder is renamed/moved from browser `RendererSubmission.js` to `wgpuTermin
 
 Put shader/grain presentation assets with the JS renderer, not in the WASM module. Initialize the backend once from its own capabilities and the versioned packet schema. Configure text rasterizer, metrics, and glyph lease explicitly through the core, rather than querying a `gpu_text_backend` host import during core initialization. WASM packet ABI and transport/checkpoint ABI are separate versions.
 
-### 7.4 Shared kb shaping/layout, rasterizers, and resource ownership
+### 7.4 Two text paths, shared terminal geometry and resource ownership
 
-Layer 5 text implementation: `FontEngine.shape` produces a bounded shared layout
-(up to 128 glyphs per run) once per cache miss. STB consumes its glyph IDs and
-physical positions; Canvas receives outlines extracted from that same face with
-`stbtt_GetGlyphShape`/`stbtt_FreeShape`, not pixels or source strings. Both modes
-require the four `wasmFontUrls` font byte buffers. `canvasOnly` is rejected; the
-browser-only Fira Code choice is removed. CSS fallbacks remain for DOM UI/text
-mirrors, not glyph rasterization.
+**Use `kb-stb` (kb + STB) and `canvas` (browser text rendering).** These are two
+shaping/rasterization paths, not two rasterizers for one kb layout. The independent
+GPU-backend choice remains `webgpu`/`webgl2`; each text path works with either.
+Replace the misleading `kb-canvas` setting with `canvas`, migrating persisted
+settings at the application boundary rather than retaining an outline-rendering mode.
 
-The coordinated v5 packet keeps its 156-byte header and 24-byte Canvas request.
-The header word at byte 12 declares the path command stride (28), rejecting older
-text packets. Bytes 84/88 hold the path pointer/command count. A request is six `u32`s:
-first slot, slot count, span cells, command offset, command count, reserved zero.
-Offsets/counts index commands, not bytes. Each command is `u32 op` followed by
-six physical `f32`s `(x, y, cx, cy, cx1, cy1)`: move=0, line=1, quadratic=2,
-cubic=3, close=4. Coordinates are run-local, y-down with the shared baseline
-already applied; unused coordinates are zero. Contours start with move and end
-with explicit close. The decoder checks enums, finite bounded coordinates,
-contour sequencing, contiguous request ranges, and leased slots. Limits are
-16 cells/32 input codepoints per run, 32,768 commands per run, 1,048,576 commands
-(28 MiB) per packet, and 16 Mi pixels per run. Empty glyph outlines are valid.
+The current `kb-canvas` implementation shapes in WASM and passes STB outlines to
+Canvas. Filling paths does not invoke browser text rendering, so it cannot use
+the configured fallback stack or system emoji fonts. This proposal restores the
+previous browser capability; it does not add a WASM font-discovery service,
+bundled fallback-font engine, or new color-glyph support.
 
-`FramePresenter` dispatches both mask types through the same rectangle upload
-interface. `CanvasAlphaMask` fills each complete run once, reads its alpha once,
-then packs rectangles split only at atlas row boundaries. Backend atlas classes
-no longer rasterize. Cache admission counts distinct missing keys and their
-slots before deciding to evict; dirty rows containing only warm keys do not
-reset a full cache. Pull-frame borrowing and the scheduler are unchanged.
+| Path | Font source and shaping | Rasterization and output |
+| --- | --- | --- |
+| `kb-stb` | JS supplies the four `wasmFontUrls` style faces; kb shapes those bytes in WASM | STB rasterizes the selected glyphs into batched R8 masks |
+| `canvas` | Browser resolves the configured CSS family/fallback stack, including loaded web fonts and available system fonts, and shapes text | Canvas `fillText` renders bounded runs; JS extracts alpha into the same R8 mask uploads |
 
-Keep the names `kb-stb` and `kb-canvas`: **kb is the shared shaping/layout library; STB and Canvas are rasterization choices**, not alternative layout engines. `webgpu`/`webgl2` remains an independent presentation-backend choice.
+WASM has no direct access to system fonts. Canvas may use browser-supported
+TTF/OTF/web fonts without passing their bytes to WASM. A Canvas-only font is valid
+for `canvas`, not `kb-stb`. Opening or rendering with `canvas` must not require
+`wasmFontUrls` fetches, kb face initialization, or STB outline extraction. Switching
+to `kb-stb` prepares its required bytes before committing the switch; failed or
+stale preparation must leave the previous configuration usable. Do not expand
+STB's existing font-format coverage as part of this correction.
 
-- WASM owns terminal cell widths, run boundaries, kb shaping/layout, font selection, glyph IDs/positions, cache keys, and slot assignments for both rasterizers. Separate `FontEngine`'s shared shaping/layout operation from rasterization; a cache miss is shaped once before selecting its pixel-production path.
-- `kb-stb` rasterizes the kb result in WASM and exports batched R8 masks. `kb-canvas` exports bounded drawing batches for that same kb result; JS uses Canvas to produce pixels, not to choose another layout. Ligature choices, cluster-to-cell mapping, advances, and offsets must not change when switching rasterizers. Raster antialiasing may differ.
-- Ordinary Canvas `fillText` does not accept arbitrary pre-shaped glyph IDs. The Canvas adapter must preserve kb's result, for example by consuming batched glyph outlines and kb positions, rather than silently reshaping the original string. Specify and test this adapter before declaring the refactor complete; do not assume a browser glyph-ID drawing API exists. Font availability must satisfy the shared kb font-data contract; browser-only font discovery/fallback cannot silently become a second shaping authority.
-- The presenter owns atlas dimensions, GPU allocation, and per-core **leases** `(base, capacity, columns, generation)`. WASM may pack masks into that explicitly granted slot range, but cannot grow/reassign GPU storage. This intentional storage contract preserves the compact cell ABI; no new per-glyph handle indirection or cross-language eviction protocol is needed.
-- JS lease/font changes explicitly invalidate the relevant WASM caches. WASM eviction may reuse slots only at a frame boundary after ensuring the new complete cell references are valid. Ordinary GPU redraws must not mutate these caches. Device reconstruction can request fresh masks from retained terminal/font state; no CPU glyph bitmap checkpoint is needed.
-- Before reassigning any lease range or changing atlas layout, invalidate/suspend every affected retained presentation, including inactive cores. Old GPU cell references must never render against reused slots. Resume each affected core only after accepting a full packet with its current lease generation; a blink/decode-only redraw cannot satisfy this requirement.
-- `ViewportController` supplies DOM/CSS/DPR measurements; the core supplies common font/layout metrics. Resolve these into one versioned configuration for the core, both rasterizers, backend uniforms, pointer/IME positioning, and text mirror. Baseline, advances, cell dimensions, and clipping follow the shared layout policy, not Canvas text measurement or a separate rasterizer approximation.
-- Factor Canvas rasterization out of the backend atlas classes. Read a run's pixels once and pack uploads by atlas row, using the same rectangle-upload interface as WASM masks. Keep rasterizer-specific pixel production separate from shared kb layout and backend-specific upload.
+#### Terminal geometry versus font shaping
 
-Images follow the same ownership rule, not the same storage layout: WASM exports logical resources/placements; JS materializes browser pixels and owns texture residency. Glyph masks and image textures remain separate because their sizes, formats, decoding, and eviction behavior differ. Use the concrete image modules in section 12, not a generic “all resources” framework.
+- Ghostty/WASM remains authoritative for cells, codepoints, grapheme contents,
+  terminal widths, styles, run boundaries, cache keys, and assigned atlas slots.
+  Browser glyph advances never change the grid, cursor, selection, or PTY geometry.
+- On a `kb-stb` cache miss, `FontEngine` shapes and rasterizes the run. On a
+  `canvas` miss, the frame builder exports its original Unicode text and style,
+  not kb glyph IDs, positions, outlines, or replacement glyphs.
+- Preserve whole terminal graphemes, including variation selectors, combining
+  marks, skin-tone modifiers and ZWJ sequences, within each request. Do not split
+  them into separate `fillText` calls or substitute spacer-tail cells for text.
+  Batch compatible runs only where their fixed cell positions are preserved.
+- Canvas configures the CSS font stack, physical font size, weight, italic style,
+  baseline and existing ligature policy explicitly. It renders within the run's
+  assigned cell rectangle, fitting/clipping as needed; browser measurement is
+  presentation-only. Disabling discretionary ligatures must not break graphemes.
+- Font choice, ligatures, glyph positions and antialiasing may differ between
+  paths. Require terminal-state and cell-geometry parity, not identical shaped
+  glyphs or pixels. Browser fallback coverage depends on available fonts; it is
+  not a guarantee that every Unicode sequence exists on every platform.
+- Retain the existing alpha-only atlas. Emoji should render through browser
+  fallback as before, but preserving color-emoji RGB is not part of this work.
+
+#### Bounded text requests, not outline commands
+
+Replace the v5 Canvas path stream with a bounded UTF-8 text stream in a coordinated
+local ABI v6 update. This is proposed, not yet implemented. Retain the 156-byte
+header, 80-byte frame, 8-byte cell, 12-byte style and 24-byte Canvas request sizes.
+The proposed request is six `u32`s: first slot, slot count, span cells, UTF-8 byte
+offset, UTF-8 byte length, and style index (regular=0, bold=1, italic=2,
+bold-italic=3). Header bytes 84/88 become the text pointer/byte length; byte 12
+declares a text unit size of 1 instead of a path-command stride of 28. Reject v5
+outline packets rather than interpreting them as strings. Remove obsolete path
+commands, outline extraction, and path validation once this replacement lands.
+
+Keep the existing 16-cell/32-codepoint run bounds and 16 Mi-pixel per-run bound.
+Limit text to 128 UTF-8 bytes per request and bound aggregate bytes by the bounded
+request count with checked arithmetic. Never silently truncate a grapheme to fit
+a request. `FramePacket` validates UTF-8, offsets/lengths, style enums, run spans,
+request counts, aggregate limits, and leased slot ranges before consumption.
+Font configuration is versioned host/core state, not repeated font-family strings
+in every request. Consume borrowed text synchronously; no WASM view survives
+`finish`, a font-loading await, or a later presentation.
+
+`FramePresenter` sends both paths' masks through the same rectangle-upload
+interface. `CanvasAlphaMask` draws each complete run, reads its alpha once, then
+packs rectangles split only at atlas row boundaries. Backend atlas classes only
+allocate/upload. Keep cache-miss admission based on distinct missing keys and
+slots; dirty rows containing only warm keys must not reset a full cache.
+
+#### Fonts, metrics, and invalidation
+
+- `ViewportController` supplies DOM/CSS/DPR measurements. Resolve these into one
+  versioned physical metric configuration for the active path, core, backend,
+  pointer/IME positioning and text mirror. Browser baseline/fit calculations
+  need not match kb font metrics, but must honor the configured cell rectangles.
+- Font-stack, font-readiness, style-font, ligature, metric or text-path changes
+  invalidate affected glyph caches and require fresh masks. Explicit web-font
+  loading/readiness is handled outside frame consumption; a font becoming ready
+  must not leave fallback glyphs cached indefinitely. Use bounded event-driven
+  invalidation, not a font polling loop. Fence stale font-load completions.
+- The presenter owns atlas dimensions, GPU allocation, and per-core **leases**
+  `(base, capacity, columns, generation)`. WASM packs into granted slots but
+  cannot grow/reassign GPU storage. No new per-glyph handle protocol is needed.
+- Before reassigning a lease or atlas layout, suspend every affected retained
+  presentation, including inactive cores. Resume only after accepting a full
+  packet with the current configuration and lease generation. Blink-only redraw
+  cannot make stale slots valid. Apply the same rule to text-path/font changes.
+- Device reconstruction regenerates masks from retained terminal state and the
+  selected font configuration. No glyph bitmap checkpoint or PTY replay is needed.
+
+The sole bridge, pull-frame lifetime, presenter and scheduler remain shared.
+Two text-production paths do not justify separate GPU renderers or clocks.
+Images still use their own encoded sources and textures, not the glyph atlas;
+use the concrete image modules in section 12, not a generic resource framework.
 
 ### 7.5 Shared presenter and sole presentation clock
 
@@ -381,11 +441,13 @@ Preserve demand-driven preparation, dirty-row uploads, bounded glyph caching, an
 4. Compare direct WebGPU buffer writes for small dirty sets against current staging. Prefer direct swapchain rendering for normal presentation instead of the unconditional full-size offscreen copy; provide explicit on-demand capture using the retained last presentation state, including blink/time uniforms. Preserve documented `readPixels` behavior in tests rather than silently capturing a different frame.
 5. Measure before adding damage/scissor rendering, placement deltas, texture tiling, or a text-only shader specialization. Full redraw with bounded instances is the simple initial composition model; dirty uploads alone do not reduce fragment work.
 
+The prerequisite renderer split is integrated before claiming completion: one frozen, versioned terminal metric configuration is retained by `TerminalCore`; backend lifecycle callbacks suspend and invalidate presentation; and after device loss or WebGL context restoration, `Terminal` recreates the selected backend/canvas and all core glyph leases/assets without a logical reset or replay. Async recovery and disposal are fenced, and failure is bounded by `onError` followed by suspension. Kitty image protocol integration remains future work. `renderer-integration-contract.mjs` fake-backend tests and physical GPU/power measurements remain required; this design does not claim measured gains.
+
 Acceptance requires measured preparation/upload bytes, cache-miss work, wakeups and frame times on representative workloads, not a blanket claim that WASM or JS is faster. Include stable idle, blinking prompt, sustained scrolling, cold font cache, many cached cores, image arrival, and DPR 1/2/4. Record backend/device/browser and p50/p95 timings; use platform power tools where available rather than treating FPS as an energy measurement.
 
 ### Frame ABI and dirty state
 
-Bump local submission/frame ABI v4 to v5 for the pull-frame contract, core/config/lease generations, graphics revision, draw-list pointer/count, and resource references. Validate pointer/count bounds, finite floats, enums, source bounds, and identity in `FramePacket.js`. Ship one coordinated revision, not permanently supported competing submission paths.
+The v4-to-v5 change introduced the pull-frame contract, core/config/lease generations, and reserved graphics fields. The next coordinated local ABI v6 change replaces Canvas outlines with the text requests in section 7.4; graphics integration must populate and validate the reserved graphics streams. Validate pointer/count bounds, finite floats, enums, source bounds, and identity in `FramePacket.js`. Ship matched WASM/JS assets, not permanently supported competing submission paths. This local ABI change does not itself change the native checkpoint codec or PTY protocol.
 
 Include graphics dirty state, viewport movement, render metrics, and explicit core invalidation in `Terminal.term_frame_prepare()`'s early-return decision; text/cursor-only dirtiness misses image changes. Browser decode completion is presentation-only dirtiness and redraws the last authoritative draw list without reparsing output.
 
@@ -547,21 +609,21 @@ Animation later adds shared recipe validation and browser composition, not a nat
 | --- | --- |
 | `bcwebmux/build.zig`, `bcwebmux/build.zig.zon` | Pin opaque-capable Ghostty, enable graphics/profile for all instances, direct concrete-module imports/assets/tests; no native pixel-codec dependency |
 | `common/terminal/Terminal.zig`, `common/terminal/main.zig` | Pull frame prepare/finish, opaque setup, graphics dirtiness/resource exports, compound restore, epochs |
-| `common/terminal/Wgpu.zig` → `common/terminal/RenderFrame.zig` | Backend-neutral CPU frame v5, image draws/resources, placeholder suppression, background flags; remove GPU host imports |
-| `common/terminal/FontEngine.zig` | Separate shared kb shaping/layout from STB pixel production; supply the same layout to the Canvas drawing-batch adapter |
+| `common/terminal/RenderFrame.zig` (formerly `Wgpu.zig`) | Proposed frame v6: dispatch misses to kb/STB masks or Canvas UTF-8 requests without invoking kb for Canvas; image draws/resources, placeholder suppression, background flags |
+| `common/terminal/FontEngine.zig` | Keep kb shaping and STB rasterization for `kb-stb`; remove Canvas outline extraction, with no system-font discovery or new fallback engine |
 | `common/terminal/shaders/cell.wgsl` → `wgpuTerminal/src/browser/render/webgpu/shaders/cell.wgsl` | Browser-owned split background/transparent foreground shader; one composition model |
 | `common/terminal/grain.zig` and browser renderer assets | Relocate presentation grain data out of the WASM shader-initialization path; preserve visual output |
-| `wgpuTerminal/src/TerminalCore.js` | Sole ABI bridge, frame lifetime, semantic controller methods, bounded source copies, reset/restore/dispose; retain synchronous logical writes |
+| `wgpuTerminal/src/TerminalCore.js`, `wgpuTerminal/src/WasmFonts.js` | Sole ABI bridge, conditional `kb-stb` font-byte loading, frame lifetime, semantic controller methods, bounded source copies, reset/restore/dispose; retain synchronous logical writes |
 | `wgpuTerminal/src/Terminal.js`, `wgpuTerminal/src/TerminalCoreHost.js` | Presenter ownership, attach/rollback through one frame path; remove `_wasm` and `_gpuInit`/`_gpuSubmit` coupling |
 | `wgpuTerminal/src/browser/ViewportController.js`, input/selection controllers | Semantic core methods rather than direct exports; shared versioned metrics |
-| `wgpuTerminal/src/TerminalOptions.js`, `wgpuTerminal/index.d.ts` | Graphics profile, limits, diagnostics options |
-| `wgpuTerminal/src/browser/render/RendererSubmission.js` → `wgpuTerminal/src/FramePacket.js` | Backend-independent v5 validation/typed views, used only by the core bridge |
-| `wgpuTerminal/src/browser/render/CanvasAlphaMask.js`, glyph runtime and atlas files | Presenter-owned Canvas rasterization, batched run masks, explicit glyph leases; backend atlas files only allocate/upload |
+| `wgpuTerminal/src/TerminalOptions.js`, `wgpuTerminal/index.d.ts` | `kb-stb`/`canvas` options and path-specific font requirements; graphics profile, limits, diagnostics options |
+| `wgpuTerminal/src/FramePacket.js` (formerly `RendererSubmission.js`), `browser/render/FrameSchema.js` | Backend-independent proposed v6 UTF-8 request validation/typed views, used only by the core bridge; remove outline-command schema |
+| `wgpuTerminal/src/browser/render/CanvasAlphaMask.js`, glyph runtime and atlas files | Presenter-owned browser `fillText` using the configured font stack, batched alpha masks, font-readiness invalidation and explicit glyph leases; backend atlas files only allocate/upload |
 | `wgpuTerminal/src/browser/render/RenderBackend.js` | Image cache/device recreation |
 | `wgpuTerminal/src/browser/render/webgpu/GpuTerminal.js`, `wgpuTerminal/src/browser/render/webgpu/GpuTerminalResources.js` | GPU operations, layered draws, device recovery; remove WASM decoding and independent scheduling |
 | `wgpuTerminal/src/browser/render/webgl/WebGlTerminal.js`, `wgpuTerminal/src/browser/render/webgl/WebGlTerminalResources.js` | Equivalent GPU-only operations/shaders/context recovery |
 | `wgpuTerminal/src/browser/FrameScheduler.js` | Sole core/presentation scheduler, visibility and blink/later animation deadlines |
-| `bcwebmux/web/client.js` | Event-driven status, visible/enabled telemetry only; no perpetual UI polling |
+| `bcwebmux/web/client.js`, `bcwebmux/web/settings.js`, `bcwebmux/web/index.html` | Label/select `canvas` as browser text rendering, migrate saved `kb-canvas` settings, preserve browser-only font choices for Canvas; event-driven status, visible/enabled telemetry only |
 | `bcwebmux/src/Session.zig` | Opaque policy, storage budgets, compound captures |
 | `bcwebmux/src/session_realtime.zig`, `bcwebmux/src/SessionSocket.zig` | Immutable checkpoint/replay ownership and negotiated sizes; no decode receipts |
 | `bcwebmux/src/session_manifest.zig`, `bcwebmux/src/protocol.zig`, `bcwebmux/web/protocol.js` | Codec/profile/ABI and bounds; static profile keeps existing frame/event kinds |
@@ -579,7 +641,10 @@ Add:
 - Frame lifetime tests: no-change, prepare/consumer failure, partial upload failure, rejected/stale token, memory growth between frames, reset/attach/rollback/device-loss full rebuild, and no borrowed view surviving `finish` or await.
 - Scheduler tests with controlled clocks: stable idle has no recurring renderer wakeups; visible blink uses only its deadlines; hidden/disposed/failed hosts do not draw or rearm; decode completion is presentation-only; simultaneous output/input/resize/decode coalesce; inactive cores still apply logical output without rendering.
 - Capacity/lifecycle tests: more visible image misses than decode slots eventually progress without terminal output; permanently over-budget scenes do not cause a retry/eviction loop; glyph repartition/core removal cannot expose stale cell references on blink or inactive-core reattachment.
-- Text refactor parity on both GPU backends and both rasterizers: identical kb glyph/cluster/position results for plain text, ligatures, and combining/wide text; raster-specific antialiasing differences only where expected. Cover cursor/selection, DPR 1/2/4, font changes and shared font-data availability (including the existing Canvas-only option), capture semantics, and empty-image-list composition. Resolve any incompatible font option explicitly rather than silently bypassing kb.
+- Text-path tests on both GPU backends: preserve canonical cell/grapheme positions, cursor/selection, DPR 1/2/4, capture semantics and empty-image-list composition. Keep path-specific visual baselines for plain text, ligatures, combining/wide text and style variants; do not require Canvas glyph IDs, advances or pixels to equal kb/STB.
+- Browser fallback regression: Canvas must call `fillText` with the configured font stack and intact emoji/grapheme strings, render glyphs absent from the primary face through a known fallback, and work without any WASM font fetch. Include emoji variation selectors, skin tones, flags and ZWJ sequences supported by the test fonts. Use controlled web fonts for deterministic coverage plus system-font smoke tests; assert rendered alpha, not preserved color-emoji RGB.
+- Text-path/font lifecycle tests: Canvas-only fonts accepted for `canvas` and rejected for `kb-stb`; kb/STB still uses supplied bytes; delayed/failed font loads, fallback readiness, switching paths with inactive cores, attach/rollback and device recovery cannot reuse stale masks or commit obsolete font configuration. Failed switching leaves the previous path usable.
+- Canvas packet tests: reject old outline ABI, malformed UTF-8, out-of-range text/slot references, invalid style/span and aggregate over-budget requests; verify one bounded readback per run and atlas-row upload packing. Ensure the Canvas branch never shapes with kb or extracts STB outlines.
 - Workload measurements described in section 7.6, with diagnostics both disabled and enabled. No numerical speed/power improvement is assumed before measurement.
 - `bcwebmux/test/kitty-graphics-contract.mjs`: raw/PNG/zlib, chunk boundaries, admission/query/errors, ID reuse, stale decode completion.
 - `bcwebmux/test/kitty-graphics-e2e.mjs`: both backends, alpha/color, crop/layers, scrolling, Unicode/relative, DPR, graphics-only redraw, lazy readiness.
@@ -594,7 +659,7 @@ Add:
 
 Delivery sequence:
 
-1. Refactor the client on text-only behavior: sole bridge, pull-frame lifetime, shared kb shaping/layout, presenter/metrics, browser-owned assets, one scheduler, and both-backend/rasterizer parity. Remove replaced paths instead of retaining compatibility implementations internally.
+1. Complete/correct the text-only refactor: retain the sole bridge, pull-frame lifetime, presenter/metrics, browser-owned assets and one scheduler; replace outline-based `kb-canvas` with browser-font `canvas`, keeping `kb-stb` separate. Ship the coordinated text ABI, conditional font loading, settings migration and both-backend regression coverage. Remove the superseded outline path; do not expand font/color capabilities beyond the previous browser path.
 2. Ghostty opaque storage/shared metadata admission and concrete TU interfaces. Prove native/WASM semantics without pixel decoders; this work can proceed independently of step 1.
 3. Compound checkpoints and raw/PNG display with ordinary placements through the refactored frame pipeline. New-viewer restore is mandatory before enablement.
 4. Complete static behavior, single composition model, Unicode/relative, resize/delete, reconnect/cache fencing, context recovery, budgets.

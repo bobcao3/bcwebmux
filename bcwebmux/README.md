@@ -98,14 +98,54 @@ zig build server-test
 zig build unit-test
 zig build test
 zig build e2e
+zig build visual-test
 ```
 
 `server-test` runs native server tests; `unit-test` runs Zig unit tests.
 The shell startup regression (requires `/bin/bash`) can also run directly:
 `node test/session-shell-integration.mjs ./zig-out/bin/bcwebmux-server`.
 `test` includes browser end-to-end tests, not just unit tests. Browser tests
-require a physical Vulkan GPU. Intentional golden updates use
-`UPDATE_GOLDEN=1 zig build e2e`.
+require Chromium and a physical Vulkan GPU (no SwiftShader/llvmpipe).
+
+### Full-screen visual regression tests
+
+`zig build visual-test` runs the screenshot suite alone; `e2e` and `test` also
+include it. Both WebGPU and WebGL2 are tested at fixed viewport sizes:
+
+| Device | CSS viewport | DPR | Screenshot pixels |
+| --- | --- | --- | --- |
+| Desktop | 1440 × 900 | 1 | 1440 × 900 |
+| Mobile (touch) | 390 × 844 | 3 | 1170 × 2532 |
+
+Each captures the **entire viewport**, including terminal, telemetry, scrollbar,
+and bottom controls. Cases cover UTF-8 (CJK, combining accents, Greek/Cyrillic),
+emoji, ANSI styles/box drawing, and numbered `test/snapshot-fixture.zig` source.
+Scrollback cases capture the bottom, Home/top, and PageDown/middle; End must
+restore the original bottom image. Source is sent through the real shell/PTY.
+The Unicode preview uses `kb-canvas`; source/scrollback uses the default
+`kb-stb`, covering both rasterizers. **Known font limitation:** both use the
+same bundled JetBrains outlines, which lack the probed CJK/emoji characters.
+Those probes currently show missing-glyph boxes; these snapshots record that
+limitation, not successful CJK/emoji support. CSS/system fallback fonts do not
+fix it. Latin accents, Greek/Cyrillic, combining marks and box drawing are
+positive Unicode coverage. See the [font contract](../wgpuTerminal/README.md).
+
+- Baselines: `test/golden/{desktop,mobile}-{webgpu,webgl2}-*.webp`.
+- Actual PNGs and renderer-state JSON: `zig-out/screenshots/` (override with
+  `BCWEBMUX_SCREENSHOT_DIR`). Failed comparisons also save magenta diff PNGs.
+- Open `zig-out/screenshots/index.html` to browse all captures at full resolution.
+- Update intentionally: `UPDATE_GOLDEN=1 zig build visual-test`, inspect the
+  images, then rerun without `UPDATE_GOLDEN`.
+- Optional: `RENDER_BACKEND=webgpu` or `webgl2` to run only that backend;
+  `CHROMIUM=/path/to/chromium` to select the browser.
+
+For repeatability the suite disables grain and cursor blinking, removes shell
+prompts, waits for fonts/GPU/compositor readiness, and normalizes volatile
+telemetry counters/timings while preserving its actual labels and layout.
+Desktop uses detailed telemetry; mobile uses the default single-line mode.
+Comparison checks both total changed pixels and local 64-pixel tiles, so dark
+backgrounds cannot hide localized rendering regressions. The old cropped
+terminal/telemetry/bottom-bar goldens have been removed.
 
 Rebuild after changing application assets or WASM sources. For terminal-only builds, see the [terminal package README](../wgpuTerminal/README.md).
 

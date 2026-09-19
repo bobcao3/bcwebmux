@@ -81,6 +81,26 @@ async function run() {
   for (let index = 0; index < 400; index += 1) coreA.write(`A-history-${index}\r\n`);
   coreA.write("\x1b[2J\x1b[H\x1b[48;2;220;40;40m  \x1b[0m CORE-A-ACTIVE");
   const imageA = await pixels(terminal);
+  if (new URLSearchParams(location.search).get("recovery") === "1") {
+    const previous = terminal._renderer;
+    let recoveryError;
+    const listener = terminal.onError(error => { recoveryError = error.message; });
+    if (requestedBackend === "webgl2") {
+      const loss = previous.gl.getExtension("WEBGL_lose_context");
+      if (!loss) throw new Error("context loss extension unavailable");
+      loss.loseContext();
+      await sleep(100);
+      loss.restoreContext();
+    } else previous.device.destroy();
+    for (let attempt = 0; attempt < 200 &&
+      (terminal._renderer === previous || terminal._recovering || !terminal._presenter.valid); attempt++) {
+      await sleep(25);
+    }
+    listener.dispose();
+    if (terminal._renderer === previous || terminal._recovering || !terminal._presenter.valid || terminal.core !== coreA) {
+      throw new Error(`backend recovery failed: ${recoveryError ?? terminal._renderer.error}`);
+    }
+  }
   const renderer = terminal._renderer;
   terminal._ensureFrameCapacity(0xffff);
   if (renderer.maxCells < 0xffff || renderer.maxStyles !== 0x10000) {

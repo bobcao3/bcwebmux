@@ -2,11 +2,10 @@
 // Copyright (c) 2026 Cheng Cao
 
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
-import sharp from "sharp";
 import { Cdp, freePort, terminateProcess, waitFor } from "./test-support.mjs";
 
 const [serverPath, webRoot] = process.argv.slice(2);
@@ -661,39 +660,11 @@ try {
     throw new Error(`${response.exceptionDetails.exception?.description || "browser evaluation failed"}\nRuntime exceptions: ${JSON.stringify(runtimeExceptions)}\nConsole errors: ${JSON.stringify(consoleErrors)}`);
   }
   const value = response.result.value;
-  const screenshot = await pageCdp.call("Page.captureScreenshot", { format: "png" });
   const viewportResponse = await pageCdp.call("Runtime.evaluate", {
     expression: "({ width: window.innerWidth, height: window.innerHeight })",
     returnByValue: true,
   });
   const { width: viewportWidth, height: viewportHeight } = viewportResponse.result.value;
-  const clips = {
-    terminal: {
-      x: 0,
-      y: 0,
-      width: Math.min(320, viewportWidth),
-      height: Math.min(160, viewportHeight),
-      scale: 1,
-    },
-    telemetry: {
-      x: Math.max(0, viewportWidth - 320),
-      y: 0,
-      width: Math.min(320, viewportWidth),
-      height: Math.min(80, viewportHeight),
-      scale: 1,
-    },
-    bottomBar: {
-      x: 0,
-      y: Math.max(0, viewportHeight - 104),
-      width: viewportWidth,
-      height: Math.min(104, viewportHeight),
-      scale: 1,
-    },
-  };
-  const visualScreenshots = {};
-  for (const name of ["terminal", "telemetry"]) {
-    visualScreenshots[name] = await pageCdp.call("Page.captureScreenshot", { format: "png", clip: clips[name] });
-  }
   const titleCommandResponse = await pageCdp.call("Runtime.evaluate", {
     expression: `window.bcwebmux.write(${JSON.stringify("printf '\\033]0;GPU TEST\\007'; sleep 10\n")})`,
   });
@@ -715,41 +686,12 @@ try {
   if (titleResponse.exceptionDetails) {
     throw new Error(titleResponse.exceptionDetails.exception?.description || "terminal title did not appear");
   }
-  visualScreenshots.bottomBar = await pageCdp.call("Page.captureScreenshot", {
-    format: "png",
-    clip: clips.bottomBar,
-  });
   const interruptResponse = await pageCdp.call("Runtime.evaluate", {
     expression: `window.bcwebmux.write(${JSON.stringify("\u0003")})`,
   });
   if (interruptResponse.exceptionDetails) {
     throw new Error(interruptResponse.exceptionDetails.exception?.description || "failed to interrupt temporary terminal sleep");
   }
-  const goldenPath = path.join("test", "golden");
-  if (process.env.UPDATE_GOLDEN === "1") {
-    await mkdir(goldenPath, { recursive: true });
-    for (const [name, captured] of Object.entries(visualScreenshots)) {
-      const buffer = Buffer.from(captured.data, "base64");
-      await sharp(buffer).webp({ lossless: true }).toFile(path.join(goldenPath, `${name}.webp`));
-    }
-  }
-  const visualPsnr = {};
-  for (const [name, captured] of Object.entries(visualScreenshots)) {
-    let expected;
-    try {
-      expected = await readFile(path.join(goldenPath, `${name}.webp`));
-    } catch (error) {
-      if (error.code === "ENOENT") {
-        throw new Error(`missing ${name} golden; run UPDATE_GOLDEN=1 zig build e2e`);
-      }
-      throw error;
-    }
-    const actualPng = await compareImagePsnr(Buffer.from(captured.data, "base64"), expected);
-    visualPsnr[name] = actualPng.psnr;
-  }
-  assert.ok(visualPsnr.terminal >= 35, `terminal PSNR was ${visualPsnr.terminal} dB`);
-  assert.ok(visualPsnr.telemetry >= 18, `telemetry PSNR was ${visualPsnr.telemetry} dB`);
-  assert.ok(visualPsnr.bottomBar >= 32, `bottomBar PSNR was ${visualPsnr.bottomBar} dB`);
   const longTitle = "BCWEBMUX-LONG-TITLE-" + "0123456789".repeat(12);
   const longTitleLayoutResponse = await pageCdp.call("Runtime.evaluate", {
     expression: `(async () => {
@@ -840,47 +782,6 @@ try {
       item.top >= controlsLayout.top && item.bottom <= controlsLayout.bottom,
     `long title ${id} is outside controls: ${JSON.stringify(longTitleLayout)}`);
   }
-  const presentedResponse = await pageCdp.call("Runtime.evaluate", {
-    expression: `(async () => {
-      const bytes = Uint8Array.from(atob(${JSON.stringify(screenshot.data)}), character => character.charCodeAt(0));
-      const bitmap = await createImageBitmap(new Blob([bytes], { type: "image/png" }));
-      const width = bitmap.width;
-      const height = bitmap.height;
-      const canvas = new OffscreenCanvas(width, height);
-      const context = canvas.getContext("2d");
-      context.drawImage(bitmap, 0, 0);
-      bitmap.close();
-      const pixels = context.getImageData(0, 0, width, height).data;
-      const terminal = document.querySelector("#terminal");
-      const style = getComputedStyle(terminal);
-      const scale = width / window.innerWidth;
-      const cellWidth = parseFloat(style.getPropertyValue("--cell-width")) * scale;
-      const cellHeight = parseFloat(style.getPropertyValue("--cell-height")) * scale;
-      const x0 = Math.floor(0.3 * cellWidth);
-      const x1 = Math.ceil(0.7 * cellWidth);
-      const y0 = Math.floor(0.3 * cellHeight);
-      const y1 = Math.ceil(0.7 * cellHeight);
-      let r = 0, g = 0, b = 0, count = 0;
-      for (let y = y0; y < y1; y += 1) for (let x = x0; x < x1; x += 1) {
-        const offset = (y * width + x) * 4;
-        r += pixels[offset];
-        g += pixels[offset + 1];
-        b += pixels[offset + 2];
-        count += 1;
-      }
-      return [r / count, g / count, b / count];
-    })()`,
-    awaitPromise: true,
-    returnByValue: true,
-  });
-  if (presentedResponse.exceptionDetails) throw new Error(presentedResponse.exceptionDetails.exception?.description || "compositor screenshot evaluation failed");
-  const presentedPixel = presentedResponse.result.value;
-  assert.ok(
-    Math.abs(presentedPixel[0] - 255) < 35 &&
-    Math.abs(presentedPixel[1]) < 35 &&
-    Math.abs(presentedPixel[2] - 255) < 35,
-    `presented screenshot cell was not magenta: ${presentedPixel}`,
-  );
   const state = value.state;
   const { nativeViewport } = value;
   assert.ok(nativeViewport.devicePixelRatio > 1);
@@ -900,7 +801,7 @@ try {
   assert.ok(Number.isFinite(state.rxWireBytes) && state.rxWireBytes > 0);
   assert.ok(Number.isFinite(state.rxBytes) && state.rxBytes > 0);
   for (const name of ["wasmParseMs", "wasmFrameMs", "rxLatencyMs", "inputLatencyMs", "frameMs", "presentationOpportunityMs", "wsRttLatestMs", "wsRttMedianMs", "wsRttP95Ms"]) {
-    assert.equal(typeof state[name], "number");
+    assert.equal(typeof state[name], "number", `${name} is missing`);
     assert.ok(Number.isFinite(state[name]) && state[name] >= 0, `${name} is invalid`);
   }
   assert.ok(state.wsRttMedianMs <= state.wsRttP95Ms, "WebSocket RTT median exceeds p95");
@@ -920,7 +821,7 @@ try {
   }
   if (requestedBackend === "webgpu") {
     for (const name of ["gpuFrameMs", "queueDrainMs"]) {
-      assert.equal(typeof state[name], "number");
+      assert.equal(typeof state[name], "number", `${name} is missing`);
       assert.ok(Number.isFinite(state[name]) && state[name] >= 0, `${name} is invalid`);
     }
     assert.ok(state.bundleExecutions >= 5);
@@ -1254,7 +1155,7 @@ try {
   }
   const exceptions = pageCdp.events.filter(event => event.method === "Runtime.exceptionThrown");
   assert.deepEqual(exceptions, [], JSON.stringify(exceptions));
-  console.log(JSON.stringify({ ...value, presentedPixel, visualPsnr, longTitleLayout, gpuDevice: gpuDeviceText, mobileInput }));
+  console.log(JSON.stringify({ ...value, longTitleLayout, gpuDevice: gpuDeviceText, mobileInput }));
 } finally {
   pageCdp?.close();
   browserCdp?.close();
@@ -1262,23 +1163,4 @@ try {
   await terminateProcess(chromium);
   await terminateProcess(server);
   await rm(profile, { recursive: true, force: true });
-}
-
-async function compareImagePsnr(actualBuffer, expectedBuffer) {
-  const [actual, expected] = await Promise.all([
-    sharp(actualBuffer).toColorspace("srgb").removeAlpha().raw().toBuffer({ resolveWithObject: true }),
-    sharp(expectedBuffer).toColorspace("srgb").removeAlpha().raw().toBuffer({ resolveWithObject: true }),
-  ]);
-  assert.equal(actual.info.width, expected.info.width);
-  assert.equal(actual.info.height, expected.info.height);
-  assert.equal(actual.info.channels, expected.info.channels);
-  let error = 0;
-  for (let index = 0; index < actual.data.length; index += actual.info.channels) {
-    for (let channel = 0; channel < 3; channel += 1) {
-      const difference = actual.data[index + channel] - expected.data[index + channel];
-      error += difference * difference;
-    }
-  }
-  const mse = error / (actual.info.width * actual.info.height * 3);
-  return { width: actual.info.width, height: actual.info.height, psnr: mse === 0 ? 99 : 10 * Math.log10(255 ** 2 / mse) };
 }
