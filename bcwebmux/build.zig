@@ -120,6 +120,8 @@ pub fn build(b: *std.Build) void {
     const terminal_wasm_step = b.step("terminal-wasm", "Build the embeddable terminal WASM package asset");
     terminal_wasm_step.dependOn(&terminal_wasm_install.step);
     const render_frame_contract_cmd = b.addSystemCommand(&.{ "node", "test/render-frame-contract.mjs" });
+    const frame_presenter_contract_cmd = b.addSystemCommand(&.{ "node", "test/frame-presenter-contract.mjs" });
+    render_frame_contract_cmd.step.dependOn(&frame_presenter_contract_cmd.step);
     render_frame_contract_cmd.step.dependOn(&terminal_wasm_install.step);
     render_frame_contract_cmd.addArg(b.getInstallPath(.prefix, "wgpu-terminal/terminal.wasm"));
     const render_frame_contract_step = b.step("render-frame-test", "Check CPU frame and browser renderer ownership contracts");

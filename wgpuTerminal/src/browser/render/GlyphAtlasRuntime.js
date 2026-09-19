@@ -37,6 +37,7 @@ function apply(renderer, plan, nextMetrics, fontFamily) {
   renderer.atlas.fontFamily = fontFamily || renderer.atlas.fontFamily;
   renderer.glyphPartitions.commit(plan);
   if (candidate) renderer.glyphAtlasChanged?.();
+  if (plan.textureReset || plan.textureChanged) renderer.presenter?.invalidate();
   return plan;
 }
 

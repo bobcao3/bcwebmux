@@ -148,7 +148,7 @@ export function setGrainStrength(renderer, value) {
   if (!Number.isFinite(strength) || strength < 0 || strength > 32) throw new Error("invalid grain strength");
   if (strength === renderer.grainStrength) return;
   renderer.grainStrength = strength;
-  if (renderer.initialized && renderer.rows) renderer.draw();
+  if (renderer.initialized && renderer.rows) renderer.presenter?.present();
 }
 
 export function resize(renderer, widthValue, heightValue) {
@@ -190,7 +190,7 @@ export function resize(renderer, widthValue, heightValue) {
   renderer.offscreen = offscreen;
   renderer.offscreenView = offscreenView;
   oldOffscreen?.destroy();
-  if (renderer.rows) renderer.draw();
+  if (renderer.rows) renderer.presenter?.present();
 }
 
 export async function readPixels(renderer) {

@@ -4,9 +4,7 @@
 import { generateGrain, GRAIN_SIZE } from "../Grain.js";
 import { CELL_SIZE, STYLE_SIZE } from "../FrameSchema.js";
 
-import {
-  decodeCanvasRequestText,
-} from "../../../FramePacket.js";
+
 import {
   initializeWebGl,
   resizeWebGl,
@@ -15,13 +13,8 @@ import {
   disposeWebGl,
 } from "./WebGlTerminalResources.js";
 import {
-  registerTerminal,
-  resizeTerminalPartition,
-  releaseTerminal,
-  glyphPartition,
   reconfigureGlyphAtlas,
   setTextRenderer,
-  selectTerminal as selectTerminalGlyphAtlas,
 } from "../GlyphAtlasRuntime.js";
 import { WebGlGlyphAtlas } from "./WebGlGlyphAtlas.js";
 
@@ -146,21 +139,9 @@ export class WebGlTerminal {
       maxCells, Math.min(65536, maxCells + 1), STYLE_SIZE, CELL_SIZE);
   }
 
-  registerTerminal(terminal, visibleCells, preferredColumns) {
-    return registerTerminal(this, terminal, visibleCells, preferredColumns);
-  }
 
-  resizeTerminalPartition(terminal, visibleCells) {
-    return resizeTerminalPartition(this, terminal, visibleCells);
-  }
 
-  releaseTerminal(terminal) {
-    return releaseTerminal(this, terminal);
-  }
 
-  glyphPartition(terminal) {
-    return glyphPartition(this, terminal);
-  }
 
   reconfigureGlyphAtlas(metrics, textRenderer, fontFamily, activeVisibleSlots) {
     return reconfigureGlyphAtlas(this, metrics, textRenderer, fontFamily, activeVisibleSlots);
@@ -193,7 +174,7 @@ export class WebGlTerminal {
     if (!Number.isFinite(strength) || strength < 0 || strength > 32) throw new Error("invalid grain strength");
     if (strength === this.grainStrength) return;
     this.grainStrength = strength;
-    if (this.initialized && this.rows) this.draw();
+    if (this.initialized && this.rows) this.presenter?.present();
   }
 
   resize(width, height) {
@@ -221,7 +202,6 @@ export class WebGlTerminal {
     return plan;
   }
 
-  selectTerminal(terminal) { return selectTerminalGlyphAtlas(this, terminal); }
 
   setTextRenderer(textRenderer) {
     return setTextRenderer(this, textRenderer);
@@ -232,77 +212,23 @@ export class WebGlTerminal {
     return this.atlas.columns;
   }
 
-  submitPacket(terminal, parsed) {
-    if (!this.initialized || this.activeTerminal !== terminal) throw new Error("invalid renderer terminal");
-    this.glyphSlotsUsed = parsed.glyphSlotsUsed;
-    for (const key of ["cols", "rows", "cacheHits", "cacheMisses", "background", "foreground",
-      "cursorX", "cursorY", "cursorFlags", "cursorStyle"]) this[key] = parsed[key];
-    const metadata = this.submissionMetadata;
-    for (const key of ["cols", "rows", "viewportMode", "scrollTotal", "scrollOffset", "scrollLength"]) {
-      metadata[key] = parsed[key];
-    }
-    for (let index = 0; index < parsed.bitmapUploadsCount; index += 1) {
-      const offset = index * 16;
-      this.atlas.uploadBitmap(
-        parsed.bitmapUploads.getUint32(offset, true),
-        parsed.bitmapUploads.getUint32(offset + 4, true),
-        parsed.bitmapUploadPixels,
-        parsed.bitmapUploads.getUint32(offset + 8, true),
-        parsed.bitmapUploads.getUint32(offset + 12, true),
-      );
-    }
-    for (let index = 0; index < parsed.canvasRequestsCount; index += 1) {
-      const offset = index * 24;
-      this.atlas.setCanvasRun(
-        parsed.canvasRequests.getUint32(offset, true),
-        parsed.canvasRequests.getUint32(offset + 4, true),
-        parsed.canvasRequests.getUint32(offset + 8, true),
-        decodeCanvasRequestText(parsed, index),
-        parsed.canvasRequests.getUint32(offset + 20, true),
-      );
-    }
-    if (parsed.stylesCount > 0) {
-      const styles = parsed.styles;
-      uploadIntegerRecords(
-        this.gl,
-        this.styleTexture,
-        this.styleTextureWidth,
-        parsed.stylesFirst,
-        parsed.stylesCount,
-        3,
-        this.gl.RGB_INTEGER,
-        styles,
-      );
-    }
-    this.gl.bindBuffer(this.gl.ARRAY_BUFFER, this.cellBuffer);
-    for (let index = 0; index < parsed.dirtyRangesCount; index += 1) {
-      const offset = index * 8;
-      const firstRow = parsed.dirtyRanges.getUint32(offset, true);
-      const rowCount = parsed.dirtyRanges.getUint32(offset + 4, true);
-      const firstCell = firstRow * parsed.cols;
-      const cellCount = rowCount * parsed.cols;
-      const cellOffset = firstCell * this.cellSize;
-      this.gl.bufferSubData(
-        this.gl.ARRAY_BUFFER,
-        cellOffset,
-        parsed.cells.subarray(cellOffset, cellOffset + cellCount * this.cellSize),
-      );
-      uploadIntegerRecords(
-        this.gl,
-        this.selectionTexture,
-        this.selectionTextureWidth,
-        firstRow,
-        rowCount,
-        1,
-        this.gl.RED_INTEGER,
-        parsed.selections.subarray(firstRow, firstRow + rowCount),
-      );
-    }
-    this.drawnCellCount = parsed.frameCells;
-    return metadata;
+  uploadBitmap(...args) { this.atlas.uploadBitmap(...args); }
+
+  uploadStyles(first, styles) {
+    uploadIntegerRecords(this.gl, this.styleTexture, this.styleTextureWidth,
+      first, styles.length / 3, 3, this.gl.RGB_INTEGER, styles);
   }
 
-  draw() {
+  uploadCells(firstRow, rowCount, cells, selections) {
+    this.gl.bindBuffer(this.gl.ARRAY_BUFFER, this.cellBuffer);
+    this.gl.bufferSubData(this.gl.ARRAY_BUFFER, firstRow * this.cols * this.cellSize, cells);
+    uploadIntegerRecords(this.gl, this.selectionTexture, this.selectionTextureWidth,
+      firstRow, rowCount, 1, this.gl.RED_INTEGER, selections);
+  }
+
+  uploadCanvasRun(...args) { this.atlas.setCanvasRun(...args); }
+
+  presentCurrentState() {
     const gl = this.gl;
     if (!this.initialized || !this.rows || this.error || gl.isContextLost()) return;
     const startedAt = performance.now();
@@ -369,7 +295,7 @@ export class WebGlTerminal {
     } else if (animated && !this.blinkTimer) {
       this.blinkTimer = setTimeout(() => {
         this.blinkTimer = 0;
-        this.draw();
+        this.presenter?.present();
         this.updateBlinkTimer();
       }, 500);
     }

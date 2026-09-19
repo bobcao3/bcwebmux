@@ -1,3 +1,4 @@
+import { FramePresenter } from "../../wgpuTerminal/src/browser/render/FramePresenter.js";
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Cheng Cao
 
@@ -174,23 +175,22 @@ let presentations = 0;
 host._renderer = {
   ...expectations, initialized: true, error: null, atlasColumns: 16,
   activeTerminal: cores[0], submissionMetadata: {},
-  glyphPartition: core => partitions.get(core),
+  glyphPartitions: partitions,
   selectTerminal(core) { this.activeTerminal = core; },
   resizeTerminalPartition() {}, ensureFrameCapacity() { return false; },
-  submitPacket(core, packet) {
-    assert.equal(this.activeTerminal, core);
-    assert.ok(core._wasm.term_frame_token() > 0);
-    if (core === failCore) throw new Error("upload rejected");
-    for (const key of ["cols", "rows", "viewportMode", "scrollTotal", "scrollOffset", "scrollLength"]) {
-      this.submissionMetadata[key] = packet[key];
-    }
+  uploadBitmap() {}, uploadCanvasRun() {}, uploadCells() {},
+  uploadStyles() {
+    assert.ok(this.activeTerminal._wasm.term_frame_token() > 0);
+    if (this.activeTerminal === failCore) throw new Error("upload rejected");
   },
-  draw() {
+  presentCurrentState() {
     for (const core of cores) assert.equal(core._wasm.term_frame_token(), 0);
     presentations++;
   },
   updateBlinkTimer() {},
 };
+host._presenter = new FramePresenter(host, host._renderer);
+host._presenter.resizeTerminalPartition = () => {};
 host._viewportController = {
   latestPixelViewport: {}, cancelScrollGesture() {}, submitFrameMetadata() {},
   physicalLayout: () => ({ cols: 8, rows: 3, cellWidth: 8, cellHeight: 16, fontSize: 15 }),

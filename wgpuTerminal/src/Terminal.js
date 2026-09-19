@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Cheng Cao
 
+import { FramePresenter } from "./browser/render/FramePresenter.js";
 import { TerminalCore } from "./TerminalCore.js";
 import { FRAME_SIZE, SUBMISSION_SIZE } from "./browser/render/FrameSchema.js";
 import {
@@ -81,6 +82,7 @@ export class Terminal {
     this._core = null;
     this._renderingCore = null;
     this._renderer = null;
+    this._presenter = null;
     this._view = null;
     this._viewportController = null;
     this._inputController = null;
@@ -229,6 +231,7 @@ export class Terminal {
       this.options.renderBackend,
       this.options.glyphCacheMaxBytes,
     );
+    this._presenter = new FramePresenter(this, this._renderer);
     this._renderer.setPhysicalCellMetrics(
       initialLayout.cellWidth,
       initialLayout.cellHeight,
@@ -252,7 +255,7 @@ export class Terminal {
       await this._renderer.initialize(initialLayout.cols * initialLayout.rows);
       await core.open({ cols: initialLayout.cols, rows: initialLayout.rows, host: this });
       this._core = core;
-      this._renderer.selectTerminal(core);
+      this._presenter.selectTerminal(core);
     } catch (error) {
       this._releaseTerminal(core);
       this._cores.delete(core);
@@ -346,7 +349,7 @@ export class Terminal {
     if (!Number.isSafeInteger(visibleCells) || visibleCells <= 0 || visibleCells > TERMINAL_CELL_PROTOCOL_LIMIT) {
       throw new RangeError("terminal viewport cell count is invalid");
     }
-    const plan = this._renderer.registerTerminal(core, visibleCells, layout.cols);
+    const plan = this._presenter.registerTerminal(core, visibleCells, layout.cols);
     this._ensureFrameCapacity(visibleCells);
     this._installGlyphPartitions();
     return plan;
@@ -356,13 +359,14 @@ export class Terminal {
     if (!Number.isSafeInteger(visibleCells) || visibleCells <= 0 || visibleCells > TERMINAL_CELL_PROTOCOL_LIMIT) {
       throw new RangeError("terminal viewport cell count is invalid");
     }
-    this._renderer.resizeTerminalPartition(core, visibleCells);
+    this._presenter.resizeTerminalPartition(core, visibleCells);
     this._ensureFrameCapacity(visibleCells);
     this._installGlyphPartitions();
   }
 
   _ensureFrameCapacity(visibleCells) {
     if (!this._renderer.ensureFrameCapacity(visibleCells)) return false;
+    this._presenter.invalidate();
     for (const core of this._cores) {
       if (core.ready) core.invalidateFrame();
     }
@@ -371,7 +375,7 @@ export class Terminal {
 
   _installGlyphPartition(core) {
     if (!core.ready) return 1;
-    const partition = this._renderer?.glyphPartition(core);
+    const partition = this._presenter?.glyphPartition(core);
     if (!partition) return 0;
     return core.setGlyphPartition(partition, this._renderer.atlasColumns);
   }
@@ -388,8 +392,8 @@ export class Terminal {
   }
 
   _releaseTerminal(core) {
-    if (this._renderer?.glyphPartition(core)) {
-      this._renderer.releaseTerminal(core);
+    if (this._presenter?.glyphPartition(core)) {
+      this._presenter.releaseTerminal(core);
       this._installGlyphPartitions();
     }
   }
@@ -423,38 +427,7 @@ export class Terminal {
 
   _consumeCoreFrame(core) {
     if (!this._isCoreActive(core)) return 0;
-    const renderer = this._renderer;
-    let fullFrame = false;
-    let consumed = false;
-    try {
-      const result = core.consumeFrame((packet) => {
-        fullFrame = packet.fullFrame;
-        if (renderer.error && !fullFrame) throw new Error("renderer requires a full replacement frame");
-        renderer.submitPacket(core, packet);
-        this._textView?.update(packet);
-      }, {
-        cellSize: renderer.cellSize, styleSize: renderer.styleSize,
-        frameSize: FRAME_SIZE, packetSize: SUBMISSION_SIZE,
-        maxCells: renderer.maxCells, maxStyles: renderer.maxStyles,
-        partition: renderer.glyphPartition(core),
-        atlas: { columns: renderer.atlas.columns, tileWidth: renderer.atlas.tileWidth, tileHeight: renderer.atlas.tileHeight },
-      });
-      if (result === 1) {
-        consumed = true;
-        if (fullFrame) renderer.error = null;
-        this._submitFrameMetadata(renderer.submissionMetadata);
-        this._viewportController.submitFrameMetadata(renderer.submissionMetadata);
-        renderer.draw();
-        renderer.updateBlinkTimer();
-      }
-      return result;
-    } catch (error) {
-      if (consumed) core.invalidateFrame();
-      console.error(error);
-      renderer.error = error.message;
-      this._errorEmitter.emit(error);
-      throw error;
-    }
+    return this._presenter.consumeFrame(core);
   }
 
   _coreTitleChanged(core, title) {
@@ -938,6 +911,7 @@ export class Terminal {
     releaseRenderBackend(this, this._renderer);
     this._view?.dispose();
     this._renderer = null;
+    this._presenter = null;
     this._view = null;
     this._opened = false;
   }

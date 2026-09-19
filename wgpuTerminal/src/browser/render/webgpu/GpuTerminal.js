@@ -12,17 +12,10 @@ import {
 } from "./GpuTerminalResources.js";
 import { GlyphAtlas } from "./GlyphAtlas.js";
 import {
-  registerTerminal as registerTerminalGlyphAtlas,
-  resizeTerminalPartition as resizeTerminalPartitionGlyphAtlas,
-  releaseTerminal as releaseTerminalGlyphAtlas,
-  glyphPartition as glyphPartitionGlyphAtlas,
   reconfigureGlyphAtlas as reconfigureGlyphAtlasGlyphAtlas,
   setTextRenderer as setTextRendererGlyphAtlas,
-  selectTerminal as selectTerminalGlyphAtlas,
 } from "../GlyphAtlasRuntime.js";
-import {
-  decodeCanvasRequestText,
-} from "../../../FramePacket.js";
+
 
 import { generateGrain, GRAIN_SIZE } from "../Grain.js";
 import { CELL_SIZE, STYLE_SIZE } from "../FrameSchema.js";
@@ -169,15 +162,11 @@ export class GpuTerminal {
     }
   }
 
-  registerTerminal(terminal, visibleCells, preferredColumns) { return registerTerminalGlyphAtlas(this, terminal, visibleCells, preferredColumns); }
 
   ensureFrameCapacity(cellCapacity) { return ensureFrameCapacityResources(this, cellCapacity); }
 
-  resizeTerminalPartition(terminal, visibleCells) { return resizeTerminalPartitionGlyphAtlas(this, terminal, visibleCells); }
 
-  releaseTerminal(terminal) { return releaseTerminalGlyphAtlas(this, terminal); }
 
-  glyphPartition(terminal) { return glyphPartitionGlyphAtlas(this, terminal); }
 
   reconfigureGlyphAtlas(metrics, textRenderer, fontFamily, activeVisibleSlots) { return reconfigureGlyphAtlasGlyphAtlas(this, metrics, textRenderer, fontFamily, activeVisibleSlots); }
 
@@ -265,7 +254,6 @@ export class GpuTerminal {
     return plan;
   }
 
-  selectTerminal(terminal) { return selectTerminalGlyphAtlas(this, terminal); }
 
   setTextRenderer(textRenderer) { return setTextRendererGlyphAtlas(this, textRenderer); }
 
@@ -274,62 +262,32 @@ export class GpuTerminal {
     return this.atlas.columns;
   }
 
-  submitPacket(terminal, parsed) {
-    if (!this.initialized || this.activeTerminal !== terminal) throw new Error("invalid renderer terminal");
-    this.glyphSlotsUsed = parsed.glyphSlotsUsed;
-    for (const key of ["cols", "rows", "cacheHits", "cacheMisses", "background", "foreground",
-      "cursorX", "cursorY", "cursorFlags", "cursorStyle"]) this[key] = parsed[key];
-    const metadata = this.submissionMetadata;
-    for (const key of ["cols", "rows", "viewportMode", "scrollTotal", "scrollOffset", "scrollLength"]) {
-      metadata[key] = parsed[key];
-    }
+  uploadBitmap(firstSlot, slotCount, pixels, pixelOffset, bytesPerRow) {
     this.flushAtlasGrowthCopies();
-    for (let index = 0; index < parsed.bitmapUploadsCount; index += 1) {
-      const offset = index * 16;
-      const firstSlot = parsed.bitmapUploads.getUint32(offset, true);
-      const slotCount = parsed.bitmapUploads.getUint32(offset + 4, true);
-      const pixelOffset = parsed.bitmapUploads.getUint32(offset + 8, true);
-      const bytesPerRow = parsed.bitmapUploads.getUint32(offset + 12, true);
-      this.device.queue.writeTexture(
-        {
-          texture: this.atlas.texture,
-          origin: [
-            (firstSlot % this.atlas.columns) * this.atlas.tileWidth,
-            Math.floor(firstSlot / this.atlas.columns) * this.atlas.tileHeight,
-            0,
-          ],
-        },
-        parsed.bitmapUploadPixels,
-        { offset: pixelOffset, bytesPerRow, rowsPerImage: this.atlas.tileHeight },
-        [slotCount * this.atlas.tileWidth, this.atlas.tileHeight, 1],
-      );
-      this.atlas.nextSlot = Math.max(this.atlas.nextSlot, firstSlot + slotCount);
-    }
-    for (let index = 0; index < parsed.canvasRequestsCount; index += 1) {
-      const offset = index * 24;
-      const slot = parsed.canvasRequests.getUint32(offset, true);
-      const slotCount = parsed.canvasRequests.getUint32(offset + 4, true);
-      const spanCells = parsed.canvasRequests.getUint32(offset + 8, true);
-      const flags = parsed.canvasRequests.getUint32(offset + 20, true);
-      this.atlas.setCanvasRun(
-        slot,
-        slotCount,
-        spanCells,
-        decodeCanvasRequestText(parsed, index),
-        flags,
-      );
-    }
-    if (parsed.frameCells !== this.drawnCellCount) {
-      this.drawnCellCount = parsed.frameCells;
-      this.indirectData[1] = parsed.frameCells;
-      this.indirectDirty = true;
-    }
-    this.draw(parsed);
-    return metadata;
+    this.device.queue.writeTexture({ texture: this.atlas.texture, origin: [
+      (firstSlot % this.atlas.columns) * this.atlas.tileWidth,
+      Math.floor(firstSlot / this.atlas.columns) * this.atlas.tileHeight, 0,
+    ] }, pixels, { offset: pixelOffset, bytesPerRow, rowsPerImage: this.atlas.tileHeight },
+    [slotCount * this.atlas.tileWidth, this.atlas.tileHeight, 1]);
+    this.atlas.nextSlot = Math.max(this.atlas.nextSlot, firstSlot + slotCount);
   }
 
-  draw(packet = null) {
-    if (this.disposed || !this.offscreen || !this.rows || (!packet && this.error)) return;
+  uploadStyles(first, styles, bytes) {
+    if (bytes.byteLength) this.device.queue.writeBuffer(this.styleBuffer, first * this.styleSize, bytes);
+  }
+
+  uploadCells(firstRow, rowCount, cells, selections) {
+    this.device.queue.writeBuffer(this.cellBuffer, firstRow * this.cols * this.cellSize, cells);
+    this.device.queue.writeBuffer(this.selectionBuffer, firstRow * 4, selections);
+  }
+
+  uploadCanvasRun(...args) {
+    this.flushAtlasGrowthCopies();
+    this.atlas.setCanvasRun(...args);
+  }
+
+  presentCurrentState() {
+    if (this.disposed || !this.offscreen || !this.rows || this.error) return;
     const drawStartedAt = performance.now();
     this.uniformU32[0] = this.cols;
     this.uniformU32[1] = this.rows;
@@ -351,47 +309,10 @@ export class GpuTerminal {
     const indirectOffset = this.indirectDirty ? UNIFORM_BUFFER_SIZE : null;
     let stagingSize = UNIFORM_BUFFER_SIZE;
     if (indirectOffset !== null) stagingSize += 16;
-    let dirtyRangesView = null;
-    let styleStagingOffset = 0;
-    let rangesStagingOffset = 0;
-    if (packet) {
-      dirtyRangesView = packet.dirtyRanges;
-      styleStagingOffset = Math.ceil(stagingSize / 4) * 4;
-      stagingSize = styleStagingOffset + packet.stylesCount * this.styleSize;
-      rangesStagingOffset = stagingSize;
-      for (let index = 0; index < packet.dirtyRangesCount; index += 1) {
-        const firstRow = dirtyRangesView.getUint32(index * 8, true);
-        const rowCount = dirtyRangesView.getUint32(index * 8 + 4, true);
-        const cellLength = rowCount * this.cols * this.cellSize;
-        const selectionLength = rowCount * 4;
-        rangesStagingOffset = Math.ceil(rangesStagingOffset / 4) * 4 + cellLength;
-        rangesStagingOffset = Math.ceil(rangesStagingOffset / 4) * 4 + selectionLength;
-        void firstRow;
-      }
-      stagingSize = rangesStagingOffset;
-    }
     this.ensureFrameUploadCapacity(stagingSize);
     const staging = this.frameUploadBytes;
     staging.set(new Uint8Array(this.uniformData), 0);
     if (indirectOffset !== null) staging.set(new Uint8Array(this.indirectData.buffer), indirectOffset);
-    if (packet) {
-      if (packet.stylesCount > 0) {
-        staging.set(packet.styleBytes, styleStagingOffset);
-      }
-      let rangeStagingOffset = rangesStagingOffset;
-      for (let index = packet.dirtyRangesCount - 1; index >= 0; index -= 1) {
-        const firstRow = dirtyRangesView.getUint32(index * 8, true);
-        const rowCount = dirtyRangesView.getUint32(index * 8 + 4, true);
-        const cellOffset = firstRow * this.cols * this.cellSize;
-        const cellLength = rowCount * this.cols * this.cellSize;
-        const selectionOffset = firstRow * 4;
-        const selectionLength = rowCount * 4;
-        rangeStagingOffset -= selectionLength;
-        staging.set(packet.selectionBytes.subarray(selectionOffset, selectionOffset + selectionLength), rangeStagingOffset);
-        rangeStagingOffset -= cellLength;
-        staging.set(packet.cells.subarray(cellOffset, cellOffset + cellLength), rangeStagingOffset);
-      }
-    }
     const queue = this.device.queue;
     queue.writeBuffer(this.frameUploadBuffer, 0, this.frameUploadData, 0, stagingSize);
     const encoder = this.device.createCommandEncoder();
@@ -407,36 +328,6 @@ export class GpuTerminal {
         { texture: copy.destination },
         [copy.width, copy.height, 1],
       );
-    }
-    if (packet) {
-      if (packet.stylesCount > 0) {
-        const length = packet.stylesCount * this.styleSize;
-        encoder.copyBufferToBuffer(
-          this.frameUploadBuffer,
-          styleStagingOffset,
-          this.styleBuffer,
-          packet.stylesFirst * this.styleSize,
-          length,
-        );
-      }
-      let rangeStagingOffset = rangesStagingOffset;
-      for (let index = packet.dirtyRangesCount - 1; index >= 0; index -= 1) {
-        const firstRow = dirtyRangesView.getUint32(index * 8, true);
-        const rowCount = dirtyRangesView.getUint32(index * 8 + 4, true);
-        const cellOffset = firstRow * this.cols * this.cellSize;
-        const cellLength = rowCount * this.cols * this.cellSize;
-        const selectionOffset = firstRow * 4;
-        const selectionLength = rowCount * 4;
-        rangeStagingOffset -= selectionLength;
-        encoder.copyBufferToBuffer(this.frameUploadBuffer, rangeStagingOffset, this.selectionBuffer, selectionOffset, selectionLength);
-        rangeStagingOffset -= cellLength;
-        encoder.copyBufferToBuffer(this.frameUploadBuffer, rangeStagingOffset, this.cellBuffer, cellOffset, cellLength);
-      }
-    }
-    if (packet) {
-      queue.submit([encoder.finish()]);
-      for (const copy of textureCopies) copy.source.destroy();
-      return;
     }
     const r = (this.background >> 16 & 255) / 255;
     const g = (this.background >> 8 & 255) / 255;
@@ -498,7 +389,7 @@ export class GpuTerminal {
     if (animated && !this.blinkTimer) {
       this.blinkTimer = setTimeout(() => {
         this.blinkTimer = 0;
-        this.draw();
+        this.presenter?.present();
         this.updateBlinkTimer();
       }, 500);
     }

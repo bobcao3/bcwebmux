@@ -353,12 +353,12 @@ export function resizeWebGl(renderer, widthValue, heightValue) {
   renderer.canvas.width = width;
   renderer.canvas.height = height;
   renderer.gl.viewport(0, 0, width, height);
-  if (renderer.rows) renderer.draw();
+  if (renderer.rows) renderer.presenter?.present();
 }
 
 export function readWebGlPixels(renderer) {
   if (!renderer.initialized) throw new Error("GPU terminal is not initialized");
-  renderer.draw();
+  renderer.presenter?.present();
   const gl = renderer.gl;
   const width = renderer.canvas.width;
   const height = renderer.canvas.height;

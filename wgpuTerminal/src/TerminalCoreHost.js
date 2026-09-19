@@ -64,7 +64,7 @@ export function attachCore(host, core) {
     host._prepareTerminalFrame(core, host.options.canonicalGeometry
       ? Math.max(layout.cols * layout.rows, core.cols * core.rows)
       : layout.cols * layout.rows);
-    host._renderer.selectTerminal(core);
+    host._presenter.selectTerminal(core);
     core.setRenderer(host.options.renderer);
     core.setFont(host.options.font);
     core.invalidateForAttach();
@@ -79,7 +79,7 @@ export function attachCore(host, core) {
     host._renderingCore = previousCore;
     host._core = previousCore;
     try {
-      host._renderer.selectTerminal(previousCore);
+      host._presenter.selectTerminal(previousCore);
       previousCore.setRenderer(host.options.renderer);
       previousCore.setFont(host.options.font);
       previousCore.invalidateForAttach();
