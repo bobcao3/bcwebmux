@@ -111,9 +111,10 @@ Rebuild after changing application assets or WASM sources. For terminal-only bui
 
 ## Source areas
 
-- [web/](web/): application UI and session/reconnect behavior; see [connection lifecycle](docs/connection-lifecycle.md).
+- [web/](web/): application UI and session/reconnect behavior; see [connection lifecycle](../docs/connection-lifecycle.md).
 - [go/](go/): HTTP/TLS, WebSockets, and server configuration.
 - [src/](src/): native sessions, persistence, and PTYs. `src/server.zig` is the legacy Zig server, not the default Go frontend.
 - [build.zig](build.zig) and [test/](test/): build orchestration and application/reusable-terminal tests. Go and Zig tests also live alongside their sources.
 
 See the [repository overview](../README.md) for the shared terminal components.
+Architecture and design documents live in the repository-root [docs/](../docs/README.md).

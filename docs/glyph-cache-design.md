@@ -1,4 +1,6 @@
-# Design requirements
+# Glyph cache design
+
+## Requirements
 
 1. Each glyph slot on the cache represents exactly 1 on-screen cell.
 2. Safety ceilings should be derived from hardware capabilities + settings + clamped to a absolute max, shoving 32K safety ceiling onto devices that will never display this much is garbage.

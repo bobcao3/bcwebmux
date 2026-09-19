@@ -108,7 +108,8 @@ For server-authoritative session transports, set `canonicalGeometry: true`, send
 
 - [src/](src/): public API, WASM hosting, browser input, selection, scrolling, and GPU rendering.
 - [index.d.ts](index.d.ts): public API types.
-- [../common/terminal/](../common/terminal/): low-level WASM engine; see the [glyph-cache design](../docs/glyph_cache_design.md).
+- [../common/terminal/](../common/terminal/): low-level WASM engine; see the [glyph-cache design](../docs/glyph-cache-design.md).
 - [../bcwebmux/test/](../bcwebmux/test/): browser and contract tests shared with the application. See the [application README](../bcwebmux/README.md#develop) for test commands.
 
 Rebuild WASM assets after changing the low-level engine. See the [repository overview](../README.md) for component boundaries.
+Architecture and design documents live in the repository-root [docs/](../docs/README.md).

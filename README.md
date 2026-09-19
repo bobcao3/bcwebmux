@@ -7,6 +7,9 @@ A fast browser terminal built with Ghostty's terminal engine, WebAssembly with W
 - [`bcwebmux/README.md`](bcwebmux/README.md) covers running, configuring, and developing the complete application.
 - [`wgpuTerminal/README.md`](wgpuTerminal/README.md) covers building and embedding the standalone terminal.
 
+Architecture, behavior, and design documents live in the repository-root
+[`docs/`](docs/README.md). Component READMEs stay beside their code.
+
 ## What lives where?
 
 This repository contains both a **complete remote-terminal application** and the
@@ -30,11 +33,11 @@ and [`index.d.ts`](wgpuTerminal/index.d.ts) for the public API.
 
 ## Where do I make a change?
 
-- Application UI and session/reconnect behavior: [`bcwebmux/web/`](bcwebmux/web/); see the [connection lifecycle](bcwebmux/docs/connection-lifecycle.md) documentation.
+- Application UI and session/reconnect behavior: [`bcwebmux/web/`](bcwebmux/web/); see the [connection lifecycle](docs/connection-lifecycle.md) documentation.
 - HTTP/TLS, WebSockets, and server configuration: [`bcwebmux/go/`](bcwebmux/go/).
 - Native sessions, persistence, and PTYs: [`bcwebmux/src/`](bcwebmux/src/).
 - Embeddable API, browser input, selection, scrolling, and GPU rendering: [`wgpuTerminal/src/`](wgpuTerminal/src/); API types are in [`index.d.ts`](wgpuTerminal/index.d.ts).
-- WASM terminal emulation, fonts, and render data: [`common/terminal/`](common/terminal/); see the [glyph-cache design](docs/glyph_cache_design.md).
+- WASM terminal emulation, fonts, and render data: [`common/terminal/`](common/terminal/); see the [glyph-cache design](docs/glyph-cache-design.md).
 - Builds and tests: [`bcwebmux/build.zig`](bcwebmux/build.zig) and [`bcwebmux/test/`](bcwebmux/test/). Tests cover the application and reusable terminal; Go and Zig tests also live alongside their sources.
 
 Edit source directories, not generated `zig-out/`, `wgpuTerminal/dist/`,

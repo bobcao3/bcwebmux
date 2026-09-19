@@ -752,7 +752,7 @@ fn effectVersion(_: *Handler) []const u8 {
     return "bcwebmux 0.1.0";
 }
 
-fn effectWritePty(handler: *Handler, bytes: [:0]const u8) void {
+fn effectWritePty(handler: *Handler, bytes: []const u8) void {
     if (bytes.len == 0) return;
     const self: *Self = @fieldParentPtr("mirror_terminal", handler.terminal);
     self.connection.send(self.io, .input, bytes) catch {

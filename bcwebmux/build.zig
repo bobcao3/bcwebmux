@@ -319,6 +319,10 @@ pub fn build(b: *std.Build) void {
     wasm_logging_contract_cmd.step.dependOn(b.getInstallStep());
     wasm_logging_contract_cmd.addArg(b.getInstallPath(.prefix, "web/terminal.wasm"));
     wasm_size_contract_cmd.step.dependOn(&wasm_logging_contract_cmd.step);
+    const wasm_effects_contract_cmd = b.addSystemCommand(&.{ "node", "test/wasm-effects-contract.mjs" });
+    wasm_effects_contract_cmd.step.dependOn(b.getInstallStep());
+    wasm_effects_contract_cmd.addArg(b.getInstallPath(.prefix, "web/terminal.wasm"));
+    wasm_size_contract_cmd.step.dependOn(&wasm_effects_contract_cmd.step);
     const session_ui_e2e_cmd = b.addSystemCommand(&.{ "timeout", "120s", "node", "test/session-ui-e2e.mjs" });
     session_ui_e2e_cmd.step.dependOn(b.getInstallStep());
     session_ui_e2e_cmd.addArgs(&.{

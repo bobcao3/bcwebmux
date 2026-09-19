@@ -46,7 +46,6 @@ extern "host" fn clipboard_write(location: i32, ptr: [*]const u8, len: usize) i3
 const ClipboardWriteFn = @typeInfo(@typeInfo(@FieldType(Handler.Effects, "clipboard_write")).optional.child).pointer.child;
 const ClipboardWriteInfo = @typeInfo(ClipboardWriteFn).@"fn";
 const ClipboardWrite = ClipboardWriteInfo.params[1].type.?;
-const ClipboardWriteResult = ClipboardWriteInfo.return_type.?;
 
 pub fn bootstrap(self: *Self) void {
     self.terminal = null;
@@ -157,7 +156,7 @@ pub fn term_apply_theme(self: *Self) i32 {
     for (0..16) |i| {
         palette[i] = packedRgb(self.theme_staging[i + 2]);
     }
-    value.colors.palette.changeDefault(palette);
+    value.colors.palette.changeDefault(alloc, palette) catch return 0;
     value.colors.background.default = packedRgb(self.theme_staging[0]);
     value.colors.foreground.default = packedRgb(self.theme_staging[1]);
     value.flags.dirty.palette = true;
@@ -756,7 +755,7 @@ fn owner(handler: *Handler) *Self {
     return @alignCast(@fieldParentPtr("terminal", terminal_ptr));
 }
 
-fn effectWritePty(handler: *Handler, data: [:0]const u8) void {
+fn effectWritePty(handler: *Handler, data: []const u8) void {
     if (owner(handler).replay_mode) return;
     if (data.len != 0) _ = terminal_reply(data.ptr, data.len);
 }
@@ -781,28 +780,27 @@ fn effectDesktopNotification(handler: *Handler, notification: ghostty.TerminalSt
     );
 }
 
-fn effectClipboardWrite(handler: *Handler, write: ClipboardWrite) ClipboardWriteResult {
-    if (owner(handler).replay_mode) return .unsupported;
-    if (write.location != .standard) return .unsupported;
+fn effectClipboardWrite(handler: *Handler, write: ClipboardWrite) void {
+    if (owner(handler).replay_mode) return write.reply(.unsupported);
+    if (write.location != .standard) return write.reply(.unsupported);
 
     var data: []const u8 = &.{};
     if (write.contents.len != 0) {
-        if (write.contents.len != 1) return .unsupported;
+        if (write.contents.len != 1) return write.reply(.unsupported);
         const content = write.contents[0];
-        if (!std.mem.eql(u8, content.mime, "text/plain")) return .unsupported;
-        if (!std.unicode.utf8ValidateSlice(content.data)) return .invalid_data;
+        if (!std.mem.eql(u8, content.mime, "text/plain")) return write.reply(.unsupported);
+        if (!std.unicode.utf8ValidateSlice(content.data)) return write.reply(.invalid_data);
         data = content.data;
     }
 
-    return switch (clipboard_write(@intCast(@intFromEnum(write.location)), data.ptr, data.len)) {
-        0 => @enumFromInt(0),
-        1 => @enumFromInt(1),
-        2 => @enumFromInt(2),
-        3 => @enumFromInt(3),
-        4 => @enumFromInt(4),
-        5 => @enumFromInt(5),
+    write.reply(switch (clipboard_write(@intCast(@intFromEnum(write.location)), data.ptr, data.len)) {
+        0 => .{ .success = .{} },
+        1 => .denied,
+        2 => .unsupported,
+        3 => .busy,
+        4 => .invalid_data,
         else => .io_error,
-    };
+    });
 }
 
 fn effectSize(handler: *Handler) ?ghostty.size_report.Size {

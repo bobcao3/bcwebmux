@@ -8,8 +8,8 @@
     .minimum_zig_version = "0.16.0",
     .dependencies = .{
         .ghostty = .{
-            .url = "https://github.com/ghostty-org/ghostty/archive/f4f9991d2c188b7c1f364ed9e44b92dd3356bb2a.tar.gz",
-            .hash = "ghostty-1.3.2-dev-5UdBC7jLRQVVx8327LFJbFgs_or0BSA6Jg84O6JGR6-u",
+            .url = "https://github.com/ghostty-org/ghostty/archive/b32f20f3e8d25bb925ec545c54498e93518e7ced.tar.gz",
+            .hash = "ghostty-1.3.2-dev-5UdBC464cgX-VbPn16E1sGGBjQa8BRM9Eprp1xin7uVV",
         },
         .kb = .{
             .url = "https://github.com/JimmyLefevre/kb/archive/b07373d.tar.gz",
