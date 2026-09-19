@@ -128,12 +128,12 @@ try {
   assert.match(bundledEmojiFont.headers.get("content-type") || "", /^font\/woff2(?:;|$)/);
   const bundledCsp = bundledIndex.headers.get("content-security-policy") || "";
   const cspDirective = name => bundledCsp.match(new RegExp(`(?:^|;)\\s*${name}\\s+([^;]+)`))?.[1].trim();
-  assert.equal(cspDirective("style-src"), "'self' https://fonts.googleapis.com");
-  assert.equal(cspDirective("font-src"), "'self' https://fonts.gstatic.com");
+  assert.equal(cspDirective("style-src"), "'self'");
+  assert.equal(cspDirective("font-src"), "'self'");
   assert.doesNotMatch(bundledCsp, /(?:^|;)\s*(?:style-src|font-src)\s+[^;]*https:(?:\s|;|$)/);
   const bundledIndexText = await bundledIndex.text();
   assert.match(bundledIndexText, /bcwebmux/);
-  assert.match(bundledIndexText, /https:\/\/fonts\.googleapis\.com\/css2\?family=Fira\+Code:wght@400;700/);
+  assert.doesNotMatch(bundledIndexText, /fonts\.googleapis\.com|Fira\+Code/);
   assert.equal(await bundledClient.text(), await readFile(path.join(webRoot, "client.js"), "utf8"));
   assert.equal(await bundledFzstd.text(), await readFile(path.join("..", "node_modules", "fzstd", "esm", "index.mjs"), "utf8"));
   assert.deepEqual(
@@ -421,55 +421,11 @@ try {
     }
     const fontFamilySelect = panels.FONT.querySelector('select[name="fontFamily"]');
     if (!fontFamilySelect) throw new Error("font family select is missing");
-    const firaOption = [...fontFamilySelect.options].find(option => option.value === "fira-code");
     const stbOption = [...rendererSelect.options].find(option => option.value === "kb-stb");
-    if (!firaOption || !stbOption) throw new Error("font family or kb-stb option is missing");
-    if (!/Canvas only/i.test(firaOption.textContent)) throw new Error("Fira Code option is not marked Canvas only");
-    const firaFacesLoaded = () => [400, 700].every(weight =>
-      [...document.fonts].some(face =>
-        face.family === "Fira Code" &&
-        face.style === "normal" &&
-        face.weight === String(weight) &&
-        face.status === "loaded",
-      ),
-    );
-    const firaReloads = window.bcwebmux.state.fontReloads;
-    fontFamilySelect.value = "fira-code";
-    fontFamilySelect.dispatchEvent(new Event("change", { bubbles: true }));
-    until = deadline(5000);
-    while (
-      performance.now() < until &&
-      (
-        window.bcwebmux.state.textRenderer !== "kb-canvas" ||
-        !firaFacesLoaded() ||
-        window.bcwebmux.state.fontReloads <= firaReloads
-      )
-    ) await sleep(20);
-    if (window.bcwebmux.state.textRenderer !== "kb-canvas") throw new Error("Fira Code did not select canvas renderer");
-    if (!firaFacesLoaded()) throw new Error("Fira Code normal 400 and 700 faces did not load");
-    if (rendererSelect.value !== "kb-canvas") throw new Error("Fira Code did not select kb-canvas");
-    if (!stbOption.disabled) throw new Error("kb-stb was not disabled for Fira Code");
-    if (window.bcwebmux.state.fontReloads <= firaReloads) throw new Error("Fira Code font reload was not observed");
-    if (!window.bcwebmux.state.fontFamily.includes("Fira Code")) throw new Error("Fira Code font family was not applied");
-    const jetbrainsReloads = window.bcwebmux.state.fontReloads;
-    fontFamilySelect.value = "jetbrains-mono";
-    fontFamilySelect.dispatchEvent(new Event("change", { bubbles: true }));
-    if (stbOption.disabled) throw new Error("kb-stb did not re-enable for JetBrains Mono");
-    rendererSelect.value = "kb-stb";
-    rendererSelect.dispatchEvent(new Event("change", { bubbles: true }));
-    until = deadline(2500);
-    while (
-      (
-        window.bcwebmux.state.textRenderer !== "kb-stb" ||
-        window.bcwebmux.state.fontReloads <= jetbrainsReloads
-      ) &&
-      performance.now() < until
-    ) await sleep(20);
-    if (window.bcwebmux.state.textRenderer !== "kb-stb") throw new Error("kb-stb renderer was not restored");
-    if (window.bcwebmux.state.fontReloads <= jetbrainsReloads) throw new Error("JetBrains Mono font reload was not observed");
-    if (!window.bcwebmux.state.fontFamily.includes("JetBrains Mono Nerd Font")) {
-      throw new Error("JetBrains Mono Nerd Font was not applied");
+    if ([...fontFamilySelect.options].some(option => option.value === "fira-code")) {
+      throw new Error("browser-only font option must not be offered");
     }
+    if (!stbOption || stbOption.disabled) throw new Error("kb-stb option is missing or disabled");
     const fontFallbacks = panels.FONT.querySelector('textarea[name="fontFallbacks"]');
     if (!fontFallbacks) throw new Error("font fallbacks textarea is missing");
     const fallbackFamilies = fontFallbacks.value.split(/\\r?\\n/).map(family => family.trim());

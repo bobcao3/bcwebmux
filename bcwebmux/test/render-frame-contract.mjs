@@ -34,16 +34,15 @@ const expectations = {
   maxCells: 256, maxStyles: 257,
   atlas: { columns: 16, tileWidth: 8, tileHeight: 16 },
 };
+const fontFaces = await Promise.all([
+  "JetBrainsMonoNerdFontMono-Regular.ttf",
+  "JetBrainsMonoNerdFontMono-Bold.ttf",
+  "JetBrainsMonoNerdFontMono-Italic.ttf",
+  "JetBrainsMonoNerdFontMono-BoldItalic.ttf",
+].map(name => readFile(new URL(`fonts/${name}`, wasmUrl))));
 for (const renderer of ["kb-stb", "kb-canvas"]) {
   const core = new TerminalCore({ renderer });
-  if (renderer === "kb-stb") {
-    core._fontFaces = await Promise.all([
-      "JetBrainsMonoNerdFontMono-Regular.ttf",
-      "JetBrainsMonoNerdFontMono-Bold.ttf",
-      "JetBrainsMonoNerdFontMono-Italic.ttf",
-      "JetBrainsMonoNerdFontMono-BoldItalic.ttf",
-    ].map(name => readFile(new URL(`fonts/${name}`, wasmUrl))));
-  }
+  core._fontFaces = fontFaces;
   const imports = core._createWasmImports();
   assert.ok(!("gpu_init" in imports.host));
   assert.ok(!("gpu_text_backend" in imports.host));
@@ -110,13 +109,29 @@ for (const renderer of ["kb-stb", "kb-canvas"]) {
     { configGeneration: 999 }, { partition: { baseSlot: 0, slotCapacity: 256, generation: 2 } }]) {
     assert.throws(() => parseFramePacket(e.memory.buffer, ptr, { ...identity, ...override }));
   }
-  for (const [offset, invalid] of [[24, 0xffffffff], [28, 0xffffffff], [36, 0xffffffff],
-    [108, 2], [128, 2], [136, 1], [140, 4], [144, 1], [148, 4], [152, 1]]) {
+  for (const [offset, invalid] of [[12, 0], [24, 0xffffffff], [28, 0xffffffff], [36, 0xffffffff],
+    [80, 257], [84, 3], [88, 1048577], [108, 2], [128, 2], [136, 1], [140, 4], [144, 1], [148, 4], [152, 1]]) {
     const copy = e.memory.buffer.slice(0);
     new DataView(copy, ptr).setUint32(offset, invalid, true);
     assert.throws(() => parseFramePacket(copy, ptr, identity), `invalid header offset ${offset}`);
   }
   assert.equal(e.term_frame_prepare(), -2);
+  if (renderer === "kb-canvas") {
+    const header = new DataView(e.memory.buffer, ptr);
+    const requestsPtr = header.getUint32(76, true);
+    const pathsPtr = header.getUint32(84, true);
+    assert.ok(header.getUint32(88, true) > 0);
+    for (const [address, invalid, float] of [
+      [requestsPtr + 12, 1], [requestsPtr + 16, 32769], [requestsPtr + 20, 1],
+      [pathsPtr, 99], [pathsPtr, 1], [pathsPtr + 4, NaN, true],
+    ]) {
+      const copy = e.memory.buffer.slice(0);
+      const view = new DataView(copy);
+      if (float) view.setFloat32(address, invalid, true);
+      else view.setUint32(address, invalid, true);
+      assert.throws(() => parseFramePacket(copy, ptr, identity), /Canvas/);
+    }
+  }
   assert.equal(e.term_feed(0), 0);
   assert.equal(e.term_reserve(1), 0);
   assert.equal(e.term_set_renderer(0), 0);
@@ -149,12 +164,67 @@ for (const renderer of ["kb-stb", "kb-canvas"]) {
   core.dispose();
 }
 
+// Identical slot geometry and shared face metrics, independent of rasterizer/DPR.
+for (const dpr of [1, 2, 4]) {
+  const geometry = { ...expectations, atlas: { columns: 16, tileWidth: 8 * dpr, tileHeight: 16 * dpr } };
+  const results = [];
+  for (const renderer of ["kb-stb", "kb-canvas"]) {
+    const core = new TerminalCore({ renderer });
+    core._fontFaces = fontFaces;
+    core._wasm = (await WebAssembly.instantiate(module, core._createWasmImports())).exports;
+    core._wasm.term_bootstrap();
+    assert.equal(core._wasm.term_init(8, 3), 1);
+    Object.assign(core._state, { cols: 8, rows: 3 });
+    core.setRenderer(renderer);
+    core.setGlyphPartition({ baseSlot: 0, slotCapacity: 24, generation: 1 }, 16);
+    core.setRenderMetrics({ cellWidth: 8 * dpr, cellHeight: 16 * dpr, fontSize: 15 * dpr });
+    const captures = [];
+    for (const sample of ["=>e\u0301中", "\x1b[1m=>e\u0301中", "\x1b[3m=>e\u0301中", "\x1b[1;3m=>e\u0301中"]) {
+      core.write(`\x1b[0m\x1b[2J\x1b[H${sample}`);
+      core.consumeFrame(packet => {
+        captures.push({ cells: [...packet.cells], slots: packet.glyphSlotsUsed });
+        if (renderer === "kb-canvas") {
+          assert.equal(packet.bitmapUploadsCount, 0, "Canvas exports outlines, never STB pixels");
+          assert.ok(packet.canvasRequestsCount > 0);
+          const ops = Array.from({ length: packet.canvasPathsCount }, (_, i) => packet.canvasPaths.getUint32(i * 28, true));
+          assert.ok(ops.includes(2), "TrueType outline retains quadratic curves");
+          assert.ok(ops.includes(4), "contours are explicitly closed");
+          assert.equal(packet.canvasRequests.getUint32(4, true), 2, "ligature run keeps two slots");
+        } else {
+          assert.equal(packet.canvasRequestsCount, 0);
+          assert.equal(packet.canvasPathsCount, 0);
+          assert.ok(packet.bitmapUploadPixels.some(value => value > 0));
+        }
+      }, geometry);
+    }
+    results.push(captures);
+    core.reset();
+    core.write("abcdefghijklmnopqrstuvw");
+    core.consumeFrame(packet => assert.equal(packet.glyphSlotsUsed, 23), geometry);
+    core.write("\x1b[HZZZZZZZZ");
+    core.consumeFrame(packet => {
+      assert.equal(packet.cacheMisses, 1, "admission counts one distinct miss, not eight text heads");
+      assert.equal(packet.glyphSlotsUsed, 24);
+    }, geometry);
+    core.write("\x1b[HZZZZZZZZ");
+    core.consumeFrame(packet => {
+      assert.equal(packet.cacheMisses, 0, "dirty warm-cache rows cannot evict a full cache");
+      assert.equal(packet.glyphSlotsUsed, 24);
+      assert.equal(packet.canvasRequestsCount, 0);
+      assert.equal(packet.bitmapUploadsCount, 0);
+    }, geometry);
+    core.dispose();
+  }
+  assert.deepEqual(results[0], results[1], `shared layout slot geometry at DPR ${dpr}`);
+}
+
 // Real cores with a synchronous upload sink exercise attach/rollback without a GPU.
 const host = new Terminal({ renderer: "kb-canvas" });
 const partitions = new Map();
 const cores = [];
 for (const baseSlot of [0, 256]) {
   const core = new TerminalCore({ renderer: "kb-canvas" });
+  core._fontFaces = fontFaces;
   core._wasm = (await WebAssembly.instantiate(module, core._createWasmImports())).exports;
   core._wasm.term_bootstrap();
   assert.equal(core._wasm.term_init(8, 3), 1);
@@ -179,7 +249,7 @@ host._renderer = {
   glyphPartitions: partitions,
   selectTerminal(core) { this.activeTerminal = core; },
   resizeTerminalPartition() {}, ensureFrameCapacity() { return false; },
-  uploadBitmap() {}, uploadCanvasRun() {}, uploadCells() {},
+  uploadBitmap() {}, uploadCells() {},
   uploadStyles() {
     assert.ok(this.activeTerminal._wasm.term_frame_token() > 0);
     if (this.activeTerminal === failCore) throw new Error("upload rejected");
@@ -191,6 +261,7 @@ host._renderer = {
 
 };
 host._presenter = new FramePresenter(host, host._renderer);
+host._presenter.canvasRasterizer = { rasterize() {} };
 host._presenter.resizeTerminalPartition = () => {};
 host._viewportController = {
   latestPixelViewport: {}, cancelScrollGesture() {}, submitFrameMetadata() {},

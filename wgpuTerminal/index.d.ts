@@ -77,7 +77,8 @@ export interface TerminalFont {
   size: number;
   ligatures: boolean;
   fallbacks: readonly string[];
-  canvasOnly?: boolean;
+  /** Browser-only fonts are unsupported; both rasterizers use wasmFontUrls. */
+  canvasOnly?: false;
 }
 
 export interface TerminalDebugElements {
@@ -198,7 +199,8 @@ export interface FramePacket {
   readonly bitmapUploadPixels: Uint8Array;
   readonly canvasRequests: DataView;
   readonly canvasRequestsCount: number;
-  readonly canvasText: Uint8Array;
+  readonly canvasPaths: DataView;
+  readonly canvasPathsCount: number;
   readonly textRows: DataView;
   readonly textCells: DataView;
   readonly textBytes: Uint8Array;

@@ -227,7 +227,6 @@ export class WebGlTerminal {
       firstRow, rowCount, 1, this.gl.RED_INTEGER, selections);
   }
 
-  uploadCanvasRun(...args) { this.atlas.setCanvasRun(...args); }
 
   presentCurrentState(blinkOn = true) {
     const gl = this.gl;

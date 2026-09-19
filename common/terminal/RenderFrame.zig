@@ -42,7 +42,6 @@ styles: std.ArrayListUnmanaged(Style) = .empty,
 selections: std.ArrayListUnmanaged(u32) = .empty,
 dirty_ranges: std.ArrayListUnmanaged(DirtyRange) = .empty,
 row_has_blink: std.ArrayListUnmanaged(bool) = .empty,
-row_text_heads: std.ArrayListUnmanaged(u16) = .empty,
 render_row_dirty: std.ArrayListUnmanaged(bool) = .empty,
 style_cache: std.AutoHashMapUnmanaged(Style, u16) = .empty,
 style_count: usize = 0,
@@ -56,7 +55,7 @@ ordinary_glyph_cache: std.AutoHashMapUnmanaged(OrdinaryKey, u32) = .empty,
 bitmap_slot_count: u32 = 0,
 bitmap_cache_reset: bool = true,
 canvas_requests: std.ArrayListUnmanaged(CanvasRequest) = .empty,
-canvas_text: std.ArrayListUnmanaged(u8) = .empty,
+canvas_paths: std.ArrayListUnmanaged(FontEngine.PathCommand) = .empty,
 pub fn bootstrap(self: *Self) void {
     self.text_backend = .kb_stb;
     self.font_cell_width = 0;
@@ -74,7 +73,6 @@ pub fn bootstrap(self: *Self) void {
     self.selections = .empty;
     self.dirty_ranges = .empty;
     self.row_has_blink = .empty;
-    self.row_text_heads = .empty;
     self.render_row_dirty = .empty;
     self.style_cache = .empty;
     self.glyph_cache = .empty;
@@ -88,7 +86,7 @@ pub fn bootstrap(self: *Self) void {
     self.bitmap_slot_count = 0;
     self.bitmap_cache_reset = true;
     self.canvas_requests = .empty;
-    self.canvas_text = .empty;
+    self.canvas_paths = .empty;
     self.pending_text_hash = null;
     self.pending_cursor_x = null;
     self.pending_cursor_y = null;
@@ -108,13 +106,12 @@ pub fn deinit(self: *Self) void {
     self.selections.deinit(allocator);
     self.dirty_ranges.deinit(allocator);
     self.row_has_blink.deinit(allocator);
-    self.row_text_heads.deinit(allocator);
     self.render_row_dirty.deinit(allocator);
     self.style_cache.deinit(allocator);
     self.glyph_cache.deinit(allocator);
     self.ordinary_glyph_cache.deinit(allocator);
     self.canvas_requests.deinit(allocator);
-    self.canvas_text.deinit(allocator);
+    self.canvas_paths.deinit(allocator);
     self.bootstrap();
 }
 
@@ -161,9 +158,9 @@ const CanvasRequest = extern struct {
     first_slot: u32,
     slot_count: u32,
     span_cells: u32,
-    text_offset: u32,
-    text_len: u32,
-    flags: u32,
+    path_offset: u32,
+    path_count: u32,
+    reserved: u32,
 };
 
 pub const BitmapUpload = BitmapBatch.BitmapUpload;
@@ -177,7 +174,7 @@ pub const Submission = extern struct {
     magic: u32,
     version: u32,
     byte_size: u32,
-    reserved: u32,
+    path_command_size: u32,
     frame_offset: u32,
     frame_len: u32,
     cells_offset: u32,
@@ -195,8 +192,8 @@ pub const Submission = extern struct {
     bitmap_upload_pixels_len: u32,
     canvas_requests_offset: u32,
     canvas_requests_count: u32,
-    canvas_text_offset: u32,
-    canvas_text_len: u32,
+    canvas_paths_offset: u32,
+    canvas_paths_count: u32,
     text_rows_offset: u32,
     text_cells_offset: u32,
     text_text_offset: u32,
@@ -276,7 +273,6 @@ const PreparedRun = struct {
 
 const PreparedMiss = struct {
     input_count: usize,
-    text_len: usize,
 };
 
 fn prepareRunKey(self: *Self, raws: anytype, graphemes: anytype, y: usize, start: usize, cols: usize, cursor: anytype) !PreparedRun {
@@ -336,35 +332,21 @@ fn prepareRunKey(self: *Self, raws: anytype, graphemes: anytype, y: usize, start
     };
 }
 
-fn prepareRunMiss(self: *Self, raws: anytype, graphemes: anytype, start: usize, end: usize, write_inputs: bool, text_destination: ?[]u8) !PreparedMiss {
+fn prepareRunMiss(self: *Self, raws: anytype, graphemes: anytype, start: usize, end: usize) !PreparedMiss {
     var input_count: usize = 0;
-    var text_len: usize = 0;
-    var encoded: [4]u8 = undefined;
     for (start..end) |cell_x| {
         const run_raw = raws[cell_x];
         if (run_raw.wide == .spacer_tail) continue;
         if (input_count >= max_cached_codepoints) return error.RunTooLarge;
-        if (write_inputs) self.font_inputs[input_count] = .{ .codepoint = run_raw.codepoint(), .cell = @intCast(cell_x - start) };
+        self.font_inputs[input_count] = .{ .codepoint = run_raw.codepoint(), .cell = @intCast(cell_x - start) };
         input_count += 1;
-        if (text_destination) |destination| {
-            const len = std.unicode.utf8Encode(run_raw.codepoint(), &encoded) catch 0;
-            if (text_len > destination.len or len > destination.len - text_len) return error.CanvasBatchFull;
-            @memcpy(destination[text_len..][0..len], encoded[0..len]);
-            text_len += len;
-        }
         if (run_raw.hasGrapheme()) for (graphemes[cell_x]) |cp| {
             if (input_count >= max_cached_codepoints) return error.RunTooLarge;
-            if (write_inputs) self.font_inputs[input_count] = .{ .codepoint = cp, .cell = @intCast(cell_x - start) };
+            self.font_inputs[input_count] = .{ .codepoint = cp, .cell = @intCast(cell_x - start) };
             input_count += 1;
-            if (text_destination) |destination| {
-                const grapheme_len = std.unicode.utf8Encode(cp, &encoded) catch 0;
-                if (text_len > destination.len or grapheme_len > destination.len - text_len) return error.CanvasBatchFull;
-                @memcpy(destination[text_len..][0..grapheme_len], encoded[0..grapheme_len]);
-                text_len += grapheme_len;
-            }
         };
     }
-    return .{ .input_count = input_count, .text_len = text_len };
+    return .{ .input_count = input_count };
 }
 
 fn ensureFrameBuffers(self: *Self, cell_count: usize, row_count: usize) !void {
@@ -375,7 +357,6 @@ fn ensureFrameBuffers(self: *Self, cell_count: usize, row_count: usize) !void {
     try self.selections.resize(allocator, row_count);
     try self.dirty_ranges.resize(allocator, row_count);
     try self.row_has_blink.resize(allocator, row_count);
-    try self.row_text_heads.resize(allocator, row_count);
     try self.render_row_dirty.resize(allocator, row_count);
     if (self.styles.items.len < cell_count) try self.styles.resize(allocator, cell_count);
     try self.canvas_requests.ensureTotalCapacity(allocator, cell_count);
@@ -385,6 +366,7 @@ comptime {
     std.debug.assert(@sizeOf(Frame) == 80);
     std.debug.assert(@sizeOf(Cell) == 8);
     std.debug.assert(@sizeOf(OrdinaryKey) == 8);
+    std.debug.assert(@sizeOf(FontEngine.PathCommand) == 28);
     std.debug.assert(@sizeOf(Style) == 12);
     std.debug.assert(@sizeOf(DirtyRange) == 8);
     std.debug.assert(@sizeOf(Submission) == 156);
@@ -545,12 +527,10 @@ fn rebuildCompactRow(self: *Self, state: *const ghostty.RenderState, render_cell
     @memset(self.cells.items[y * cols ..][0..cols], Cell{ .glyph = 0, .meta = 0 });
     self.selections.items[y] = try packedSelection(selection);
     self.row_has_blink.items[y] = false;
-    self.row_text_heads.items[y] = 0;
     const slice = render_cells.slice();
     const raws = slice.items(.raw);
     for (raws, 0..) |raw, x| {
         if (raw.wide == .spacer_tail) continue;
-        if (raw.hasText()) self.row_text_heads.items[y] += @intCast(raw.gridWidth());
         self.cells.items[y * cols + x] = packedCell(default_style_id, @intCast(raw.gridWidth()));
     }
     for (applied_styles) |run| {
@@ -580,7 +560,7 @@ pub fn prepare(self: *Self, state: *ghostty.RenderState, terminal: *ghostty.Term
 
 fn prepareCached(self: *Self, state: *ghostty.RenderState, terminal: *ghostty.Terminal) !void {
     self.canvas_requests.clearRetainingCapacity();
-    self.canvas_text.clearRetainingCapacity();
+    self.canvas_paths.clearRetainingCapacity();
     self.bitmap_batch.reset();
     if (self.font_cell_width == 0 or self.font_cell_height == 0 or self.font_size_px == 0 or self.atlas_columns == 0 or self.glyph_partition_capacity == 0) return error.FontMetricsMissing;
     const partition_capacity: usize = @intCast(self.glyph_partition_capacity);
@@ -641,8 +621,38 @@ fn prepareCached(self: *Self, state: *ghostty.RenderState, terminal: *ghostty.Te
     }
 
     var possible_new_slots: usize = 0;
-    for (0..rows_count) |y| {
-        if (self.render_row_dirty.items[y]) possible_new_slots += @as(usize, self.row_text_heads.items[y]);
+    var ordinary_misses: std.AutoHashMapUnmanaged(OrdinaryKey, void) = .empty;
+    defer ordinary_misses.deinit(std.heap.wasm_allocator);
+    var complex_misses: std.HashMapUnmanaged(CacheKey, void, CacheContext, 80) = .empty;
+    defer complex_misses.deinit(std.heap.wasm_allocator);
+    for (row_cells, 0..) |*render_cells, y| {
+        if (glyph_cache_was_reset or !self.render_row_dirty.items[y]) continue;
+        const slice = render_cells.slice();
+        const raws = slice.items(.raw);
+        const graphemes = slice.items(.grapheme);
+        var x: usize = 0;
+        while (x < cols) {
+            if (raws[x].wide == .spacer_tail or !raws[x].hasText()) {
+                x += 1;
+                continue;
+            }
+            const prepared = try self.prepareRunKey(raws, graphemes, y, x, cols, cursor);
+            switch (prepared.key) {
+                .ordinary => |key| {
+                    if (!self.ordinary_glyph_cache.contains(key)) {
+                        const entry = try ordinary_misses.getOrPut(std.heap.wasm_allocator, key);
+                        if (!entry.found_existing) possible_new_slots += prepared.slot_count;
+                    }
+                },
+                .complex => |key| {
+                    if (!self.glyph_cache.contains(key)) {
+                        const entry = try complex_misses.getOrPut(std.heap.wasm_allocator, key);
+                        if (!entry.found_existing) possible_new_slots += prepared.slot_count;
+                    }
+                },
+            }
+            x = prepared.end;
+        }
     }
     if (!glyph_cache_was_reset and @as(usize, self.bitmap_slot_count) + possible_new_slots > partition_capacity) {
         self.glyph_cache.clearRetainingCapacity();
@@ -707,24 +717,19 @@ fn prepareCached(self: *Self, state: *ghostty.RenderState, terminal: *ghostty.Te
                 cache_misses += 1;
                 var run_width: usize = 0;
                 var mask_len: usize = 0;
-                if (self.text_backend == .kb_canvas)
-                    self.canvas_text.ensureTotalCapacity(std.heap.wasm_allocator, self.canvas_text.items.len + max_cached_codepoints * 4) catch return error.CanvasBatchFull;
-                const text_destination: ?[]u8 = if (self.text_backend == .kb_canvas)
-                    self.canvas_text.unusedCapacitySlice()
-                else
-                    null;
-                const miss = try self.prepareRunMiss(raws, graphemes, start, end, self.text_backend == .kb_stb, text_destination);
-                if (self.text_backend == .kb_canvas)
-                    self.canvas_text.resize(std.heap.wasm_allocator, self.canvas_text.items.len + miss.text_len) catch return error.CanvasBatchFull;
+                const miss = try self.prepareRunMiss(raws, graphemes, start, end);
+                const layout = try self.font_engine.shape(style_index, self.ligatures_enabled, self.font_inputs[0..miss.input_count], span, .{
+                    .cell_width = self.font_cell_width,
+                    .cell_height = self.font_cell_height,
+                    .font_size_px = self.font_size_px,
+                });
+                const path_offset = self.canvas_paths.items.len;
+                if (self.text_backend == .kb_canvas) try self.font_engine.outline(&layout, &self.canvas_paths);
                 if (self.text_backend == .kb_stb) {
                     run_width = @as(usize, self.font_cell_width) * span;
                     mask_len = run_width * self.font_cell_height;
                     try self.run_mask.resize(std.heap.wasm_allocator, mask_len);
-                    _ = try self.font_engine.render(style_index, self.ligatures_enabled, self.font_inputs[0..miss.input_count], span, .{
-                        .cell_width = self.font_cell_width,
-                        .cell_height = self.font_cell_height,
-                        .font_size_px = self.font_size_px,
-                    }, self.run_mask.items[0..mask_len]);
+                    try self.font_engine.rasterize(&layout, self.run_mask.items[0..mask_len]);
                 }
                 const first_slot = self.bitmap_slot_count;
                 const slot_count = @as(u32, @intCast(end - start));
@@ -736,9 +741,9 @@ fn prepareCached(self: *Self, state: *ghostty.RenderState, terminal: *ghostty.Te
                         .first_slot = try self.absoluteSlot(first_slot),
                         .slot_count = slot_count,
                         .span_cells = span,
-                        .text_offset = @intCast(self.canvas_text.items.len - miss.text_len),
-                        .text_len = @intCast(miss.text_len),
-                        .flags = @intFromEnum(style_index),
+                        .path_offset = @intCast(path_offset),
+                        .path_count = @intCast(self.canvas_paths.items.len - path_offset),
+                        .reserved = 0,
                     };
                 }
                 for (0..end - start) |offset| {
@@ -810,7 +815,7 @@ fn prepareCached(self: *Self, state: *ghostty.RenderState, terminal: *ghostty.Te
         .magic = 0x5355424d,
         .version = 5,
         .byte_size = @sizeOf(Submission),
-        .reserved = 0,
+        .path_command_size = @sizeOf(FontEngine.PathCommand),
         .frame_offset = try wasmOffset(&self.frame),
         .frame_len = @sizeOf(Frame),
         .cells_offset = try wasmOffset(self.cells.items[0..].ptr),
@@ -828,8 +833,8 @@ fn prepareCached(self: *Self, state: *ghostty.RenderState, terminal: *ghostty.Te
         .bitmap_upload_pixels_len = @intCast(bitmap_upload_pixels.len),
         .canvas_requests_offset = try wasmOffset(self.canvas_requests.items.ptr),
         .canvas_requests_count = @intCast(self.canvas_requests.items.len),
-        .canvas_text_offset = try wasmOffset(self.canvas_text.items.ptr),
-        .canvas_text_len = @intCast(self.canvas_text.items.len),
+        .canvas_paths_offset = try wasmOffset(self.canvas_paths.items.ptr),
+        .canvas_paths_count = @intCast(self.canvas_paths.items.len),
         .text_rows_offset = try wasmOffset(snapshot.rows),
         .text_cells_offset = try wasmOffset(snapshot.cells),
         .text_text_offset = try wasmOffset(snapshot.text),

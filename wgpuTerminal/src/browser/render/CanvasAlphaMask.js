@@ -1,9 +1,12 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Cheng Cao
 
+import { validateCanvasPath } from "../../FramePacket.js";
+import { MAX_RUN_PIXELS, PATH_COMMAND_SIZE, PATH_OP } from "./FrameSchema.js";
+
 export function extractCanvasAlpha(context, x, y, width, height, storage) {
   const pixelCount = width * height;
-  if (!Number.isSafeInteger(pixelCount) || pixelCount <= 0) {
+  if (!Number.isSafeInteger(pixelCount) || pixelCount <= 0 || pixelCount > MAX_RUN_PIXELS) {
     throw new RangeError("invalid Canvas glyph mask dimensions");
   }
   const target = storage?.byteLength >= pixelCount ? storage : new Uint8Array(pixelCount);
@@ -23,9 +26,7 @@ function createRasterCanvas(width = 1, height = 1) {
 function configureRasterContext(canvas) {
   const context = canvas.getContext("2d", { alpha: true, willReadFrequently: true });
   if (!context) throw new Error("Canvas glyph rasterizer unavailable");
-  context.textBaseline = "alphabetic";
   context.fillStyle = "white";
-  context.textRendering = "geometricPrecision";
   return context;
 }
 
@@ -37,53 +38,84 @@ export function validateAtlasGeometry(geometry) {
 }
 
 export class CanvasGlyphRasterizer {
-  constructor(font) {
-    this.fontFamily = font.fontFamily;
+  constructor() {
     this.runCanvas = createRasterCanvas();
     this.runContext = configureRasterContext(this.runCanvas);
     this.canvasMask = new Uint8Array(0);
-    this.nextSlot = 0;
+    this.uploadMask = new Uint8Array(0);
   }
 
-  get capacity() {
-    return this.columns * this.rows;
-  }
-
-  get baseline() {
-    return Math.min(this.tileHeight - 1, Math.round((this.tileHeight - this.fontSize) * 0.5 + this.fontSize * 0.82));
-  }
-
-  setCanvasRun(firstSlot, slotCount, spanCells, text, flags) {
-    if (!Number.isInteger(firstSlot) || !Number.isInteger(slotCount) || !Number.isInteger(spanCells) ||
-        firstSlot < 0 || slotCount <= 0 || spanCells <= 0 ||
-        slotCount !== spanCells || firstSlot + slotCount > this.capacity) {
+  rasterize(firstSlot, slotCount, spanCells, commands, offset, count, atlas, upload) {
+    validateAtlasGeometry(atlas);
+    if (!Number.isInteger(atlas.tileWidth) || !Number.isInteger(atlas.tileHeight) ||
+        atlas.tileWidth <= 0 || atlas.tileHeight <= 0) {
+      throw new Error("invalid glyph atlas tile dimensions");
+    }
+    if (!Number.isInteger(firstSlot) || !Number.isInteger(slotCount) ||
+        !Number.isInteger(spanCells) || firstSlot < 0 ||
+        slotCount < 1 || slotCount > 16 || spanCells !== slotCount ||
+        firstSlot + slotCount > atlas.columns * atlas.rows) {
       throw new Error("invalid glyph atlas run");
     }
-    const runWidth = spanCells * this.tileWidth;
-    if (this.runCanvas.width < runWidth || this.runCanvas.height < this.tileHeight) {
-      this.runCanvas.width = Math.max(this.runCanvas.width, runWidth);
-      this.runCanvas.height = Math.max(this.runCanvas.height, this.tileHeight);
+    const runWidth = spanCells * atlas.tileWidth;
+    const runHeight = atlas.tileHeight;
+    if (runWidth * runHeight > MAX_RUN_PIXELS) {
+      throw new Error("glyph raster run is too large");
+    }
+    validateCanvasPath(commands, offset, count);
+    if (this.runCanvas.width !== runWidth || this.runCanvas.height !== runHeight) {
+      this.runCanvas.width = runWidth;
+      this.runCanvas.height = runHeight;
       this.runContext = configureRasterContext(this.runCanvas);
     }
-    const weight = (flags & 1) !== 0 ? "700" : "400";
-    const italic = (flags & 2) !== 0 ? "italic" : "normal";
-    this.runContext.clearRect(0, 0, runWidth, this.tileHeight);
-    this.runContext.font = `${italic} ${weight} ${Math.max(1, this.fontSize - 0.5)}px ${this.fontFamily}`;
-    this.runContext.fillText(text, 0, this.baseline);
-    for (let index = 0; index < slotCount; index += 1) {
-      const mask = extractCanvasAlpha(
-        this.runContext,
-        index * this.tileWidth,
-        0,
-        this.tileWidth,
-        this.tileHeight,
-        this.canvasMask,
-      );
-      this.canvasMask = mask.storage;
-      this._uploadMask(firstSlot + index, mask.pixels);
+    this.runContext.clearRect(0, 0, runWidth, runHeight);
+    this.runContext.beginPath();
+    for (let index = 0; index < count; index += 1) {
+      const command = (offset + index) * PATH_COMMAND_SIZE;
+      const f = n => commands.getFloat32(command + n * 4, true);
+      switch (commands.getUint32(command, true)) {
+        case PATH_OP.move:
+          this.runContext.moveTo(f(1), f(2));
+          break;
+        case PATH_OP.line:
+          this.runContext.lineTo(f(1), f(2));
+          break;
+        case PATH_OP.quadratic:
+          this.runContext.quadraticCurveTo(
+            f(3), f(4), f(1), f(2),
+          );
+          break;
+        case PATH_OP.cubic:
+          this.runContext.bezierCurveTo(
+            f(3), f(4), f(5), f(6), f(1), f(2),
+          );
+          break;
+        case PATH_OP.close:
+          this.runContext.closePath();
+          break;
+      }
     }
-    this.nextSlot = Math.max(this.nextSlot, firstSlot + slotCount);
-    return firstSlot + slotCount;
+    this.runContext.fill("nonzero");
+    const mask = extractCanvasAlpha(
+      this.runContext, 0, 0, runWidth, runHeight, this.canvasMask,
+    );
+    this.canvasMask = mask.storage;
+    for (let tileOffset = 0; tileOffset < slotCount;) {
+      const rowOffset = (firstSlot + tileOffset) % atlas.columns;
+      const chunkSlots = Math.min(slotCount - tileOffset, atlas.columns - rowOffset);
+      const chunkWidth = chunkSlots * atlas.tileWidth;
+      const chunkPixels = chunkWidth * runHeight;
+      if (this.uploadMask.byteLength < chunkPixels) this.uploadMask = new Uint8Array(chunkPixels);
+      const packedPixels = this.uploadMask.subarray(0, chunkPixels);
+      for (let y = 0; y < runHeight; y += 1) {
+        packedPixels.set(
+          mask.pixels.subarray(y * runWidth + tileOffset * atlas.tileWidth,
+            y * runWidth + tileOffset * atlas.tileWidth + chunkWidth),
+          y * chunkWidth,
+        );
+      }
+      upload(firstSlot + tileOffset, chunkSlots, packedPixels, 0, chunkWidth);
+      tileOffset += chunkSlots;
+    }
   }
-
 }

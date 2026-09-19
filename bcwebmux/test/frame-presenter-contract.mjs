@@ -13,7 +13,7 @@ const packet = {
   bitmapUploadsCount: 1, bitmapUploads: new DataView(new Uint32Array([0, 1, 0, 2]).buffer),
   bitmapUploadPixels: new Uint8Array(2), canvasRequestsCount: 1,
   canvasRequests: new DataView(new Uint32Array([1, 1, 1, 0, 1, 0]).buffer),
-  canvasText: new TextEncoder().encode("A"),
+  canvasPaths: new DataView(new ArrayBuffer(28)),
   stylesFirst: 0, styles: new Uint32Array(3), styleBytes: new Uint8Array(12),
   dirtyRangesCount: 1, dirtyRanges: new DataView(new Uint32Array([0, 1]).buffer),
   cells: new Uint8Array(16), selections: new Uint32Array(1),
@@ -21,8 +21,7 @@ const packet = {
 const backend = {
   initialized: true, activeTerminal: core, cellSize: 8, styleSize: 12, atlas: {}, submissionMetadata: {},
   glyphPartitions: new Map([[core, {}]]),
-  uploadBitmap(...args) { operations.push("bitmap"); assert.equal(args[2], packet.bitmapUploadPixels); },
-  uploadCanvasRun(...args) { operations.push("canvas"); assert.deepEqual(args, [1, 1, 1, "A", 0]); },
+  uploadBitmap(...args) { operations.push(args[0] === 0 ? "bitmap" : "canvas"); },
   uploadStyles() { operations.push("styles"); if (fail) throw Error("upload failed"); },
   uploadCells(first, count, cells, selections) {
     operations.push("cells");
@@ -34,6 +33,14 @@ const presenter = new FramePresenter({
   _textView: { update() { operations.push("text"); } },
   _submitFrameMetadata() { operations.push("metadata"); },
 }, backend);
+presenter.canvasRasterizer = {
+  rasterize(first, slots, span, paths, offset, count, atlas, upload) {
+    assert.deepEqual([first, slots, span, offset, count], [1, 1, 1, 0, 1]);
+    assert.equal(paths, packet.canvasPaths);
+    assert.equal(atlas, backend.atlas);
+    upload(first, slots, new Uint8Array(2), 0, 2);
+  },
+};
 presenter.consumeFrame(core);
 assert.ok(!operations.includes("present"), "consuming never presents");
 presenter.present();

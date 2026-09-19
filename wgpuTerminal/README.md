@@ -81,6 +81,14 @@ only when that style is first rendered. The package exports these files under
 array in the same order. CSS `@font-face` declarations should point at the
 same URLs so the HTTP cache serves both browser and WASM users.
 
+Both `kb-stb` and `kb-canvas` shape with kb using these exact `wasmFontUrls`
+bytes and the same physical metrics. STB rasterizes the positioned glyphs;
+Canvas fills their exported outlines, without browser text shaping or font
+fallback. CSS families affect DOM measurement/text mirrors, not raster font
+selection. Browser-only `canvasOnly` fonts are rejected in both modes; the
+Fira Code Canvas-only UI option has been removed. Missing glyphs use the
+supplied face's missing-glyph outline rather than a browser fallback face.
+
 ## WASM diagnostics
 
 Ship matching JavaScript and WASM assets. The freestanding module imports

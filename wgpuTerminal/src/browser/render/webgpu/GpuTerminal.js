@@ -280,10 +280,6 @@ export class GpuTerminal {
     this.device.queue.writeBuffer(this.selectionBuffer, firstRow * 4, selections);
   }
 
-  uploadCanvasRun(...args) {
-    this.flushAtlasGrowthCopies();
-    this.atlas.setCanvasRun(...args);
-  }
 
   presentCurrentState(blinkOn = true) {
     if (this.disposed || !this.offscreen || !this.rows || this.error) return;

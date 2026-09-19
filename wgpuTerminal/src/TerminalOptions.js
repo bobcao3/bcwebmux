@@ -54,6 +54,7 @@ export function renderFontFamily(families) {
 
 export function normalizeFont(font) {
   const value = { ...DEFAULT_FONT, ...(font || {}) };
+  if (value.canvasOnly) throw new TypeError("canvasOnly fonts are unsupported: both rasterizers require wasmFontUrls font bytes");
   value.size = Math.min(32, Math.max(8, Math.round(Number(value.size) || DEFAULT_FONT.size)));
   value.ligatures = value.ligatures !== false;
   value.wasmId = Number.isInteger(value.wasmId) ? value.wasmId : 0;

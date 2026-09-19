@@ -2,6 +2,8 @@
 // Copyright (c) 2026 Cheng Cao
 
 import assert from "node:assert/strict";
+import { TerminalCore } from "../../wgpuTerminal/src/TerminalCore.js";
+import { Terminal } from "../../wgpuTerminal/src/Terminal.js";
 import {
   DEFAULT_WASM_FONT_FILES,
   loadWasmFontFaces,
@@ -9,6 +11,15 @@ import {
 } from "../../wgpuTerminal/src/WasmFonts.js";
 
 const defaults = resolveWasmFontUrls("https://example.test/assets/terminal.wasm");
+for (const renderer of ["kb-stb", "kb-canvas"]) {
+  for (const Constructor of [TerminalCore, Terminal]) {
+    assert.throws(() => new Constructor({ renderer, font: { canvasOnly: true } }), /wasmFontUrls/);
+    const terminal = new Constructor({ renderer });
+    if (Constructor === Terminal) await assert.rejects(terminal.setFont({ canvasOnly: true }), /wasmFontUrls/);
+    else assert.throws(() => terminal.setFont({ canvasOnly: true }), /wasmFontUrls/);
+    if (Constructor === TerminalCore) terminal.dispose();
+  }
+}
 assert.deepEqual(defaults, DEFAULT_WASM_FONT_FILES.map(file => `https://example.test/assets/fonts/${file}`));
 assert.deepEqual(
   resolveWasmFontUrls("https://example.test/assets/terminal.wasm", ["a.ttf", "b.ttf", "c.ttf", "d.ttf"]),

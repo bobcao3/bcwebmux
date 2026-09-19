@@ -1,15 +1,19 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Cheng Cao
 
-import { CanvasGlyphRasterizer, validateAtlasGeometry } from "../CanvasAlphaMask.js";
+import { validateAtlasGeometry } from "../CanvasAlphaMask.js";
 
-export class GlyphAtlas extends CanvasGlyphRasterizer {
+export class GlyphAtlas {
   constructor(device, font, geometry, cellWidth, cellHeight, fontSize) {
-    super(font);
+    this.nextSlot = 0;
     this.device = device;
     this.pendingTextureCopies = [];
     const candidate = this.prepareLayout(geometry, cellWidth, cellHeight, fontSize, true);
     this.commitLayout(candidate);
+  }
+
+  get capacity() {
+    return this.columns * this.rows;
   }
 
   prepareLayout(geometry, cellWidth, cellHeight, fontSize, reset) {
@@ -64,18 +68,6 @@ export class GlyphAtlas extends CanvasGlyphRasterizer {
       oldTexture?.destroy();
       if (!candidate.preserve) this.nextSlot = 0;
     }
-  }
-
-  _uploadMask(slot, pixels) {
-    this.device.queue.writeTexture(
-      {
-        texture: this.texture,
-        origin: [(slot % this.columns) * this.tileWidth, Math.floor(slot / this.columns) * this.tileHeight, 0],
-      },
-      pixels,
-      { bytesPerRow: this.tileWidth, rowsPerImage: this.tileHeight },
-      [this.tileWidth, this.tileHeight, 1],
-    );
   }
 
   takePendingTextureCopies() {

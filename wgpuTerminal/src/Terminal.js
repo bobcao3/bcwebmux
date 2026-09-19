@@ -550,9 +550,6 @@ export class Terminal {
     this._assertMutable();
     const previousFont = this.options.font;
     const font = normalizeFont({ ...this.options.font, ...(fontOptions || {}) });
-    if (font.canvasOnly && this._activeTextRenderer !== "kb-canvas") {
-      throw new Error("Canvas-only font requires the kb-canvas renderer");
-    }
     if (!this._terminalElement) {
       this.options.font = font;
       return font;
@@ -590,9 +587,6 @@ export class Terminal {
   setRenderer(rendererName) {
     this._assertMutable();
     const normalized = rendererName === "kb-canvas" ? "kb-canvas" : "kb-stb";
-    if (normalized !== "kb-canvas" && (this._pendingFont ?? this.options.font).canvasOnly) {
-      throw new Error("Canvas-only font requires the kb-canvas renderer");
-    }
     if (!this._core?.ready || !this._renderer) {
       this.options.renderer = normalized;
       this._activeTextRenderer = normalized;

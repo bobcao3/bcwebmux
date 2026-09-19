@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Cheng Cao
 
-import { CanvasGlyphRasterizer, validateAtlasGeometry } from "../CanvasAlphaMask.js";
+import { validateAtlasGeometry } from "../CanvasAlphaMask.js";
 
-export class WebGlGlyphAtlas extends CanvasGlyphRasterizer {
+export class WebGlGlyphAtlas {
   constructor(gl, font, geometry, cellWidth, cellHeight, fontSize) {
-    super(font);
+    this.nextSlot = 0;
     this.gl = gl;
     this.maxDimension = gl.getParameter(gl.MAX_TEXTURE_SIZE);
     this.texture = null;
@@ -124,21 +124,8 @@ export class WebGlGlyphAtlas extends CanvasGlyphRasterizer {
     this.nextSlot = Math.max(this.nextSlot, firstSlot + slotCount);
   }
 
-  _uploadMask(slot, pixels) {
-    const gl = this.gl;
-    gl.bindTexture(gl.TEXTURE_2D, this.texture);
-    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
-    gl.texSubImage2D(
-      gl.TEXTURE_2D,
-      0,
-      (slot % this.columns) * this.tileWidth,
-      Math.floor(slot / this.columns) * this.tileHeight,
-      this.tileWidth,
-      this.tileHeight,
-      gl.RED,
-      gl.UNSIGNED_BYTE,
-      pixels,
-    );
+  get capacity() {
+    return this.columns * this.rows;
   }
 
   dispose() {

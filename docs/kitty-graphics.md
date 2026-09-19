@@ -1,6 +1,6 @@
 # Kitty graphics and client rendering design
 
-Status: proposal, not implemented. Based on Ghostty `b32f20f3e8d25bb925ec545c54498e93518e7ced`. All source paths below are repository-root-relative.
+Status: graphics proposal; prerequisite text refactor progress is recorded in section 7. Based on Ghostty `b32f20f3e8d25bb925ec545c54498e93518e7ced`. All source paths below are repository-root-relative.
 
 This includes the prerequisite WASM/JS boundary refactor in section 7. The target is one client frame pipeline for text and graphics, not a second renderer bolted onto the current one. Native image admission/checkpoint rules remain independent of presentation.
 
@@ -308,6 +308,34 @@ The decoder is renamed/moved from browser `RendererSubmission.js` to `wgpuTermin
 Put shader/grain presentation assets with the JS renderer, not in the WASM module. Initialize the backend once from its own capabilities and the versioned packet schema. Configure text rasterizer, metrics, and glyph lease explicitly through the core, rather than querying a `gpu_text_backend` host import during core initialization. WASM packet ABI and transport/checkpoint ABI are separate versions.
 
 ### 7.4 Shared kb shaping/layout, rasterizers, and resource ownership
+
+Layer 5 text implementation: `FontEngine.shape` produces a bounded shared layout
+(up to 128 glyphs per run) once per cache miss. STB consumes its glyph IDs and
+physical positions; Canvas receives outlines extracted from that same face with
+`stbtt_GetGlyphShape`/`stbtt_FreeShape`, not pixels or source strings. Both modes
+require the four `wasmFontUrls` font byte buffers. `canvasOnly` is rejected; the
+browser-only Fira Code choice is removed. CSS fallbacks remain for DOM UI/text
+mirrors, not glyph rasterization.
+
+The coordinated v5 packet keeps its 156-byte header and 24-byte Canvas request.
+The header word at byte 12 declares the path command stride (28), rejecting older
+text packets. Bytes 84/88 hold the path pointer/command count. A request is six `u32`s:
+first slot, slot count, span cells, command offset, command count, reserved zero.
+Offsets/counts index commands, not bytes. Each command is `u32 op` followed by
+six physical `f32`s `(x, y, cx, cy, cx1, cy1)`: move=0, line=1, quadratic=2,
+cubic=3, close=4. Coordinates are run-local, y-down with the shared baseline
+already applied; unused coordinates are zero. Contours start with move and end
+with explicit close. The decoder checks enums, finite bounded coordinates,
+contour sequencing, contiguous request ranges, and leased slots. Limits are
+16 cells/32 input codepoints per run, 32,768 commands per run, 1,048,576 commands
+(28 MiB) per packet, and 16 Mi pixels per run. Empty glyph outlines are valid.
+
+`FramePresenter` dispatches both mask types through the same rectangle upload
+interface. `CanvasAlphaMask` fills each complete run once, reads its alpha once,
+then packs rectangles split only at atlas row boundaries. Backend atlas classes
+no longer rasterize. Cache admission counts distinct missing keys and their
+slots before deciding to evict; dirty rows containing only warm keys do not
+reset a full cache. Pull-frame borrowing and the scheduler are unchanged.
 
 Keep the names `kb-stb` and `kb-canvas`: **kb is the shared shaping/layout library; STB and Canvas are rasterization choices**, not alternative layout engines. `webgpu`/`webgl2` remains an independent presentation-backend choice.
 

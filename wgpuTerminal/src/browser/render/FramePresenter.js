@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Cheng Cao
 
-import { decodeCanvasRequestText } from "../../FramePacket.js";
-import { FRAME_SIZE, SUBMISSION_SIZE } from "./FrameSchema.js";
+import { CanvasGlyphRasterizer } from "./CanvasAlphaMask.js";
+import { FRAME_SIZE, SUBMISSION_SIZE, CANVAS_REQUEST_SIZE } from "./FrameSchema.js";
 import * as atlasRuntime from "./GlyphAtlasRuntime.js";
 
 export class FramePresenter {
@@ -53,9 +53,11 @@ export class FramePresenter {
         v.getUint32(o + 8, true), v.getUint32(o + 12, true));
     }
     for (let i = 0; i < packet.canvasRequestsCount; i++) {
-      const v = packet.canvasRequests, o = i * 24;
-      b.uploadCanvasRun(v.getUint32(o, true), v.getUint32(o + 4, true), v.getUint32(o + 8, true),
-        decodeCanvasRequestText(packet, i), v.getUint32(o + 20, true));
+      const v = packet.canvasRequests, o = i * CANVAS_REQUEST_SIZE;
+      this.canvasRasterizer ??= new CanvasGlyphRasterizer();
+      this.canvasRasterizer.rasterize(v.getUint32(o, true), v.getUint32(o + 4, true), v.getUint32(o + 8, true),
+        packet.canvasPaths, v.getUint32(o + 12, true), v.getUint32(o + 16, true), b.atlas,
+        (...args) => b.uploadBitmap(...args));
     }
     b.uploadStyles(packet.stylesFirst, packet.styles, packet.styleBytes);
     for (let i = 0; i < packet.dirtyRangesCount; i++) {

@@ -296,7 +296,7 @@ fn assetHeaders(content_type: []const u8, etag: []const u8) [5]std.http.Header {
         .{ .name = "Content-Type", .value = content_type },
         .{ .name = "Cache-Control", .value = "public, no-cache, must-revalidate" },
         .{ .name = "ETag", .value = etag },
-        .{ .name = "Content-Security-Policy", .value = "default-src 'self'; connect-src 'self' ws: wss:; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com" },
+        .{ .name = "Content-Security-Policy", .value = "default-src 'self'; connect-src 'self' ws: wss:; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; font-src 'self'" },
         .{ .name = "X-Content-Type-Options", .value = "nosniff" },
     };
 }

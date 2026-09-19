@@ -121,6 +121,8 @@ pub fn build(b: *std.Build) void {
     terminal_wasm_step.dependOn(&terminal_wasm_install.step);
     const render_frame_contract_cmd = b.addSystemCommand(&.{ "node", "test/render-frame-contract.mjs" });
     const frame_presenter_contract_cmd = b.addSystemCommand(&.{ "node", "test/frame-presenter-contract.mjs" });
+    const canvas_path_contract_cmd = b.addSystemCommand(&.{ "node", "test/canvas-path-contract.mjs" });
+    render_frame_contract_cmd.step.dependOn(&canvas_path_contract_cmd.step);
     const frame_scheduler_contract_cmd = b.addSystemCommand(&.{ "node", "test/frame-scheduler-contract.mjs" });
     render_frame_contract_cmd.step.dependOn(&frame_scheduler_contract_cmd.step);
     render_frame_contract_cmd.step.dependOn(&frame_presenter_contract_cmd.step);
