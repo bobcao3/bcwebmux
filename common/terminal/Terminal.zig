@@ -3,7 +3,7 @@
 
 const std = @import("std");
 const ghostty = @import("ghostty-vt");
-const Wgpu = @import("Wgpu.zig");
+const RenderFrame = @import("RenderFrame.zig");
 const FontEngine = @import("FontEngine.zig");
 
 const Self = @This();
@@ -34,7 +34,7 @@ selection_gesture: ghostty.SelectionGesture = .init,
 selection_snapshot: ?[:0]const u8 = null,
 hyperlink_snapshot: [4096]u8 = undefined,
 hyperlink_snapshot_len: u32 = 0,
-renderer: Wgpu = .{},
+renderer: RenderFrame = .{},
 
 extern "host" fn user_write(ptr: [*]const u8, len: usize) i32;
 extern "host" fn terminal_reply(ptr: [*]const u8, len: usize) i32;

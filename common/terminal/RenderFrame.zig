@@ -5,15 +5,12 @@ const std = @import("std");
 const ghostty = @import("ghostty-vt");
 const Self = @This();
 const FontEngine = @import("FontEngine.zig");
-const grain_data = @import("grain.zig");
 const TextView = @import("TextView.zig");
 const BitmapBatch = @import("BitmapBatch.zig");
 
 const max_cached_codepoints = 32;
 const max_cached_span = 16;
 const protocol_cell_limit = std.math.maxInt(u16);
-
-const cell_shader = @embedFile("shaders/cell.wgsl");
 
 pub const TextBackend = enum(u32) {
     kb_stb = 0,
@@ -35,7 +32,6 @@ font_inputs: [max_cached_codepoints]FontEngine.Input = undefined,
 font_engine: FontEngine = .{},
 text_view: TextView = .{},
 bitmap_batch: BitmapBatch = .{},
-grain: [grain_data.size * grain_data.size]i8 = undefined,
 frame: Frame = undefined,
 cells: std.ArrayListUnmanaged(Cell) = .empty,
 styles: std.ArrayListUnmanaged(Style) = .empty,
@@ -377,18 +373,6 @@ comptime {
 }
 
 extern "host" fn gpu_submit(submission_ptr: *const Submission) i32;
-extern "host" fn gpu_text_backend() u32;
-extern "host" fn gpu_init(
-    cell_ptr: [*]const u8,
-    cell_len: usize,
-    grain_ptr: [*]const i8,
-    grain_len: usize,
-    grain_size_value: usize,
-    max_cells_value: usize,
-    max_styles_value: usize,
-    style_size: usize,
-    cell_size: usize,
-) i32;
 
 pub fn setFontMetrics(self: *Self, cell_width: u16, cell_height: u16, font_size_px_value: u16) void {
     if (self.font_cell_width != cell_width or self.font_cell_height != cell_height or self.font_size_px != font_size_px_value)
@@ -464,31 +448,16 @@ pub fn setTextViewEnabled(self: *Self, enabled: bool) bool {
 pub fn init(self: *Self, cols: usize, rows: usize) bool {
     const initial_cells = std.math.mul(usize, cols, rows) catch return false;
     if (initial_cells == 0 or initial_cells > protocol_cell_limit) return false;
-    const initial_styles = @min(@as(usize, protocol_cell_limit) + 1, std.math.add(usize, initial_cells, 1) catch return false);
-    const backend_value = gpu_text_backend();
-    if (backend_value > 1) return false;
-    self.text_backend = @enumFromInt(backend_value);
     self.text_view_enabled = false;
     self.font_engine.init() catch return false;
     self.text_view.reset();
-    grain_data.generate(&self.grain);
     self.render_cache_reset = true;
     self.previous_cols = 0;
     self.previous_rows = 0;
     self.previous_cursor_y = null;
     self.style_cache.clearRetainingCapacity();
     self.style_count = 0;
-    return gpu_init(
-        cell_shader.ptr,
-        cell_shader.len,
-        self.grain[0..].ptr,
-        self.grain.len,
-        grain_data.size,
-        initial_cells,
-        initial_styles,
-        @sizeOf(Style),
-        @sizeOf(Cell),
-    ) == 1;
+    return true;
 }
 
 fn wasmOffset(pointer: anytype) !u32 {

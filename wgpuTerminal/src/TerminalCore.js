@@ -170,8 +170,6 @@ export class TerminalCore {
           const method = ["error", "warn", "info", "debug"][level] ?? "log";
           console[method]("terminal WASM:", message);
         },
-        gpu_text_backend: () => this.options.renderer === "kb-canvas" ? 1 : 0,
-        gpu_init: (...args) => this._host?._gpuInit(this, ...args) ?? 1,
         gpu_submit: (submissionPtr) => this._host?._gpuSubmit(this, submissionPtr) ?? 0,
         font_size: (style) => {
           if (!Number.isInteger(style) || style < 0 || style >= (this._fontFaces?.length ?? 0)) return 0;

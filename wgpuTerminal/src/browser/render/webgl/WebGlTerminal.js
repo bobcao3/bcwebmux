@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Cheng Cao
 
+import { generateGrain, GRAIN_SIZE } from "../Grain.js";
+import { CELL_SIZE, STYLE_SIZE } from "../FrameSchema.js";
+
 import {
   parseRendererSubmission,
   decodeCanvasRequestText,
@@ -154,17 +157,9 @@ export class WebGlTerminal {
     canvas.addEventListener("webglcontextrestored", this.contextRestoredListener);
   }
 
-  initialize(cellSource, grain, grainSize, maxCells, maxStyles, styleSize, cellSize) {
-    return initializeWebGl(
-      this,
-      cellSource,
-      grain,
-      grainSize,
-      maxCells,
-      maxStyles,
-      styleSize,
-      cellSize,
-    );
+  initialize(maxCells) {
+    return initializeWebGl(this, generateGrain(), GRAIN_SIZE,
+      maxCells, Math.min(65536, maxCells + 1), STYLE_SIZE, CELL_SIZE);
   }
 
   registerTerminal(terminal, visibleCells, preferredColumns) {

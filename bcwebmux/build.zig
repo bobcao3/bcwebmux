@@ -119,6 +119,11 @@ pub fn build(b: *std.Build) void {
     const terminal_wasm_install = b.addInstallFile(wasm.getEmittedBin(), "wgpu-terminal/terminal.wasm");
     const terminal_wasm_step = b.step("terminal-wasm", "Build the embeddable terminal WASM package asset");
     terminal_wasm_step.dependOn(&terminal_wasm_install.step);
+    const render_frame_contract_cmd = b.addSystemCommand(&.{ "node", "test/render-frame-contract.mjs" });
+    render_frame_contract_cmd.step.dependOn(&terminal_wasm_install.step);
+    render_frame_contract_cmd.addArg(b.getInstallPath(.prefix, "wgpu-terminal/terminal.wasm"));
+    const render_frame_contract_step = b.step("render-frame-test", "Check CPU frame and browser renderer ownership contracts");
+    render_frame_contract_step.dependOn(&render_frame_contract_cmd.step);
 
     const web_assets = b.addWriteFiles();
     _ = web_assets.addCopyDirectory(b.path("web"), "", .{ .exclude_extensions = &.{".woff2"} });
@@ -375,6 +380,7 @@ pub fn build(b: *std.Build) void {
     utf_probe_cmd.addArg(b.getInstallPath(.prefix, "web"));
     const test_step = b.step("test", "Run unit and browser end-to-end tests");
     test_step.dependOn(unit_test_step);
+    test_step.dependOn(render_frame_contract_step);
     test_step.dependOn(&network_relay_cmd.step);
     test_step.dependOn(&protocol_contract_cmd.step);
     test_step.dependOn(&glyph_cache_layout_cmd.step);

@@ -45,8 +45,6 @@ const { instance } = await WebAssembly.instantiate(wasmBytes, {
     terminal_reply() { return 1; },
     clipboard_write() { return 1; },
     desktop_notification() {},
-    gpu_text_backend() { return 0; }, // kb-stb
-    gpu_init() { return 1; },
     gpu_submit(submissionPtr) {
       const mem = instance.exports.memory.buffer;
       const submission = new DataView(mem, submissionPtr, 112);

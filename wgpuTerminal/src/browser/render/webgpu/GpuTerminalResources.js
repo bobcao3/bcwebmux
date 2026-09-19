@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Cheng Cao
 
+import { CELL_SIZE, STYLE_SIZE } from "../FrameSchema.js";
+
 const UNIFORM_BUFFER_SIZE = 68;
 
 function validateFrameCapacity(renderer, cells, styles, cellSize, styleSize) {
@@ -22,7 +24,7 @@ export function initialize(renderer, cellSource, grain, grainSize, maxCellsValue
   if (!(grain instanceof Int8Array) || grainSize !== 64 || grain.length !== grainSize * grainSize) {
     throw new Error("invalid grain texture");
   }
-  if (maxCellsValue <= 0 || maxStylesValue <= 0 || styleSize !== 12 || cellSize !== 8) {
+  if (maxCellsValue <= 0 || maxStylesValue <= 0 || styleSize !== STYLE_SIZE || cellSize !== CELL_SIZE) {
     throw new Error("invalid GPU initialization constants");
   }
   validateFrameCapacity(renderer, maxCellsValue, maxStylesValue, cellSize, styleSize);

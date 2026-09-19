@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Cheng Cao
 
-const SUBMISSION_SIZE = 112;
-const FRAME_SIZE = 80;
+import { SUBMISSION_SIZE, FRAME_SIZE } from "./FrameSchema.js";
 const strictDecoder = new TextDecoder("utf-8", { fatal: true });
 
 function validateRange(memoryLength, ptr, length, label) {

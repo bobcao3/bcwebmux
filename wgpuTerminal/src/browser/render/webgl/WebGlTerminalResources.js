@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Cheng Cao
 
+import { CELL_SIZE, STYLE_SIZE } from "../FrameSchema.js";
+
 const VERTEX_SOURCE = `#version 300 es
 precision highp float;
 precision highp int;
@@ -211,12 +213,12 @@ function createTexture(gl, internalFormat, width, height) {
   return texture;
 }
 
-export function initializeWebGl(renderer, cellSource, grain, grainSize, maxCells, maxStyles, styleSize, cellSize) {
+export function initializeWebGl(renderer, grain, grainSize, maxCells, maxStyles, styleSize, cellSize) {
   if (!renderer.atlas || !renderer.glyphPartitions) {
     throw new Error("GPU glyph resources are unavailable");
   }
   if (renderer.initialized) {
-    if (styleSize !== 12 || cellSize !== 8 || !cellSource.includes("alias Lowp = f32;") ||
+    if (styleSize !== STYLE_SIZE || cellSize !== CELL_SIZE ||
         !(grain instanceof Int8Array) || grainSize !== 64 || grain.length !== grainSize * grainSize) {
       throw new Error("terminal core renderer ABI mismatch");
     }
@@ -226,8 +228,8 @@ export function initializeWebGl(renderer, cellSource, grain, grainSize, maxCells
   if (!(grain instanceof Int8Array) || grainSize !== 64 || grain.length !== grainSize * grainSize) {
     throw new Error("invalid grain texture");
   }
-  if (maxCells <= 0 || maxStyles <= 0 || styleSize !== 12 ||
-      cellSize !== 8 || !cellSource.includes("alias Lowp = f32;")) {
+  if (maxCells <= 0 || maxStyles <= 0 || styleSize !== STYLE_SIZE ||
+      cellSize !== CELL_SIZE) {
     throw new Error("invalid GPU initialization constants");
   }
   Object.assign(renderer, { maxCells, maxStyles, styleSize, cellSize });

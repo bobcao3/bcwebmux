@@ -35,7 +35,6 @@ import {
   COLOR_FIELDS,
   DEFAULT_FONT,
   DEFAULT_THEME,
-  decoder,
   loadTerminalFonts,
   normalizeFont,
   renderFontFamily,
@@ -250,6 +249,7 @@ export class Terminal {
     this._registerTerminal(core, initialLayout);
     this._renderingCore = core;
     try {
+      await this._renderer.initialize(initialLayout.cols * initialLayout.rows);
       await core.open({ cols: initialLayout.cols, rows: initialLayout.rows, host: this });
       this._core = core;
       this._wasm = core.wasm;
@@ -421,20 +421,6 @@ export class Terminal {
       }
     }
     return 1;
-  }
-
-  _gpuInit(core, cellPtr, cellLen, grainPtr, grainLen, grainSize, maxCells, maxStyles, styleSize, cellSize) {
-    if (!this._cores.has(core)) return 0;
-    try {
-      const memory = core.wasm.memory.buffer;
-      const cellSource = decoder.decode(new Uint8Array(memory, cellPtr, cellLen));
-      const grain = new Int8Array(memory, grainPtr, grainLen);
-      return this._renderer.initialize(cellSource, grain, grainSize, maxCells, maxStyles, styleSize, cellSize);
-    } catch (error) {
-      console.error(error);
-      this._errorEmitter.emit(error);
-      return 0;
-    }
   }
 
   _gpuSubmit(core, submissionPtr) {
