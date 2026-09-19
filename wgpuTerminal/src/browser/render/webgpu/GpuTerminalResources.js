@@ -148,7 +148,7 @@ export function setGrainStrength(renderer, value) {
   if (!Number.isFinite(strength) || strength < 0 || strength > 32) throw new Error("invalid grain strength");
   if (strength === renderer.grainStrength) return;
   renderer.grainStrength = strength;
-  if (renderer.initialized && renderer.rows) renderer.presenter?.present();
+  if (renderer.initialized && renderer.rows) renderer.presenter?.requestPresentation();
 }
 
 export function resize(renderer, widthValue, heightValue) {
@@ -190,7 +190,7 @@ export function resize(renderer, widthValue, heightValue) {
   renderer.offscreen = offscreen;
   renderer.offscreenView = offscreenView;
   oldOffscreen?.destroy();
-  if (renderer.rows) renderer.presenter?.present();
+  if (renderer.rows) renderer.presenter?.requestPresentation();
 }
 
 export async function readPixels(renderer) {
@@ -219,11 +219,7 @@ export function dispose(renderer) {
   if (renderer.disposed) return;
   renderer.disposed = true;
   renderer.device?.removeEventListener("uncapturederror", renderer.onUncapturedError);
-  for (const frame of renderer.presentationFrames) cancelAnimationFrame(frame);
-  renderer.presentationFrames.clear();
   renderer.queueProbePending = false;
-  if (renderer.blinkTimer) clearTimeout(renderer.blinkTimer);
-  renderer.blinkTimer = null;
   renderer.atlas?.dispose?.();
   renderer.offscreen?.destroy?.();
   renderer.frameUploadBuffer?.destroy?.();

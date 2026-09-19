@@ -353,12 +353,12 @@ export function resizeWebGl(renderer, widthValue, heightValue) {
   renderer.canvas.width = width;
   renderer.canvas.height = height;
   renderer.gl.viewport(0, 0, width, height);
-  if (renderer.rows) renderer.presenter?.present();
+  if (renderer.rows) renderer.presenter?.requestPresentation();
 }
 
 export function readWebGlPixels(renderer) {
   if (!renderer.initialized) throw new Error("GPU terminal is not initialized");
-  renderer.presenter?.present();
+  renderer.presenter?.requestPresentation();
   const gl = renderer.gl;
   const width = renderer.canvas.width;
   const height = renderer.canvas.height;
@@ -374,7 +374,6 @@ export function readWebGlPixels(renderer) {
 
 export function disposeWebGl(renderer) {
   if (renderer.error === "disposed") return;
-  if (renderer.blinkTimer) clearTimeout(renderer.blinkTimer);
   const gl = renderer.gl;
   renderer.canvas.removeEventListener("webglcontextlost", renderer.contextLostListener);
   renderer.canvas.removeEventListener("webglcontextrestored", renderer.contextRestoredListener);

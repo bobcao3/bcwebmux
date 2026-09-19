@@ -473,6 +473,8 @@ export class Terminal {
       if (!document.hidden) {
         this._focusController.windowFocus();
         this._scheduler.resume();
+      } else {
+        this._scheduler.suspend();
       }
     });
     listen(this._coarsePointer, "change", () => {
@@ -490,16 +492,17 @@ export class Terminal {
   }
 
   _renderFrame() {
-    const core = this._core;
-    if (!core || this._renderer?.error) return;
+    const core = this._renderingCore ?? this._core;
+    if (!core) return;
     const startedAt = performance.now();
-    try { core.renderFrame(); } catch { return; }
+    const result = core.renderFrame();
     const elapsed = performance.now() - startedAt;
     if (Number.isFinite(elapsed)) {
       core._state.wasmFrameMs = core._state.wasmFrameMs == null
         ? elapsed
         : core._state.wasmFrameMs * 0.8 + elapsed * 0.2;
     }
+    return result;
   }
 
   _submitFrameMetadata(metadata) {

@@ -28,13 +28,15 @@ const backend = {
     operations.push("cells");
     assert.deepEqual([first, count, cells.length, selections.length], [0, 1, 16, 1]);
   },
-  presentCurrentState() { operations.push("present"); }, updateBlinkTimer() {},
+  presentCurrentState() { operations.push("present"); },
 };
 const presenter = new FramePresenter({
   _textView: { update() { operations.push("text"); } },
   _submitFrameMetadata() { operations.push("metadata"); },
 }, backend);
 presenter.consumeFrame(core);
+assert.ok(!operations.includes("present"), "consuming never presents");
+presenter.present();
 assert.deepEqual(operations, ["bitmap", "canvas", "styles", "cells", "text", "metadata", "present"]);
 assert.equal(presenter.revision, 1);
 operations.length = 0;
@@ -53,5 +55,7 @@ packet.revision++;
 presenter.consumeFrame(core);
 assert.equal(presenter.valid, true);
 assert.equal(backend.error, null);
+assert.equal(operations.at(-1), "metadata");
+presenter.present();
 assert.equal(operations.at(-1), "present");
 console.log("frame presenter contract passed");

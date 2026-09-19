@@ -100,7 +100,6 @@ export class GpuTerminal {
     this.presentationOpportunityMs = null;
     this.disposed = false;
     this.queueProbePending = false;
-    this.presentationFrames = new Set();
     this.lastQueueProbeAt = -Infinity;
     this.bundleExecutions = 0;
     this.rasterPasses = 0;
@@ -110,7 +109,6 @@ export class GpuTerminal {
     this.indirectData = new Uint32Array([6, 0, 0, 0]);
     this.error = null;
     this.initialized = false;
-    this.blinkTimer = 0;
     this.submissionMetadata = {
       cols: 0,
       rows: 0,
@@ -121,10 +119,10 @@ export class GpuTerminal {
 
     };
     this.device.lost.then(info => {
-      if (!this.disposed) this.error = `WebGPU device lost: ${info.message}`;
+      if (!this.disposed) { this.error = `WebGPU device lost: ${info.message}`; this.presenter?.host._scheduler?.suspend(); }
     });
     this.onUncapturedError = event => {
-      if (!this.disposed && this.error === null) this.error = event.error.message;
+      if (!this.disposed && this.error === null) { this.error = event.error.message; this.presenter?.host._scheduler?.suspend(); }
     };
     this.device.addEventListener("uncapturederror", this.onUncapturedError);
   }
@@ -158,6 +156,7 @@ export class GpuTerminal {
       this.rebuildCellBundle();
     } catch (error) {
       this.error = error.message;
+        this.presenter?.host._scheduler?.suspend();
       throw error;
     }
   }
@@ -286,7 +285,7 @@ export class GpuTerminal {
     this.atlas.setCanvasRun(...args);
   }
 
-  presentCurrentState() {
+  presentCurrentState(blinkOn = true) {
     if (this.disposed || !this.offscreen || !this.rows || this.error) return;
     const drawStartedAt = performance.now();
     this.uniformU32[0] = this.cols;
@@ -305,7 +304,7 @@ export class GpuTerminal {
     this.uniformF32[13] = this.grainStrength;
     this.uniformU32[14] = this.atlas.tileWidth;
     this.uniformU32[15] = this.atlas.tileHeight;
-    this.uniformU32[16] = Math.floor(performance.now() / 500) % 2 === 0 ? 1 : 0;
+    this.uniformU32[16] = blinkOn ? 1 : 0;
     const indirectOffset = this.indirectDirty ? UNIFORM_BUFFER_SIZE : null;
     let stagingSize = UNIFORM_BUFFER_SIZE;
     if (indirectOffset !== null) stagingSize += 16;
@@ -347,15 +346,6 @@ export class GpuTerminal {
     const submittedAt = performance.now();
     const frameMs = submittedAt - drawStartedAt;
     this.frameMs = this.frameMs === null ? frameMs : this.frameMs * 0.8 + frameMs * 0.2;
-    const presentationFrame = requestAnimationFrame(() => {
-      if (this.disposed) return;
-      this.presentationFrames.delete(presentationFrame);
-      const presentationOpportunityMs = performance.now() - submittedAt;
-      this.presentationOpportunityMs = this.presentationOpportunityMs === null
-        ? presentationOpportunityMs
-        : this.presentationOpportunityMs * 0.8 + presentationOpportunityMs * 0.2;
-    });
-    this.presentationFrames.add(presentationFrame);
     const now = performance.now();
     if (!this.queueProbePending && now - this.lastQueueProbeAt >= 1000) {
       this.queueProbePending = true;
@@ -369,6 +359,7 @@ export class GpuTerminal {
         if (this.disposed) return;
         this.queueProbePending = false;
         this.error = error.message;
+        this.presenter?.host._scheduler?.suspend();
       });
     }
     this.frames += 1;
@@ -378,22 +369,6 @@ export class GpuTerminal {
 
   async readPixels() { return readPixelsResources(this); }
 
-  updateBlinkTimer() {
-    if (this.disposed) return;
-    const animated = (this.cursorFlags & 6) !== 0;
-    if (!animated && this.blinkTimer) {
-      clearTimeout(this.blinkTimer);
-      this.blinkTimer = 0;
-      return;
-    }
-    if (animated && !this.blinkTimer) {
-      this.blinkTimer = setTimeout(() => {
-        this.blinkTimer = 0;
-        this.presenter?.present();
-        this.updateBlinkTimer();
-      }, 500);
-    }
-  }
 
   dispose() { return disposeResources(this); }
 

@@ -71,7 +71,7 @@ export function attachCore(host, core) {
     if ((host.options.canonicalGeometry
       ? core.setRenderMetrics(layout)
       : core.resize(layout)) !== 1) throw new Error("terminal core resize failed");
-    if (core.renderFrame() !== 1) throw new Error("terminal core render failed");
+    if (host._scheduler.flushImmediate() !== 1) throw new Error("terminal core render failed");
     host._core = core;
     host.clearPendingLatency();
     host._renderingCore = null;
@@ -86,7 +86,7 @@ export function attachCore(host, core) {
       if ((host.options.canonicalGeometry
         ? previousCore.setRenderMetrics(layout)
         : previousCore.resize(layout)) !== 1) throw new Error("previous core resize failed");
-      if (previousCore.renderFrame() !== 1) throw new Error("previous core render failed");
+      if (host._scheduler.flushImmediate() !== 1) throw new Error("previous core render failed");
     } catch {}
     host._renderingCore = null;
     if (!wasOwned) {

@@ -113,7 +113,6 @@ export class WebGlTerminal {
     this.cacheMisses = 0;
     this.error = null;
     this.initialized = false;
-    this.blinkTimer = 0;
     this.submissionMetadata = {
       cols: 0,
       rows: 0,
@@ -126,9 +125,11 @@ export class WebGlTerminal {
     this.contextLostListener = event => {
       event.preventDefault();
       this.error = "WebGL context lost; reload required";
+      this.presenter?.host._scheduler?.suspend();
     };
     this.contextRestoredListener = () => {
       this.error = "WebGL context restored; reload required";
+      this.presenter?.host._scheduler?.suspend();
     };
     canvas.addEventListener("webglcontextlost", this.contextLostListener);
     canvas.addEventListener("webglcontextrestored", this.contextRestoredListener);
@@ -174,7 +175,7 @@ export class WebGlTerminal {
     if (!Number.isFinite(strength) || strength < 0 || strength > 32) throw new Error("invalid grain strength");
     if (strength === this.grainStrength) return;
     this.grainStrength = strength;
-    if (this.initialized && this.rows) this.presenter?.present();
+    if (this.initialized && this.rows) this.presenter?.requestPresentation();
   }
 
   resize(width, height) {
@@ -228,7 +229,7 @@ export class WebGlTerminal {
 
   uploadCanvasRun(...args) { this.atlas.setCanvasRun(...args); }
 
-  presentCurrentState() {
+  presentCurrentState(blinkOn = true) {
     const gl = this.gl;
     if (!this.initialized || !this.rows || this.error || gl.isContextLost()) return;
     const startedAt = performance.now();
@@ -249,7 +250,7 @@ export class WebGlTerminal {
     gl.uniform1f(this.uniforms.grain_strength, this.grainStrength);
     gl.uniform1ui(this.uniforms.tile_width, this.atlas.tileWidth);
     gl.uniform1ui(this.uniforms.tile_height, this.atlas.tileHeight);
-    gl.uniform1ui(this.uniforms.blink_on, Math.floor(performance.now() / 500) % 2 === 0 ? 1 : 0);
+    gl.uniform1ui(this.uniforms.blink_on, blinkOn ? 1 : 0);
     gl.uniform1ui(this.uniforms.style_texture_width, this.styleTextureWidth);
     gl.uniform1ui(this.uniforms.selection_texture_width, this.selectionTextureWidth);
     gl.activeTexture(gl.TEXTURE0);
@@ -272,12 +273,6 @@ export class WebGlTerminal {
     const submittedAt = performance.now();
     const elapsed = submittedAt - startedAt;
     this.frameMs = this.frameMs === null ? elapsed : this.frameMs * 0.8 + elapsed * 0.2;
-    requestAnimationFrame(() => {
-      const opportunity = performance.now() - submittedAt;
-      this.presentationOpportunityMs = this.presentationOpportunityMs === null
-        ? opportunity
-        : this.presentationOpportunityMs * 0.8 + opportunity * 0.2;
-    });
     this.frames += 1;
     this.drawCalls += 1;
     this.rasterPasses += 1;
@@ -287,19 +282,6 @@ export class WebGlTerminal {
     return readWebGlPixels(this);
   }
 
-  updateBlinkTimer() {
-    const animated = (this.cursorFlags & 6) !== 0;
-    if (!animated && this.blinkTimer) {
-      clearTimeout(this.blinkTimer);
-      this.blinkTimer = 0;
-    } else if (animated && !this.blinkTimer) {
-      this.blinkTimer = setTimeout(() => {
-        this.blinkTimer = 0;
-        this.presenter?.present();
-        this.updateBlinkTimer();
-      }, 500);
-    }
-  }
 
   dispose() {
     return disposeWebGl(this);

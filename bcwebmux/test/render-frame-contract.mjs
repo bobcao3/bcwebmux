@@ -1,3 +1,4 @@
+import { FrameScheduler } from "../../wgpuTerminal/src/browser/FrameScheduler.js";
 import { FramePresenter } from "../../wgpuTerminal/src/browser/render/FramePresenter.js";
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Cheng Cao
@@ -187,7 +188,7 @@ host._renderer = {
     for (const core of cores) assert.equal(core._wasm.term_frame_token(), 0);
     presentations++;
   },
-  updateBlinkTimer() {},
+
 };
 host._presenter = new FramePresenter(host, host._renderer);
 host._presenter.resizeTerminalPartition = () => {};
@@ -195,7 +196,11 @@ host._viewportController = {
   latestPixelViewport: {}, cancelScrollGesture() {}, submitFrameMetadata() {},
   physicalLayout: () => ({ cols: 8, rows: 3, cellWidth: 8, cellHeight: 16, fontSize: 15 }),
 };
-assert.equal(cores[0].renderFrame(), 1);
+host._scheduler = new FrameScheduler(host, {
+  document: { hidden: false }, requestAnimationFrame: () => 1, cancelAnimationFrame() {},
+  setTimeout: () => 1, clearTimeout() {},
+});
+assert.equal(host._scheduler.flushImmediate(), 1);
 assert.equal(presentations, 1);
 failCore = cores[1];
 const originalError = console.error;

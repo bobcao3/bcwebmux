@@ -163,7 +163,15 @@ async function openGpuTestSession() {
   transport.setActive(activeAttachment);
 }
 
+let statusTimer = null;
+let telemetryTimer = null;
+
 function renderConnectionStatus() {
+  clearTimeout(statusTimer);
+  statusTimer = null;
+  if (!document.hidden && (startupRetryAt != null || transport.state.retryAt != null)) {
+    statusTimer = setTimeout(renderConnectionStatus, 250);
+  }
   const state = transport.state;
   if (!appReady && startupRetryAt != null) {
     const retryMs = Math.max(0, startupRetryAt - performance.now());
@@ -556,6 +564,10 @@ function combinedState() {
 }
 
 function updateTelemetry() {
+  clearTimeout(telemetryTimer);
+  telemetryTimer = null;
+  if (document.hidden || perf.dataset.mode === "off" || !appReady) return;
+  telemetryTimer = setTimeout(updateTelemetry, 500);
   const state = combinedState();
   const mode = perf.dataset.mode || "detailed";
   const gpuError = typeof state.gpuError === "string" ? state.gpuError.trim() || null : null;
@@ -693,7 +705,10 @@ if (query.has("session-test")) {
 }
 
 setConnectionStatus("recovering", "Connecting");
-setInterval(renderConnectionStatus, 250);
+document.addEventListener("visibilitychange", () => {
+  renderConnectionStatus();
+  updateTelemetry();
+});
 try {
   await openInitialSession();
   appReady = true;
@@ -704,6 +719,6 @@ renderConnectionStatus();
 if (appReady) {
   applyPerfMode(settings.perfMode);
   updateTelemetry();
-  setInterval(updateTelemetry, 250);
+
   maybeShowNotificationPrompt();
 }

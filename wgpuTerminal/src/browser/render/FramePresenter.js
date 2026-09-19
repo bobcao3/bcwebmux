@@ -15,11 +15,12 @@ export class FramePresenter {
     this.revision = null;
   }
 
-  invalidate() {
+  invalidate(recover = true) {
     const wasValid = this.valid || this.revision !== null;
     this.valid = false;
     this.revision = null;
     if (wasValid && this.core?.ready) this.core.invalidateFrame();
+    if (recover) this.host._scheduler?.recover();
   }
 
   registerTerminal(...args) { return this.changeAtlas("registerTerminal", args); }
@@ -96,23 +97,29 @@ export class FramePresenter {
         if (full) b.error = null;
         this.host._submitFrameMetadata(b.submissionMetadata);
         this.host._viewportController?.submitFrameMetadata(b.submissionMetadata);
-        this.present();
-        b.updateBlinkTimer();
+
       } else if (revision !== undefined) {
         this.invalidate();
       }
       return result;
     } catch (error) {
-      this.invalidate();
+      this.invalidate(false);
       b.error = error.message;
       this.host._errorEmitter?.emit(error);
       throw error;
     }
   }
 
-  present() {
+  requestPresentation() { this.host._scheduler?.requestPresentation(); }
+
+  nextAnimationDeadline(now) {
+    return this.valid && !this.backend.error && (this.backend.cursorFlags & 6) !== 0
+      ? (Math.floor(now / 500) + 1) * 500 : null;
+  }
+
+  present(now = performance.now()) {
     if (!this.valid || this.backend.error || this.backend.activeTerminal !== this.core) return false;
-    this.backend.presentCurrentState();
+    this.backend.presentCurrentState(Math.floor(now / 500) % 2 === 0);
     return true;
   }
 }
