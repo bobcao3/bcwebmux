@@ -2,6 +2,13 @@
 
 The complete remote-terminal application: browser UI, session management, and a Go HTTP(S)/WebSocket frontend backed by a native Zig session core and PTY worker.
 
+## Core design
+
+bcwebmux replicates a PTY session between the server and multiple clients. The
+server and every client run the same libghostty terminal. The transport uses
+state snapshots as its baseline, with compressed PTY diffs layered on top to
+keep the replicas synchronized.
+
 ## Get started
 
 Prerequisites: Zig 0.16.0, Node/npm, GNU tar, Linux, and a modern Chromium browser with WebGPU or WebGL2. `zig build` provisions a pinned Go toolchain itself and defaults to musl; no system Go or C toolchain is required.
