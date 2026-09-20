@@ -110,6 +110,27 @@ pub fn build(b: *std.Build) void {
         }),
     });
     const snapshot_fixture_csi_run = b.addRunArtifact(snapshot_fixture);
+    const graphics_proof_ghostty = b.dependency("ghostty", .{
+        .target = b.graph.host,
+        .optimize = server_optimize,
+        .simd = false,
+        .@"emit-lib-vt" = true,
+        .@"vt-features" = "-all,+snapshot,+kitty-graphics",
+    });
+    const graphics_proof = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("test/kitty-adapter-proof.zig"),
+            .target = b.graph.host,
+            .optimize = server_optimize,
+            .imports = &.{.{
+                .name = "ghostty-vt",
+                .module = graphics_proof_ghostty.module("ghostty-vt"),
+            }},
+        }),
+    });
+    const run_graphics_proof = b.addRunArtifact(graphics_proof);
+    const graphics_proof_step = b.step("kitty-proof-test", "Characterize no-fork Kitty APIs and snapshot replication limits (does not enable graphics)");
+    graphics_proof_step.dependOn(&run_graphics_proof.step);
     const snapshot_csi_file = snapshot_fixture_csi_run.addOutputFileArg("terminal-core-csi.snapshot");
     snapshot_fixture_csi_run.addArg("csi");
     const snapshot_fixture_utf8_run = b.addRunArtifact(snapshot_fixture);
@@ -405,6 +426,7 @@ pub fn build(b: *std.Build) void {
     utf_probe_cmd.addArg(b.getInstallPath(.prefix, "web"));
     const test_step = b.step("test", "Run unit and browser end-to-end tests");
     test_step.dependOn(unit_test_step);
+    test_step.dependOn(graphics_proof_step);
     test_step.dependOn(render_frame_contract_step);
     test_step.dependOn(&network_relay_cmd.step);
     test_step.dependOn(&protocol_contract_cmd.step);

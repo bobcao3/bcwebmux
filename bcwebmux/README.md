@@ -103,6 +103,7 @@ From `bcwebmux/`:
 zig build
 zig build server-test
 zig build unit-test
+zig build kitty-proof-test
 zig build test
 zig build e2e
 zig build visual-test
@@ -110,6 +111,9 @@ TEXT_RENDERER=canvas zig build text-renderer-test
 ```
 
 `server-test` runs native server tests; `unit-test` runs Zig unit tests.
+`kitty-proof-test` characterizes the pinned libghostty graphics APIs and snapshot
+limitations in a separate graphics-enabled test build. It does not enable graphics
+in the application; passing characterization tests is not feature acceptance.
 The shell startup regression (requires `/bin/bash`) can also run directly:
 `node test/session-shell-integration.mjs ./zig-out/bin/bcwebmux-server`.
 `test` includes browser end-to-end tests, not just unit tests. Browser tests
