@@ -7,6 +7,7 @@ import { SessionController } from "./SessionController.js";
 import { SessionDrawer } from "./SessionDrawer.js";
 import { SessionTransport } from "./SessionTransport.js";
 import { initializeSettings } from "./settings.js";
+import { initializeGlyphAtlasDialog } from "./GlyphAtlasDialog.js";
 
 const terminalElement = document.querySelector("#terminal");
 const terminalIdentity = document.querySelector("#terminal-identity");
@@ -498,6 +499,7 @@ transport.onStatus(() => {
 });
 
 settings.setOnChange((profile) => terminal.setTheme(profile));
+initializeGlyphAtlasDialog(() => terminal.readGlyphAtlas());
 settings.setOnFontChange(async (font) => {
   try {
     await terminal.setFont(font);

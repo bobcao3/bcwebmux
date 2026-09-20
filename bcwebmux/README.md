@@ -114,6 +114,14 @@ session-transport recovery suite. Use `TEXT_RENDERER=canvas` for the GPU input
 tests' browser text path; omit it to exercise kb/STB there. Test server launches
 ignore personal server configuration without changing browser fontconfig.
 
+### Glyph texture inspector
+
+Settings → **PERF → VIEW GLYPH TEXTURE** opens a snapshot of the shared glyph
+atlas on either GPU backend. Use **REFRESH** to capture again or **Actual pixels**
+for an unscaled, scrollable view. The grayscale image shows the R8 alpha mask,
+including unused/stale cache slots, not a second rendering of the terminal.
+Debug captures are limited to 16 Mi pixels and run only on request.
+
 ### Full-screen visual regression tests
 
 `zig build visual-test` runs the screenshot suite alone; `e2e` and `test` also

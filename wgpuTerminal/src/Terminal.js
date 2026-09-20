@@ -1027,6 +1027,27 @@ export class Terminal {
     return this._renderer.readPixels();
   }
 
+  async readGlyphAtlas() {
+    this._assertMutable();
+    const renderer = this._renderer;
+    if (this._disposed || !renderer?.atlas?.texture || renderer.error || renderer.available === false || this._recovering) {
+      throw new Error("Glyph texture is unavailable");
+    }
+    if (this._glyphAtlasReadPending) throw new Error("Glyph texture readback is already pending");
+    const texture = renderer.atlas.texture;
+    this._glyphAtlasReadPending = true;
+    try {
+      const snapshot = await renderer.readGlyphAtlas();
+      if (this._disposed || this._renderer !== renderer || this._recovering || renderer.error ||
+          renderer.available === false || renderer.atlas.texture !== texture) {
+        throw new Error("Glyph texture changed during readback; refresh to retry");
+      }
+      return snapshot;
+    } finally {
+      this._glyphAtlasReadPending = false;
+    }
+  }
+
   dispose() {
     this._assertMutable();
     if (this._disposed) return;

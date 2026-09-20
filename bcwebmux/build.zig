@@ -124,6 +124,8 @@ pub fn build(b: *std.Build) void {
     render_frame_contract_cmd.step.dependOn(&renderer_integration_contract_cmd.step);
     const frame_presenter_contract_cmd = b.addSystemCommand(&.{ "node", "test/frame-presenter-contract.mjs" });
     const canvas_text_contract_cmd = b.addSystemCommand(&.{ "node", "test/canvas-text-contract.mjs" });
+    const glyph_atlas_snapshot_contract_cmd = b.addSystemCommand(&.{ "node", "test/glyph-atlas-snapshot-contract.mjs" });
+    render_frame_contract_cmd.step.dependOn(&glyph_atlas_snapshot_contract_cmd.step);
     render_frame_contract_cmd.step.dependOn(&canvas_text_contract_cmd.step);
     const frame_scheduler_contract_cmd = b.addSystemCommand(&.{ "node", "test/frame-scheduler-contract.mjs" });
     render_frame_contract_cmd.step.dependOn(&frame_scheduler_contract_cmd.step);

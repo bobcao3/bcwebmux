@@ -228,7 +228,27 @@
         <button id="notifications-enable" type="button">ENABLE NOTIFICATIONS</button>
         <output id="notifications-status" role="status"></output>
       </fieldset>
+      <fieldset>
+        <legend>Glyph debug visualization</legend>
+        <p>Inspect a snapshot of the shared glyph texture, including unused cache slots.</p>
+        <button id="glyph-atlas-open" type="button" aria-haspopup="dialog">VIEW GLYPH TEXTURE</button>
+      </fieldset>
     </section>
+  </dialog>
+  <dialog id="glyph-atlas-dialog" aria-labelledby="glyph-atlas-title">
+    <header>
+      <h1 id="glyph-atlas-title">[ GLYPH TEXTURE ]</h1>
+      <button id="glyph-atlas-close" type="button" aria-label="Close glyph texture" autofocus>×</button>
+    </header>
+    <div class="glyph-atlas-toolbar">
+      <button id="glyph-atlas-refresh" type="button">REFRESH</button>
+      <label><input id="glyph-atlas-actual-size" type="checkbox"> Actual pixels</label>
+      <span>Alpha mask: black = empty, white = opaque.</span>
+    </div>
+    <output id="glyph-atlas-status" role="status"></output>
+    <div class="glyph-atlas-viewport" tabindex="0" role="region" aria-label="Scrollable glyph texture">
+      <canvas id="glyph-atlas-canvas" width="1" height="1" role="img" aria-label="Glyph atlas alpha mask" hidden></canvas>
+    </div>
   </dialog>
   <script type="module" src="/client.js"></script>
 </body>

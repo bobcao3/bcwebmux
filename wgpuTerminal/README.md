@@ -78,6 +78,11 @@ terminal identities and logical state are not reset or replayed. Recovery errors
 emit `onError` and leave presentation suspended. `readPixels()` retains its
 last-presentation capture behavior when the backend is available.
 
+`await terminal.readGlyphAtlas()` captures the shared glyph texture on demand,
+returning top-first R8 bytes plus texture/grid/cell dimensions. Debug snapshots
+are limited to 16 Mi pixels, reject concurrent reads and renderer changes, and
+do not retain GPU resources after readback. They include unused/stale cache slots.
+
 `TerminalCore` and `FramePacket` alone access WASM exports/memory. Controllers use
 semantic callbacks and perform DOM coordinate conversion. Terminal versions one
 frozen render-metric configuration shared with cores, backend, pointer and IME;

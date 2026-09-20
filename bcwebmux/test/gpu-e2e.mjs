@@ -475,6 +475,55 @@ try {
     const detailed = settingsDialog.querySelector('input[type="radio"][value="detailed"]');
     if (!simple || !detailed) throw new Error("performance mode radios are missing");
     tabs.PERF.click();
+    const glyphOpen = panels.PERF.querySelector("#glyph-atlas-open");
+    const glyphDialog = document.querySelector("#glyph-atlas-dialog");
+    const glyphCanvas = document.querySelector("#glyph-atlas-canvas");
+    const glyphStatus = document.querySelector("#glyph-atlas-status");
+    const glyphRefresh = document.querySelector("#glyph-atlas-refresh");
+    if (!glyphOpen || !glyphDialog || !glyphCanvas) throw new Error("glyph debug controls are missing");
+    const waitGlyphTexture = async () => {
+      const end = deadline(5000);
+      while (glyphRefresh.disabled && performance.now() < end) await sleep(20);
+      if (glyphCanvas.hidden || glyphCanvas.width < 2 || !glyphStatus.textContent.includes("R8")) {
+        throw new Error("glyph preview failed: " + glyphStatus.textContent);
+      }
+      const image = glyphCanvas.getContext("2d").getImageData(0, 0, glyphCanvas.width, glyphCanvas.height);
+      let ink = 0, empty = 0;
+      for (let i = 0; i < image.data.length; i += 4) {
+        if (image.data[i] > 0) ink++;
+        else empty++;
+        if (image.data[i] !== image.data[i + 1] || image.data[i] !== image.data[i + 2] || image.data[i + 3] !== 255) {
+          throw new Error("glyph preview is not an opaque grayscale mask");
+        }
+      }
+      if (!ink || !empty) throw new Error("glyph preview has no glyphs or empty slots");
+      const view = glyphCanvas.parentElement;
+      if (glyphCanvas.getBoundingClientRect().height > view.clientHeight ||
+          glyphCanvas.getBoundingClientRect().width > view.clientWidth) throw new Error("glyph preview does not fit the lightbox");
+    };
+    glyphOpen.click();
+    if (!glyphDialog.open || !settingsDialog.open) throw new Error("glyph lightbox did not open above settings");
+    await waitGlyphTexture();
+    const actualSize = document.querySelector("#glyph-atlas-actual-size");
+    actualSize.click();
+    if (!glyphCanvas.classList.contains("actual-size")) throw new Error("glyph actual-pixel view failed");
+    if (Math.abs(glyphCanvas.getBoundingClientRect().width - glyphCanvas.width) > 1) throw new Error("glyph actual pixels were scaled");
+    actualSize.click();
+    glyphRefresh.click();
+    await waitGlyphTexture();
+    document.querySelector("#glyph-atlas-close").click();
+    await sleep(20);
+    if (glyphDialog.open || !settingsDialog.open || document.activeElement !== glyphOpen || glyphCanvas.width !== 1) {
+      throw new Error("glyph lightbox did not release its image and restore settings focus");
+    }
+    glyphOpen.click();
+    glyphDialog.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+    if (glyphDialog.open || !settingsDialog.open) throw new Error("Escape did not return to settings");
+    const glyphCloseDeadline = deadline(5000);
+    while (glyphRefresh.disabled && performance.now() < glyphCloseDeadline) await sleep(20);
+    if (glyphRefresh.disabled) throw new Error("closed glyph lightbox readback did not settle");
+    await sleep(20);
+    if (!glyphCanvas.hidden || glyphCanvas.width !== 1) throw new Error("closed glyph lightbox accepted a late readback");
     simple.click();
     await new Promise(resolve => requestAnimationFrame(resolve));
     if (perfOutput.dataset.mode !== "simple") throw new Error("performance mode did not become simple");

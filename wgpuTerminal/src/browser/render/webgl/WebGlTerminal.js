@@ -271,6 +271,8 @@ export class WebGlTerminal {
     this.rasterPasses += 1;
   }
 
+  readGlyphAtlas() { return this.atlas.readPixels(); }
+
   readPixels() {
     return readWebGlPixels(this);
   }

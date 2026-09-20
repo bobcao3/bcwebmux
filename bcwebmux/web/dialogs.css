@@ -325,3 +325,59 @@
 @media (display-mode: fullscreen), (display-mode: standalone) {
   #terminal { --bottom-safe-inset: 0px; }
 }
+
+#glyph-atlas-dialog {
+  width: min(1100px, calc(100vw - 32px));
+  height: 90dvh;
+  max-width: none;
+  max-height: 90dvh;
+  padding: 0;
+  overflow: hidden;
+  border: 2px solid var(--color-border);
+  background: var(--color-background);
+  color: var(--color-foreground);
+  font-family: var(--terminal-font);
+}
+
+#glyph-atlas-dialog[open] { display: flex; flex-direction: column; }
+#glyph-atlas-dialog::backdrop { background: rgb(0 0 0 / 85%); }
+#glyph-atlas-dialog > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-shrink: 0;
+  border-bottom: 2px solid var(--color-border);
+  background: var(--color-surface);
+}
+#glyph-atlas-title { margin: 12px; font-size: 16px; }
+#glyph-atlas-close {
+  align-self: stretch;
+  min-width: 48px;
+  min-height: 48px;
+  border: 0;
+  border-left: 2px solid var(--color-border);
+  background: var(--color-background);
+  color: var(--color-foreground);
+  font: 700 24px/1 var(--terminal-font);
+}
+#glyph-atlas-close:hover { background: var(--color-danger); }
+.glyph-atlas-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 12px; }
+.glyph-atlas-toolbar, #glyph-atlas-status { flex-shrink: 0; font-size: 12px; }
+#glyph-atlas-open, #glyph-atlas-refresh {
+  min-height: 44px;
+  padding: 8px 12px;
+  border: 2px solid var(--color-border);
+  background: var(--color-background);
+  color: var(--color-foreground);
+  font: 700 12px/1 var(--terminal-font);
+}
+#glyph-atlas-open:disabled, #glyph-atlas-refresh:disabled { opacity: .5; cursor: wait; }
+#glyph-atlas-dialog :focus-visible, #glyph-atlas-open:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: -3px;
+}
+#glyph-atlas-status { padding: 0 12px 12px; overflow-wrap: anywhere; }
+.glyph-atlas-viewport { flex: 1; min-height: 0; overflow: auto; padding: 8px; background: #111; }
+#glyph-atlas-canvas { display: block; max-width: 100%; max-height: 100%; width: auto; height: auto; margin: 0 auto; image-rendering: pixelated; }
+#glyph-atlas-canvas[hidden] { display: none; }
+#glyph-atlas-canvas.actual-size { max-width: none; max-height: none; margin: 0; }

@@ -333,6 +333,11 @@ export declare class Terminal implements IDisposable {
   reset(): boolean;
   restoreSnapshot(data: string | ArrayBuffer | ArrayBufferView, core?: TerminalCore): void;
   readPixels(): Promise<{ width: number; height: number; format: string; data: Uint8Array }>;
+  /** On-demand shared atlas snapshot (top-first R8), limited to 16 Mi pixels. */
+  readGlyphAtlas(): Promise<{
+    width: number; height: number; columns: number; rows: number;
+    tileWidth: number; tileHeight: number; format: "r8unorm"; data: Uint8Array;
+  }>;
   clearPendingLatency(): void;
   dispose(): void;
 }

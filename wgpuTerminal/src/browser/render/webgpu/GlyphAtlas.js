@@ -2,6 +2,7 @@
 // Copyright (c) 2026 Cheng Cao
 
 import { validateAtlasGeometry } from "../CanvasAlphaMask.js";
+import { glyphAtlasSnapshotLayout } from "../GlyphAtlasSnapshot.js";
 
 export class GlyphAtlas {
   constructor(device, font, geometry, cellWidth, cellHeight, fontSize) {
@@ -74,6 +75,30 @@ export class GlyphAtlas {
     const copies = this.pendingTextureCopies;
     this.pendingTextureCopies = [];
     return copies;
+  }
+
+  async readPixels() {
+    if (!this.texture || this.pendingTextureCopies.length) throw new Error("Glyph texture is not ready; retry after rendering");
+    const layout = glyphAtlasSnapshotLayout(this);
+    const { width, height } = layout;
+    const bytesPerRow = Math.ceil(width / 256) * 256;
+    const buffer = this.device.createBuffer({
+      size: bytesPerRow * height,
+      usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
+    });
+    try {
+      const encoder = this.device.createCommandEncoder();
+      encoder.copyTextureToBuffer({ texture: this.texture }, { buffer, bytesPerRow, rowsPerImage: height }, [width, height, 1]);
+      this.device.queue.submit([encoder.finish()]);
+      await buffer.mapAsync(GPUMapMode.READ);
+      const source = new Uint8Array(buffer.getMappedRange());
+      const data = new Uint8Array(width * height);
+      for (let y = 0; y < height; y++) data.set(source.subarray(y * bytesPerRow, y * bytesPerRow + width), y * width);
+      buffer.unmap();
+      return { ...layout, data };
+    } finally {
+      buffer.destroy();
+    }
   }
 
   dispose() {

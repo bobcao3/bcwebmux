@@ -2,6 +2,8 @@
 // Copyright (c) 2026 Cheng Cao
 
 import { Terminal } from "/wgpuTerminal/src/index.js";
+import { GlyphAtlas } from "/wgpuTerminal/src/browser/render/webgpu/GlyphAtlas.js";
+import { WebGlGlyphAtlas } from "/wgpuTerminal/src/browser/render/webgl/WebGlGlyphAtlas.js";
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const nextFrame = () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
@@ -394,6 +396,35 @@ async function run() {
   terminal.attachCore(coreA);
   await pixels(terminal);
   result.canvasFontLifecycle = true;
+  const debugBackend = terminal._renderer;
+  const atlasPixels = debugBackend.atlas.capacity * debugBackend.atlas.tileWidth * debugBackend.atlas.tileHeight;
+  if (atlasPixels <= 16 * 1024 * 1024) {
+    const atlasSnapshot = await terminal.readGlyphAtlas();
+    if (atlasSnapshot.data.length !== atlasSnapshot.width * atlasSnapshot.height ||
+        !atlasSnapshot.data.some(value => value > 0)) throw new Error("glyph atlas snapshot is empty");
+  } else {
+    let bounded = false;
+    try { await terminal.readGlyphAtlas(); } catch (error) { bounded = error.message.includes("debug limit"); }
+    if (!bounded) throw new Error("oversized glyph atlas readback was not bounded");
+  }
+  const debugAtlas = debugBackend.gl
+    ? new WebGlGlyphAtlas(debugBackend.gl, null, { columns: 1, rows: 1 }, 3, 2, 1)
+    : new GlyphAtlas(debugBackend.device, null, { columns: 1, rows: 1 }, 3, 2, 1);
+  const pattern = new Uint8Array([0, 17, 255, 240, 50, 1]);
+  try {
+    if (debugBackend.gl) debugAtlas.uploadBitmap(0, 1, pattern, 0, 3);
+    else debugBackend.device.queue.writeTexture({ texture: debugAtlas.texture }, pattern,
+      { bytesPerRow: 3 }, [3, 2, 1]);
+    const snapshot = await debugAtlas.readPixels();
+    if (snapshot.width !== 3 || snapshot.height !== 2 || snapshot.format !== "r8unorm" ||
+        snapshot.data.some((value, i) => value !== pattern[i])) {
+      throw new Error("glyph atlas readback changed orientation, channels or row padding");
+    }
+  } finally {
+    debugAtlas.dispose();
+  }
+  terminal.write(" debug readback complete");
+  await pixels(terminal);
   window.terminalCoreTestTerminal = terminal;
   return result;
 }

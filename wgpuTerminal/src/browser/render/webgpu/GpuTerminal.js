@@ -364,6 +364,8 @@ export class GpuTerminal {
     this.rasterPasses += 1;
   }
 
+  readGlyphAtlas() { return this.atlas.readPixels(); }
+
   async readPixels() { return readPixelsResources(this); }
 
 

@@ -2,6 +2,7 @@
 // Copyright (c) 2026 Cheng Cao
 
 import { validateAtlasGeometry } from "../CanvasAlphaMask.js";
+import { glyphAtlasSnapshotLayout } from "../GlyphAtlasSnapshot.js";
 
 export class WebGlGlyphAtlas {
   constructor(gl, font, geometry, cellWidth, cellHeight, fontSize) {
@@ -126,6 +127,34 @@ export class WebGlGlyphAtlas {
 
   get capacity() {
     return this.columns * this.rows;
+  }
+
+  readPixels() {
+    const gl = this.gl;
+    if (!this.texture || gl.isContextLost()) throw new Error("Glyph texture is unavailable");
+    const layout = glyphAtlasSnapshotLayout(this);
+    const { width, height } = layout;
+    const previous = gl.getParameter(gl.READ_FRAMEBUFFER_BINDING);
+    const framebuffer = gl.createFramebuffer();
+    if (!framebuffer) throw new Error("Glyph texture readback allocation failed");
+    try {
+      gl.bindFramebuffer(gl.READ_FRAMEBUFFER, framebuffer);
+      gl.framebufferTexture2D(gl.READ_FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, this.texture, 0);
+      if (gl.checkFramebufferStatus(gl.READ_FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) {
+        throw new Error("Glyph texture readback framebuffer incomplete");
+      }
+      // RGBA/UNSIGNED_BYTE is portable for normalized attachments, including R8.
+      const rgba = new Uint8Array(width * height * 4);
+      gl.readPixels(0, 0, width, height, gl.RGBA, gl.UNSIGNED_BYTE, rgba);
+      if (gl.getError() !== gl.NO_ERROR) throw new Error("Glyph texture readback failed");
+      const data = new Uint8Array(width * height);
+      // Atlas uploads use row zero as the top, unlike the terminal framebuffer.
+      for (let i = 0; i < data.length; i++) data[i] = rgba[i * 4];
+      return { ...layout, data };
+    } finally {
+      gl.bindFramebuffer(gl.READ_FRAMEBUFFER, previous);
+      gl.deleteFramebuffer(framebuffer);
+    }
   }
 
   dispose() {
