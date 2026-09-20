@@ -29,7 +29,7 @@ await writeFile(path.join(outputDir, "index.html"), `<!doctype html>
 <style>body{background:#10141a;color:#eee;font:16px system-ui;margin:24px}a{color:#7dd3fc}section{display:flex;flex-wrap:wrap;gap:20px}figure{margin:0;width:min(100%,720px)}img{max-width:100%;height:auto;border:1px solid #555}figure.mobile{width:290px}figcaption{margin:8px 0}</style>
 <h1>Full-viewport terminal screenshots</h1>
 <p>Click an image for native resolution. Desktop: 1440×900 @1×. Mobile: 390×844 @3× (1170×2532 pixels).
-Unicode probes expose the bundled font's current missing CJK/emoji glyphs.</p>
+Unicode probes verify browser font fallback for CJK, combining text and emoji.</p>
 ${backends.map(backend => `<h2>${backend}</h2><section>${devices.flatMap(device => ["unicode-source", "scroll-bottom", "scroll-top", "scroll-middle", "scroll-return"].map(label => {
   const name = `${device.name}-${backend}-${label}`;
   return `<figure class="${device.name}"><figcaption>${device.name} · ${label} · <a href="${name}.json">state</a></figcaption><a href="${name}.png"><img loading="lazy" src="${name}.png" alt="${name}"></a></figure>`;
@@ -98,8 +98,9 @@ async function run(backend, device) {
     const { name, ...metrics } = device;
     await page.call("Emulation.setDeviceMetricsOverride", metrics);
     await page.call("Emulation.setTouchEmulationEnabled", { enabled: device.mobile, maxTouchPoints: device.mobile ? 5 : 1 });
-    await page.call("Page.addScriptToEvaluateOnNewDocument", { source: `localStorage.setItem("bcwebmux.settings.v1", JSON.stringify({ renderer: 'kb-canvas', grainStrength: 0, perfMode: ${JSON.stringify(device.mobile ? "simple" : "detailed")} }));` });
-    await page.call("Page.navigate", { url: `http://127.0.0.1:${port}/?gpu-test=1&renderer=kb-canvas&backend=${backend}` });
+    await page.call("Page.addScriptToEvaluateOnNewDocument", { source: `(${installFontProbe.toString()})()` });
+    await page.call("Page.addScriptToEvaluateOnNewDocument", { source: `localStorage.setItem("bcwebmux.settings.v1", JSON.stringify({ renderer: 'canvas', grainStrength: 0, perfMode: ${JSON.stringify(device.mobile ? "simple" : "detailed")} }));` });
+    await page.call("Page.navigate", { url: `http://127.0.0.1:${port}/?gpu-test=1&renderer=canvas&backend=${backend}` });
     await until("window.bcwebmux?.connected === true", "terminal did not connect");
     await evaluate(`(async () => {
       if (document.querySelector('#notification-dialog').open) document.querySelector('#notification-dialog-later').click();
@@ -110,7 +111,7 @@ async function run(backend, device) {
       const normalize = value => value.split('\\n').map(line => {
         if (/^(Scroll:|Rows:)/.test(line)) return line;
         if (line.startsWith('Viewport:')) return line.replace(/ · Glyph atlas:.*/, ' · Glyph atlas: 100 / 4096 (2%) · cache: 100 hit / 10 miss');
-        return line.replace(/\\d+(?:\\.\\d+)?/g, '0').replace(/—/g, '0');
+        return line.replace(/\\d+(?:\\.\\d+)?/g, '0').replace(/—/g, '0').replace(/0[BKMG]\\b/g, '0K');
       }).join('\\n');
       Object.defineProperty(perf, 'value', {
         get() { return descriptor.get.call(this); },
@@ -172,6 +173,7 @@ async function run(backend, device) {
       "CJK: 中文 日本語 한글 · wide: A界B",
       "Combining: e\u0301 a\u0308 n\u0303 · NFC: é ä ñ",
       "Emoji: 😀 🚀 🐱 🎉 🌍 ❤",
+      "Sequences: 👩🏽‍💻 🇯🇵 ❤️ · A😀B A界B",
       "\x1b[31mred \x1b[32mgreen \x1b[34mblue \x1b[1mbold\x1b[0m \x1b[3mitalic\x1b[0m \x1b[4munderline\x1b[0m",
       "┌──────────────┐  ← ↑ → ↓",
       "│ box drawing  │  ░▒▓█",
@@ -179,6 +181,16 @@ async function run(backend, device) {
       "", "\x1b[1;33mtest/snapshot-fixture.zig\x1b[0m",
     ].join("\n");
     await output(`${gallery}\n${numberedSource(source.slice(0, 18))}\n`, true);
+    await evaluate("(async () => { await window.bcwebmux.readPixels(); })()");
+    const fontProbe = await evaluate("window.canvasFontProbe");
+    for (const text of ["中", "文", "日", "本", "語", "한", "글", "e\u0301", "😀", "🚀", "🐱", "👩🏽‍💻", "🇯🇵", "❤️"]) {
+      const probe = fontProbe[text];
+      assert.ok(probe, `${prefix}: ${text} did not reach Canvas as intact text`);
+      assert.ok(probe.ink > 0, `${prefix}: ${text} rendered blank`);
+      assert.equal(probe.missing, false, `${prefix}: ${text} rendered a missing-glyph box`);
+      assert.match(probe.font, /JetBrains Mono Nerd Font.*Noto Emoji/);
+    }
+    await writeFile(path.join(outputDir, `${prefix}-font-probe.json`), JSON.stringify(fontProbe, null, 2));
     await capture("unicode-source");
 
     await evaluate(`(() => {
@@ -224,4 +236,33 @@ async function run(backend, device) {
     await terminateProcess(server);
     await rm(profile, { recursive: true, force: true });
   }
+}
+
+// Observe real terminal rasterization, not a separately rendered Unicode demo.
+function installFontProbe() {
+  const targets = new Set(["中", "文", "日", "本", "語", "한", "글", "e\u0301", "😀", "🚀", "🐱", "👩🏽‍💻", "🇯🇵", "❤️"]);
+  const fill = CanvasRenderingContext2D.prototype.fillText;
+  const read = CanvasRenderingContext2D.prototype.getImageData;
+  window.canvasFontProbe = {};
+  CanvasRenderingContext2D.prototype.fillText = function(text, ...args) {
+    fill.call(this, text, ...args);
+    if (!targets.has(text) || this.canvas.width * this.canvas.height > 100000) return;
+    const { width, height } = this.canvas;
+    const alpha = context => {
+      const rgba = read.call(context, 0, 0, width, height).data;
+      return Array.from({ length: width * height }, (_, i) => rgba[i * 4 + 3]);
+    };
+    const pixels = alpha(this);
+    const reference = document.createElement("canvas");
+    reference.width = width;
+    reference.height = height;
+    const context = reference.getContext("2d", { willReadFrequently: true });
+    for (const key of ["font", "fillStyle", "textAlign", "textBaseline", "direction", "fontKerning", "textRendering"]) context[key] = this[key];
+    const missing = ["\u{10ffff}", "\u{10ffff}\u{10ffff}"].some(tofu => {
+      context.clearRect(0, 0, width, height);
+      fill.call(context, tofu, ...args);
+      return alpha(context).every((value, i) => value === pixels[i]);
+    });
+    window.canvasFontProbe[text] = { ink: pixels.filter(value => value > 0).length, missing, font: this.font, width, height };
+  };
 }

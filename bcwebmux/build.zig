@@ -123,8 +123,8 @@ pub fn build(b: *std.Build) void {
     const renderer_integration_contract_cmd = b.addSystemCommand(&.{ "node", "test/renderer-integration-contract.mjs" });
     render_frame_contract_cmd.step.dependOn(&renderer_integration_contract_cmd.step);
     const frame_presenter_contract_cmd = b.addSystemCommand(&.{ "node", "test/frame-presenter-contract.mjs" });
-    const canvas_path_contract_cmd = b.addSystemCommand(&.{ "node", "test/canvas-path-contract.mjs" });
-    render_frame_contract_cmd.step.dependOn(&canvas_path_contract_cmd.step);
+    const canvas_text_contract_cmd = b.addSystemCommand(&.{ "node", "test/canvas-text-contract.mjs" });
+    render_frame_contract_cmd.step.dependOn(&canvas_text_contract_cmd.step);
     const frame_scheduler_contract_cmd = b.addSystemCommand(&.{ "node", "test/frame-scheduler-contract.mjs" });
     render_frame_contract_cmd.step.dependOn(&frame_scheduler_contract_cmd.step);
     render_frame_contract_cmd.step.dependOn(&frame_presenter_contract_cmd.step);
@@ -356,6 +356,9 @@ pub fn build(b: *std.Build) void {
     });
     e2e_cmd.step.dependOn(&mouse_selection_cmd.step);
     terminal_core_integration_cmd.step.dependOn(&e2e_webgl_cmd.step);
+    const text_renderer_test_step = b.step("text-renderer-test", "Run text contracts, Unicode goldens and physical-GPU core/font lifecycle tests");
+    text_renderer_test_step.dependOn(render_frame_contract_step);
+    text_renderer_test_step.dependOn(&terminal_core_integration_dpr4_webgl_cmd.step);
     session_browser_resume_cmd.step.dependOn(&e2e_cmd.step);
     session_browser_resume_cmd.step.dependOn(&terminal_core_integration_cmd.step);
     session_ui_e2e_cmd.step.dependOn(&wasm_size_contract_cmd.step);

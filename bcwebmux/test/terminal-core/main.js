@@ -367,6 +367,33 @@ async function run() {
     hostData,
     disposeReplies,
   };
+  await terminal.setRenderer("canvas");
+  const originalFont = terminal.options.font;
+  await terminal.setFont({ cssFamily: "Canvas Late Font Test", canvasOnly: true, fallbacks: ["monospace"] });
+  terminal.write("\x1b[2J\x1b[H\x1b[?25l\x1b[31mCanvas late font\x1b[0m");
+  const beforeFont = await pixels(terminal);
+  let refusedStb = false;
+  try { await terminal.setRenderer("kb-stb"); } catch { refusedStb = true; }
+  if (!refusedStb || terminal.options.renderer !== "canvas") throw new Error("Canvas-only font switched to STB");
+  const lateFont = new FontFace("Canvas Late Font Test", "url(/fonts/JetBrainsMonoNerdFontMono-BoldItalic.ttf)");
+  document.fonts.add(lateFont);
+  await document.fonts.load(`${originalFont.size}px "Canvas Late Font Test"`);
+  await document.fonts.ready;
+  const afterFont = await pixels(terminal);
+  if (beforeFont.width === afterFont.width && beforeFont.height === afterFont.height &&
+      beforeFont.data.every((value, i) => value === afterFont.data[i])) {
+    throw new Error("late web font left cached fallback masks unchanged");
+  }
+  terminal.attachCore(coreB);
+  await pixels(terminal);
+  if (coreB.options.renderer !== "canvas" || terminal.state.gpuError) throw new Error("inactive core did not adopt Canvas fonts");
+  await terminal.setFont({ ...originalFont, canvasOnly: false });
+  await terminal.setRenderer("kb-stb");
+  await pixels(terminal);
+  await terminal.setRenderer("canvas");
+  terminal.attachCore(coreA);
+  await pixels(terminal);
+  result.canvasFontLifecycle = true;
   window.terminalCoreTestTerminal = terminal;
   return result;
 }

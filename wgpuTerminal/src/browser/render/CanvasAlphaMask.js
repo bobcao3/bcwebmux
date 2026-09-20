@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Cheng Cao
 
-import { validateCanvasPath } from "../../FramePacket.js";
-import { MAX_RUN_PIXELS, PATH_COMMAND_SIZE, PATH_OP } from "./FrameSchema.js";
+import { decodeCanvasText } from "../../FramePacket.js";
+import { renderFontFamily } from "../../TerminalOptions.js";
+import { MAX_RUN_PIXELS } from "./FrameSchema.js";
 
 export function extractCanvasAlpha(context, x, y, width, height, storage) {
   const pixelCount = width * height;
@@ -45,7 +46,7 @@ export class CanvasGlyphRasterizer {
     this.uploadMask = new Uint8Array(0);
   }
 
-  rasterize(firstSlot, slotCount, spanCells, commands, offset, count, atlas, upload) {
+  rasterize(firstSlot, slotCount, spanCells, bytes, offset, count, style, atlas, font, upload) {
     validateAtlasGeometry(atlas);
     if (!Number.isInteger(atlas.tileWidth) || !Number.isInteger(atlas.tileHeight) ||
         atlas.tileWidth <= 0 || atlas.tileHeight <= 0) {
@@ -62,40 +63,35 @@ export class CanvasGlyphRasterizer {
     if (runWidth * runHeight > MAX_RUN_PIXELS) {
       throw new Error("glyph raster run is too large");
     }
-    validateCanvasPath(commands, offset, count);
+    const text = decodeCanvasText(bytes, offset, count);
+    if (!Number.isInteger(style) || style < 0 || style > 3 ||
+        !Number.isInteger(atlas.fontSize) || atlas.fontSize <= 0) {
+      throw new Error("invalid Canvas font configuration");
+    }
     if (this.runCanvas.width !== runWidth || this.runCanvas.height !== runHeight) {
       this.runCanvas.width = runWidth;
       this.runCanvas.height = runHeight;
       this.runContext = configureRasterContext(this.runCanvas);
     }
     this.runContext.clearRect(0, 0, runWidth, runHeight);
-    this.runContext.beginPath();
-    for (let index = 0; index < count; index += 1) {
-      const command = (offset + index) * PATH_COMMAND_SIZE;
-      const f = n => commands.getFloat32(command + n * 4, true);
-      switch (commands.getUint32(command, true)) {
-        case PATH_OP.move:
-          this.runContext.moveTo(f(1), f(2));
-          break;
-        case PATH_OP.line:
-          this.runContext.lineTo(f(1), f(2));
-          break;
-        case PATH_OP.quadratic:
-          this.runContext.quadraticCurveTo(
-            f(3), f(4), f(1), f(2),
-          );
-          break;
-        case PATH_OP.cubic:
-          this.runContext.bezierCurveTo(
-            f(3), f(4), f(5), f(6), f(1), f(2),
-          );
-          break;
-        case PATH_OP.close:
-          this.runContext.closePath();
-          break;
-      }
+    const context = this.runContext;
+    const family = renderFontFamily([font.cssFamily, ...font.fallbacks]);
+    const cssFont = `${style & 2 ? "italic" : "normal"} ${style & 1 ? 700 : 400} ${atlas.fontSize}px ${family}`;
+    context.font = cssFont;
+    context.textAlign = "left";
+    context.textBaseline = "alphabetic";
+    context.direction = "ltr";
+    context.fontKerning = font.ligatures ? "normal" : "none";
+    context.textRendering = font.ligatures ? "optimizeLegibility" : "optimizeSpeed";
+    if (this.metricFont !== cssFont || this.metricHeight !== runHeight) {
+      const metrics = context.measureText("Mg");
+      const ascent = metrics.fontBoundingBoxAscent ?? atlas.fontSize * 0.8;
+      const descent = metrics.fontBoundingBoxDescent ?? atlas.fontSize * 0.2;
+      this.baseline = Math.round((runHeight - ascent - descent) / 2 + ascent);
+      this.metricFont = cssFont;
+      this.metricHeight = runHeight;
     }
-    this.runContext.fill("nonzero");
+    context.fillText(text, 0, this.baseline, runWidth);
     const mask = extractCanvasAlpha(
       this.runContext, 0, 0, runWidth, runHeight, this.canvasMask,
     );

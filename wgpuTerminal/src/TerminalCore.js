@@ -10,6 +10,7 @@ import {
   encoder,
   normalizeBinary,
   normalizeFont,
+  validateRendererFont,
   packedColor,
   strictDecoder,
 } from "./TerminalOptions.js";
@@ -45,11 +46,13 @@ export class TerminalCore {
     this.options = {
       wasmUrl,
       wasmFontUrls: resolveWasmFontUrls(wasmUrl, options.wasmFontUrls),
-      renderer: options.renderer === "kb-canvas" ? "kb-canvas" : "kb-stb",
+      renderer: options.renderer === "canvas" ? "canvas" : "kb-stb",
       font: normalizeFont(options.font || DEFAULT_FONT),
       theme: options.theme || DEFAULT_THEME,
       clipboardWrite: options.clipboardWrite,
     };
+    validateRendererFont(this.options.renderer, this.options.font);
+    this._rendererChangeGeneration = 0;
     this._borrow = false;
     this._inWasm = false;
     this._partition = null;
@@ -126,7 +129,7 @@ export class TerminalCore {
   async _open(cols, rows) {
     const [module, fontFaces] = await Promise.all([
       compiledModule(this.options.wasmUrl),
-      loadWasmFontFaces(this.options.wasmFontUrls),
+      this.options.renderer === "kb-stb" ? loadWasmFontFaces(this.options.wasmFontUrls) : null,
     ]);
     this._fontFaces = fontFaces;
     const instance = await WebAssembly.instantiate(module, this._createWasmImports());
@@ -139,7 +142,7 @@ export class TerminalCore {
     this._state.cols = cols;
     this._state.rows = rows;
     this.setTheme(this.options.theme);
-    this.setRenderer(this.options.renderer);
+    this._applyRenderer(this.options.renderer);
     this.setFont(this.options.font);
   }
 
@@ -283,7 +286,7 @@ export class TerminalCore {
       if (ptr < 0) throw new Error(`frame preparation failed: ${ptr}`);
       token = this._wasm.term_frame_token();
       const packet = parseFramePacket(this._wasm.memory.buffer, ptr, {
-        abi: 5,
+        abi: 6,
         coreGeneration: this._wasm.term_core_generation(),
         configGeneration: this._wasm.term_config_generation(),
         partition: this._partition,
@@ -500,22 +503,55 @@ export class TerminalCore {
 
   setFont(fontOptions) {
     this.assertMutable();
+    const previous = this.options.font;
     const font = normalizeFont({ ...this.options.font, ...(fontOptions || {}) });
-    this.options.font = font;
-    if (this._wasm && this._invoke("term_set_font", font.wasmId, font.ligatures ? 1 : 0) !== 1) {
+    validateRendererFont(this.options.renderer, font);
+    const changed = previous.cssFamily !== font.cssFamily || previous.size !== font.size ||
+      previous.ligatures !== font.ligatures || previous.wasmId !== font.wasmId ||
+      previous.fallbacks.length !== font.fallbacks.length ||
+      previous.fallbacks.some((value, index) => value !== font.fallbacks[index]);
+    if (this._wasm && this._invoke("term_set_font", this.options.renderer === "canvas" ? 0 : font.wasmId, font.ligatures ? 1 : 0) !== 1) {
       throw new Error("WASM font configuration failed");
     }
+    this.options.font = font;
+    if (this._wasm && changed) this.invalidateFrame();
     return font;
   }
 
-  setRenderer(rendererName) {
+  async _prepareRenderer(renderer) {
+    validateRendererFont(renderer, this.options.font);
+    if (renderer !== "kb-stb" || this._fontFaces) return;
+    const fonts = await loadWasmFontFaces(this.options.wasmFontUrls);
     this.assertMutable();
-    const renderer = rendererName === "kb-canvas" ? "kb-canvas" : "kb-stb";
-    this.options.renderer = renderer;
-    if (this._wasm && this._invoke("term_set_renderer", renderer === "kb-canvas" ? 1 : 0) !== 1) {
+    if (this._disposed) throw new Error("terminal core is disposed");
+    this._fontFaces = fonts;
+  }
+
+  _applyRenderer(renderer) {
+    this.assertMutable();
+    if (this._disposed) throw new Error("terminal core is disposed");
+    validateRendererFont(renderer, this.options.font);
+    if (this._wasm && renderer === "kb-stb" && !this._fontFaces) {
+      throw new Error("await core.setRenderer('kb-stb') before attaching this core");
+    }
+    ++this._rendererChangeGeneration;
+    if (this._wasm && this._invoke("term_set_renderer", renderer === "canvas" ? 1 : 0) !== 1) {
       throw new Error("WASM renderer configuration failed");
     }
+    this.options.renderer = renderer;
     return renderer;
+  }
+
+  async setRenderer(rendererName) {
+    this.assertMutable();
+    if (this._disposed) throw new Error("terminal core is disposed");
+    const renderer = rendererName === "canvas" ? "canvas" : "kb-stb";
+    const generation = ++this._rendererChangeGeneration;
+    if (this._wasm) await this._prepareRenderer(renderer);
+    if (generation !== this._rendererChangeGeneration) return this.options.renderer;
+    const result = this._applyRenderer(renderer);
+    this._schedule(true);
+    return result;
   }
 
   restoreSnapshot(data) {
@@ -577,7 +613,7 @@ export class TerminalCore {
       throw new Error("terminal glyph partition installation failed");
     }
     this.setTheme(this.options.theme);
-    this.setRenderer(this.options.renderer);
+    this._applyRenderer(this.options.renderer);
     this.setFont(this.options.font);
     if (this._renderLayout) this.setRenderMetrics(this._renderLayout);
     this._pendingRxAt = 0;

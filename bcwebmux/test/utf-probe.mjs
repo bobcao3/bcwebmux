@@ -1,5 +1,5 @@
 // Probe the shipped kb-stb WASM renderer with UTF-8 input (CJK + emoji + ASCII).
-// Stubs the GPU host imports and captures glyph bitmaps + cell metadata.
+// Captures glyph bitmaps and cell metadata from the pull-frame ABI.
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
@@ -52,7 +52,7 @@ function capturePacket(submissionPtr) {
       const mem = instance.exports.memory.buffer;
       const submission = new DataView(mem, submissionPtr, 156);
       if (submission.getUint32(0, true) !== 0x5355424d ||
-          submission.getUint32(4, true) !== 5 ||
+          submission.getUint32(4, true) !== 6 ||
           submission.getUint32(8, true) !== 156) {
         throw new Error("invalid GPU submission");
       }

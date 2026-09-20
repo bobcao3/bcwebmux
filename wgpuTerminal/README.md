@@ -67,7 +67,7 @@ terminal.focus();
 
 `auto` is the default and tries WebGPU before WebGL2. Set `renderBackend` to
 `webgpu` or `webgl2` to force a backend for diagnostics. Backend choice does
-not change the `kb-stb`/`kb-canvas` text renderer. Optional `powerPreference:
+not change the `kb-stb`/`canvas` text renderer. Optional `powerPreference:
 "low-power"` or `"high-performance"` hints GPU selection; omitting it leaves
 the hint unset and uses the browser's default policy.
 
@@ -82,12 +82,12 @@ last-presentation capture behavior when the backend is available.
 semantic callbacks and perform DOM coordinate conversion. Terminal versions one
 frozen render-metric configuration shared with cores, backend, pointer and IME;
 CSS cell metrics also drive the text mirror. `FramePresenter` owns submission
-state and `FrameScheduler` alone schedules presentation. Canvas rasterizes paths
-from WASM's shared kb layout; it does not shape terminal text.
+state and `FrameScheduler` alone schedules presentation. The v6 frame carries
+STB alpha masks or bounded UTF-8 Canvas requests, not glyph outlines.
 
-## WASM fonts
+## Text paths and fonts
 
-`terminal.wasm` contains no fonts. The default loader fetches four
+`terminal.wasm` contains no fonts. For `kb-stb`, the default loader fetches four
 `JetBrainsMonoNerdFontMono` TTF files from `fonts/` beside `wasmUrl`, in
 regular, bold, italic, and bold-italic order. Fetched face bytes are cached
 and shared across cores; each core copies a face into its own linear memory
@@ -96,13 +96,27 @@ only when that style is first rendered. The package exports these files under
 array in the same order. CSS `@font-face` declarations should point at the
 same URLs so the HTTP cache serves both browser and WASM users.
 
-Both `kb-stb` and `kb-canvas` shape with kb using these exact `wasmFontUrls`
-bytes and the same physical metrics. STB rasterizes the positioned glyphs;
-Canvas fills their exported outlines, without browser text shaping or font
-fallback. CSS families affect DOM measurement/text mirrors, not raster font
-selection. Browser-only `canvasOnly` fonts are rejected in both modes; the
-Fira Code Canvas-only UI option has been removed. Missing glyphs use the
-supplied face's missing-glyph outline rather than a browser fallback face.
+- **`kb-stb`** shapes supplied font bytes with kb and rasterizes with STB in
+  WASM. CSS fallbacks affect DOM measurement/text mirrors, not this raster path.
+  Missing characters remain subject to the supplied font's coverage.
+- **`canvas`** uses browser `fillText`, with the configured `cssFamily` and
+  `fallbacks`, for shaping and rasterization. Browser/system fonts supply CJK,
+  emoji and other characters missing from the primary face. It does not fetch
+  WASM font bytes or call kb/STB. Browser-only `canvasOnly` fonts are accepted.
+  Coverage depends on the available fonts; web fonts need CSS `@font-face` rules.
+
+Both paths retain WASM terminal widths/graphemes and use the same R8 alpha atlas
+on either GPU backend. Browser glyph positioning may differ from kb. Emoji are
+rendered as coverage in the terminal foreground color, not color-glyph RGB.
+Canvas preserves combining marks, variation selectors and ZWJ sequences within
+one text request. Font-loading completion invalidates cached fallback masks.
+
+Use `await terminal.setRenderer("canvas")` or `await terminal.setRenderer("kb-stb")`.
+Switching to kb/STB loads its font bytes before committing; load failure leaves
+the previous path active. `TerminalCore.setRenderer` is asynchronous too. A
+standalone Canvas core being attached to a kb/STB host must first await
+`core.setRenderer("kb-stb")`; `createCore()` prepares the host's requirements.
+The application migrates old persisted `kb-canvas` settings to `canvas`.
 
 ## WASM diagnostics
 

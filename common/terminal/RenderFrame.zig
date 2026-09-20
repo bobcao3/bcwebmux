@@ -14,7 +14,7 @@ const protocol_cell_limit = std.math.maxInt(u16);
 
 pub const TextBackend = enum(u32) {
     kb_stb = 0,
-    kb_canvas = 1,
+    canvas = 1,
 };
 
 text_backend: TextBackend = .kb_stb,
@@ -55,7 +55,7 @@ ordinary_glyph_cache: std.AutoHashMapUnmanaged(OrdinaryKey, u32) = .empty,
 bitmap_slot_count: u32 = 0,
 bitmap_cache_reset: bool = true,
 canvas_requests: std.ArrayListUnmanaged(CanvasRequest) = .empty,
-canvas_paths: std.ArrayListUnmanaged(FontEngine.PathCommand) = .empty,
+canvas_text: std.ArrayListUnmanaged(u8) = .empty,
 pub fn bootstrap(self: *Self) void {
     self.text_backend = .kb_stb;
     self.font_cell_width = 0;
@@ -86,7 +86,7 @@ pub fn bootstrap(self: *Self) void {
     self.bitmap_slot_count = 0;
     self.bitmap_cache_reset = true;
     self.canvas_requests = .empty;
-    self.canvas_paths = .empty;
+    self.canvas_text = .empty;
     self.pending_text_hash = null;
     self.pending_cursor_x = null;
     self.pending_cursor_y = null;
@@ -111,7 +111,7 @@ pub fn deinit(self: *Self) void {
     self.glyph_cache.deinit(allocator);
     self.ordinary_glyph_cache.deinit(allocator);
     self.canvas_requests.deinit(allocator);
-    self.canvas_paths.deinit(allocator);
+    self.canvas_text.deinit(allocator);
     self.bootstrap();
 }
 
@@ -158,9 +158,9 @@ const CanvasRequest = extern struct {
     first_slot: u32,
     slot_count: u32,
     span_cells: u32,
-    path_offset: u32,
-    path_count: u32,
-    reserved: u32,
+    text_offset: u32,
+    text_len: u32,
+    style: u32,
 };
 
 pub const BitmapUpload = BitmapBatch.BitmapUpload;
@@ -174,7 +174,7 @@ pub const Submission = extern struct {
     magic: u32,
     version: u32,
     byte_size: u32,
-    path_command_size: u32,
+    text_unit_size: u32,
     frame_offset: u32,
     frame_len: u32,
     cells_offset: u32,
@@ -192,8 +192,8 @@ pub const Submission = extern struct {
     bitmap_upload_pixels_len: u32,
     canvas_requests_offset: u32,
     canvas_requests_count: u32,
-    canvas_paths_offset: u32,
-    canvas_paths_count: u32,
+    canvas_text_offset: u32,
+    canvas_text_len: u32,
     text_rows_offset: u32,
     text_cells_offset: u32,
     text_text_offset: u32,
@@ -366,7 +366,7 @@ comptime {
     std.debug.assert(@sizeOf(Frame) == 80);
     std.debug.assert(@sizeOf(Cell) == 8);
     std.debug.assert(@sizeOf(OrdinaryKey) == 8);
-    std.debug.assert(@sizeOf(FontEngine.PathCommand) == 28);
+    std.debug.assert(@sizeOf(CanvasRequest) == 24);
     std.debug.assert(@sizeOf(Style) == 12);
     std.debug.assert(@sizeOf(DirtyRange) == 8);
     std.debug.assert(@sizeOf(Submission) == 156);
@@ -447,7 +447,6 @@ pub fn init(self: *Self, cols: usize, rows: usize) bool {
     const initial_cells = std.math.mul(usize, cols, rows) catch return false;
     if (initial_cells == 0 or initial_cells > protocol_cell_limit) return false;
     self.text_view_enabled = false;
-    self.font_engine.init() catch return false;
     self.text_view.reset();
     self.render_cache_reset = true;
     self.previous_cols = 0;
@@ -551,7 +550,7 @@ fn rebuildCompactRow(self: *Self, state: *const ghostty.RenderState, render_cell
 
 pub fn prepare(self: *Self, state: *ghostty.RenderState, terminal: *ghostty.Terminal) !void {
     return (switch (self.text_backend) {
-        .kb_stb, .kb_canvas => self.prepareCached(state, terminal),
+        .kb_stb, .canvas => self.prepareCached(state, terminal),
     }) catch |err| {
         self.invalidateRenderCache();
         return err;
@@ -560,7 +559,7 @@ pub fn prepare(self: *Self, state: *ghostty.RenderState, terminal: *ghostty.Term
 
 fn prepareCached(self: *Self, state: *ghostty.RenderState, terminal: *ghostty.Terminal) !void {
     self.canvas_requests.clearRetainingCapacity();
-    self.canvas_paths.clearRetainingCapacity();
+    self.canvas_text.clearRetainingCapacity();
     self.bitmap_batch.reset();
     if (self.font_cell_width == 0 or self.font_cell_height == 0 or self.font_size_px == 0 or self.atlas_columns == 0 or self.glyph_partition_capacity == 0) return error.FontMetricsMissing;
     const partition_capacity: usize = @intCast(self.glyph_partition_capacity);
@@ -718,32 +717,40 @@ fn prepareCached(self: *Self, state: *ghostty.RenderState, terminal: *ghostty.Te
                 var run_width: usize = 0;
                 var mask_len: usize = 0;
                 const miss = try self.prepareRunMiss(raws, graphemes, start, end);
-                const layout = try self.font_engine.shape(style_index, self.ligatures_enabled, self.font_inputs[0..miss.input_count], span, .{
-                    .cell_width = self.font_cell_width,
-                    .cell_height = self.font_cell_height,
-                    .font_size_px = self.font_size_px,
-                });
-                const path_offset = self.canvas_paths.items.len;
-                if (self.text_backend == .kb_canvas) try self.font_engine.outline(&layout, &self.canvas_paths);
+                const text_offset = self.canvas_text.items.len;
                 if (self.text_backend == .kb_stb) {
+                    try self.font_engine.init();
+                    const layout = try self.font_engine.shape(style_index, self.ligatures_enabled, self.font_inputs[0..miss.input_count], span, .{
+                        .cell_width = self.font_cell_width,
+                        .cell_height = self.font_cell_height,
+                        .font_size_px = self.font_size_px,
+                    });
                     run_width = @as(usize, self.font_cell_width) * span;
                     mask_len = run_width * self.font_cell_height;
                     try self.run_mask.resize(std.heap.wasm_allocator, mask_len);
                     try self.font_engine.rasterize(&layout, self.run_mask.items[0..mask_len]);
+                } else {
+                    if (@as(u64, span) * self.font_cell_width * self.font_cell_height > 16 * 1024 * 1024)
+                        return error.RunTooLarge;
+                    for (self.font_inputs[0..miss.input_count]) |input| {
+                        var encoded: [4]u8 = undefined;
+                        const len = try std.unicode.utf8Encode(input.codepoint, &encoded);
+                        try self.canvas_text.appendSlice(std.heap.wasm_allocator, encoded[0..len]);
+                    }
                 }
                 const first_slot = self.bitmap_slot_count;
                 const slot_count = @as(u32, @intCast(end - start));
                 const next_slot = std.math.add(u32, first_slot, slot_count) catch return error.GlyphCacheFull;
                 if (next_slot > self.glyph_partition_capacity) return error.GlyphCacheFull;
-                if (self.text_backend == .kb_canvas) {
+                if (self.text_backend == .canvas) {
                     const request = self.canvas_requests.addOne(std.heap.wasm_allocator) catch return error.CanvasBatchFull;
                     request.* = .{
                         .first_slot = try self.absoluteSlot(first_slot),
                         .slot_count = slot_count,
                         .span_cells = span,
-                        .path_offset = @intCast(path_offset),
-                        .path_count = @intCast(self.canvas_paths.items.len - path_offset),
-                        .reserved = 0,
+                        .text_offset = @intCast(text_offset),
+                        .text_len = @intCast(self.canvas_text.items.len - text_offset),
+                        .style = @intFromEnum(style_index),
                     };
                 }
                 for (0..end - start) |offset| {
@@ -776,7 +783,7 @@ fn prepareCached(self: *Self, state: *ghostty.RenderState, terminal: *ghostty.Te
     const cursor_x: u32 = if (cursor) |pos| if (pos.wide_tail and pos.x > 0) pos.x - 1 else pos.x else std.math.maxInt(u16);
     self.frame = .{
         .magic = 0x46574342,
-        .version = 5,
+        .version = 6,
         .cols = state.cols,
         .rows = state.rows,
         .cell_count = @intCast(cell_count),
@@ -813,9 +820,9 @@ fn prepareCached(self: *Self, state: *ghostty.RenderState, terminal: *ghostty.Te
     const bitmap_upload_pixels = self.bitmap_batch.uploadPixels();
     self.packet = .{
         .magic = 0x5355424d,
-        .version = 5,
+        .version = 6,
         .byte_size = @sizeOf(Submission),
-        .path_command_size = @sizeOf(FontEngine.PathCommand),
+        .text_unit_size = 1,
         .frame_offset = try wasmOffset(&self.frame),
         .frame_len = @sizeOf(Frame),
         .cells_offset = try wasmOffset(self.cells.items[0..].ptr),
@@ -833,8 +840,8 @@ fn prepareCached(self: *Self, state: *ghostty.RenderState, terminal: *ghostty.Te
         .bitmap_upload_pixels_len = @intCast(bitmap_upload_pixels.len),
         .canvas_requests_offset = try wasmOffset(self.canvas_requests.items.ptr),
         .canvas_requests_count = @intCast(self.canvas_requests.items.len),
-        .canvas_paths_offset = try wasmOffset(self.canvas_paths.items.ptr),
-        .canvas_paths_count = @intCast(self.canvas_paths.items.len),
+        .canvas_text_offset = try wasmOffset(self.canvas_text.items.ptr),
+        .canvas_text_len = @intCast(self.canvas_text.items.len),
         .text_rows_offset = try wasmOffset(snapshot.rows),
         .text_cells_offset = try wasmOffset(snapshot.cells),
         .text_text_offset = try wasmOffset(snapshot.text),

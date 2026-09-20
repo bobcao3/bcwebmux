@@ -40,9 +40,64 @@ const fontFaces = await Promise.all([
   "JetBrainsMonoNerdFontMono-Italic.ttf",
   "JetBrainsMonoNerdFontMono-BoldItalic.ttf",
 ].map(name => readFile(new URL(`fonts/${name}`, wasmUrl))));
-for (const renderer of ["kb-stb", "kb-canvas"]) {
+
+// Canvas opens and renders with unreachable WASM font URLs. Only a switch to STB loads them.
+{
+  const previousFetch = globalThis.fetch;
+  const requests = [];
+  let fontFailure = true;
+  let releaseFonts;
+  let fontGate = Promise.resolve();
+  globalThis.fetch = async url => {
+    requests.push(String(url));
+    if (String(url).endsWith(".wasm")) return new Response(await readFile(wasmPath), {
+      headers: { "Content-Type": "application/wasm" },
+    });
+    await fontGate;
+    if (fontFailure) return new Response(null, { status: 404 });
+    return new Response(fontFaces[Number(new URL(url).pathname.slice(1, 2))]);
+  };
+  const core = new TerminalCore({ renderer: "canvas", wasmUrl: "https://canvas-font-test.test/terminal.wasm",
+    wasmFontUrls: [0, 1, 2, 3].map(i => `${i}.ttf`) });
+  try {
+    await core.open({ cols: 8, rows: 3 });
+    assert.equal(requests.length, 1);
+    assert.equal(core._fontFaces, null);
+    core.setGlyphPartition({ baseSlot: 0, slotCapacity: 256, generation: 1 }, 16);
+    core.setRenderMetrics({ cellWidth: 8, cellHeight: 16, fontSize: 15 });
+    core.write("中😀e\u0301👩🏽‍💻🇯🇵❤️");
+    core.consumeFrame(packet => {
+      assert.equal(packet.bitmapUploadsCount, 0);
+      const texts = [];
+      for (let i = 0; i < packet.canvasRequestsCount; ++i) {
+        const offset = packet.canvasRequests.getUint32(i * 24 + 12, true);
+        const length = packet.canvasRequests.getUint32(i * 24 + 16, true);
+        texts.push(new TextDecoder().decode(packet.canvasText.subarray(offset, offset + length)));
+      }
+      for (const text of ["中", "😀", "e\u0301", "👩🏽‍💻", "🇯🇵", "❤️"]) assert.ok(texts.includes(text), text);
+    }, expectations);
+    core.setRenderMetrics({ cellWidth: 65535, cellHeight: 65535, fontSize: 15 });
+    assert.throws(() => core.consumeFrame(() => {}, expectations), /frame preparation failed/);
+    assert.equal(core._wasm.term_frame_token(), 0, "oversized Canvas runs fail without trapping or borrowing");
+    core.setRenderMetrics({ cellWidth: 8, cellHeight: 16, fontSize: 15 });
+    await assert.rejects(core.setRenderer("kb-stb"), /font request failed/);
+    assert.equal(core.options.renderer, "canvas");
+    fontFailure = false;
+    fontGate = new Promise(resolve => { releaseFonts = resolve; });
+    const staleSwitch = core.setRenderer("kb-stb");
+    await core.setRenderer("canvas");
+    releaseFonts();
+    await staleSwitch;
+    assert.equal(core.options.renderer, "canvas", "late font load cannot commit a superseded switch");
+    await core.setRenderer("kb-stb");
+    assert.equal(core.options.renderer, "kb-stb");
+    core.write("\x1b[2J\x1b[HASCII");
+    core.consumeFrame(packet => assert.ok(packet.bitmapUploadsCount > 0), expectations);
+  } finally { core.dispose(); globalThis.fetch = previousFetch; }
+}
+for (const renderer of ["kb-stb", "canvas"]) {
   const core = new TerminalCore({ renderer });
-  core._fontFaces = fontFaces;
+  core._fontFaces = renderer === "kb-stb" ? fontFaces : null;
   const imports = core._createWasmImports();
   assert.ok(!("gpu_init" in imports.host));
   assert.ok(!("gpu_text_backend" in imports.host));
@@ -53,7 +108,7 @@ for (const renderer of ["kb-stb", "kb-canvas"]) {
   Object.assign(core._state, { cols: 8, rows: 3 });
   assert.equal(e.term_frame_prepare(), -1, "missing metrics preparation fails without leaving a borrow");
   assert.equal(e.term_frame_token(), 0);
-  assert.equal(core.setRenderer(renderer), renderer);
+  assert.equal(await core.setRenderer(renderer), renderer);
   core.setGlyphPartition({ baseSlot: 0, slotCapacity: 256, generation: 1 }, 16);
   core.setRenderMetrics({ cellWidth: 8, cellHeight: 16, fontSize: 15 });
   core.setTextViewEnabled(true);
@@ -102,35 +157,35 @@ for (const renderer of ["kb-stb", "kb-canvas"]) {
   const ptr = e.term_frame_prepare();
   assert.ok(ptr > 0);
   const token = e.term_frame_token();
-  const identity = { ...expectations, abi: 5, coreGeneration: e.term_core_generation(),
+  const identity = { ...expectations, abi: 6, coreGeneration: e.term_core_generation(),
     configGeneration: e.term_config_generation(), token,
     partition: { baseSlot: 0, slotCapacity: 256, generation: 1 } };
-  for (const override of [{ abi: 4 }, { token: token + 1 }, { coreGeneration: 999 },
+  for (const override of [{ abi: 4 }, { abi: 5 }, { token: token + 1 }, { coreGeneration: 999 },
     { configGeneration: 999 }, { partition: { baseSlot: 0, slotCapacity: 256, generation: 2 } }]) {
     assert.throws(() => parseFramePacket(e.memory.buffer, ptr, { ...identity, ...override }));
   }
-  for (const [offset, invalid] of [[12, 0], [24, 0xffffffff], [28, 0xffffffff], [36, 0xffffffff],
-    [80, 257], [84, 3], [88, 1048577], [108, 2], [128, 2], [136, 1], [140, 4], [144, 1], [148, 4], [152, 1]]) {
+  for (const [offset, invalid] of [[4, 5], [12, 28], [12, 0], [24, 0xffffffff], [28, 0xffffffff], [36, 0xffffffff],
+    [80, 257], [88, 1048577], [108, 2], [128, 2], [136, 1], [140, 4], [144, 1], [148, 4], [152, 1]]) {
     const copy = e.memory.buffer.slice(0);
     new DataView(copy, ptr).setUint32(offset, invalid, true);
     assert.throws(() => parseFramePacket(copy, ptr, identity), `invalid header offset ${offset}`);
   }
   assert.equal(e.term_frame_prepare(), -2);
-  if (renderer === "kb-canvas") {
+  if (renderer === "canvas") {
     const header = new DataView(e.memory.buffer, ptr);
     const requestsPtr = header.getUint32(76, true);
-    const pathsPtr = header.getUint32(84, true);
+    const textPtr = header.getUint32(84, true);
     assert.ok(header.getUint32(88, true) > 0);
-    for (const [address, invalid, float] of [
-      [requestsPtr + 12, 1], [requestsPtr + 16, 32769], [requestsPtr + 20, 1],
-      [pathsPtr, 99], [pathsPtr, 1], [pathsPtr + 4, NaN, true],
+    for (const [address, invalid] of [
+      [requestsPtr + 12, 1], [requestsPtr + 16, 129], [requestsPtr + 20, 4],
     ]) {
       const copy = e.memory.buffer.slice(0);
-      const view = new DataView(copy);
-      if (float) view.setFloat32(address, invalid, true);
-      else view.setUint32(address, invalid, true);
+      new DataView(copy).setUint32(address, invalid, true);
       assert.throws(() => parseFramePacket(copy, ptr, identity), /Canvas/);
     }
+    const copy = e.memory.buffer.slice(0);
+    new Uint8Array(copy)[textPtr] = 0xff;
+    assert.throws(() => parseFramePacket(copy, ptr, identity), /UTF-8/);
   }
   assert.equal(e.term_feed(0), 0);
   assert.equal(e.term_reserve(1), 0);
@@ -164,18 +219,18 @@ for (const renderer of ["kb-stb", "kb-canvas"]) {
   core.dispose();
 }
 
-// Identical slot geometry and shared face metrics, independent of rasterizer/DPR.
+// Terminal slot geometry is independent of browser shaping and DPR.
 for (const dpr of [1, 2, 4]) {
   const geometry = { ...expectations, atlas: { columns: 16, tileWidth: 8 * dpr, tileHeight: 16 * dpr } };
   const results = [];
-  for (const renderer of ["kb-stb", "kb-canvas"]) {
+  for (const renderer of ["kb-stb", "canvas"]) {
     const core = new TerminalCore({ renderer });
-    core._fontFaces = fontFaces;
+    core._fontFaces = renderer === "kb-stb" ? fontFaces : null;
     core._wasm = (await WebAssembly.instantiate(module, core._createWasmImports())).exports;
     core._wasm.term_bootstrap();
     assert.equal(core._wasm.term_init(8, 3), 1);
     Object.assign(core._state, { cols: 8, rows: 3 });
-    core.setRenderer(renderer);
+    await core.setRenderer(renderer);
     core.setGlyphPartition({ baseSlot: 0, slotCapacity: 24, generation: 1 }, 16);
     core.setRenderMetrics({ cellWidth: 8 * dpr, cellHeight: 16 * dpr, fontSize: 15 * dpr });
     const captures = [];
@@ -183,16 +238,15 @@ for (const dpr of [1, 2, 4]) {
       core.write(`\x1b[0m\x1b[2J\x1b[H${sample}`);
       core.consumeFrame(packet => {
         captures.push({ cells: [...packet.cells], slots: packet.glyphSlotsUsed });
-        if (renderer === "kb-canvas") {
-          assert.equal(packet.bitmapUploadsCount, 0, "Canvas exports outlines, never STB pixels");
+        if (renderer === "canvas") {
+          assert.equal(packet.bitmapUploadsCount, 0, "Canvas exports text, never STB pixels");
           assert.ok(packet.canvasRequestsCount > 0);
-          const ops = Array.from({ length: packet.canvasPathsCount }, (_, i) => packet.canvasPaths.getUint32(i * 28, true));
-          assert.ok(ops.includes(2), "TrueType outline retains quadratic curves");
-          assert.ok(ops.includes(4), "contours are explicitly closed");
+          const text = new TextDecoder().decode(packet.canvasText);
+          assert.ok(text.includes("e\u0301") && text.includes("中"));
           assert.equal(packet.canvasRequests.getUint32(4, true), 2, "ligature run keeps two slots");
         } else {
           assert.equal(packet.canvasRequestsCount, 0);
-          assert.equal(packet.canvasPathsCount, 0);
+          assert.equal(packet.canvasTextLen, 0);
           assert.ok(packet.bitmapUploadPixels.some(value => value > 0));
         }
       }, geometry);
@@ -219,12 +273,11 @@ for (const dpr of [1, 2, 4]) {
 }
 
 // Real cores with a synchronous upload sink exercise attach/rollback without a GPU.
-const host = new Terminal({ renderer: "kb-canvas" });
+const host = new Terminal({ renderer: "canvas" });
 const partitions = new Map();
 const cores = [];
 for (const baseSlot of [0, 256]) {
-  const core = new TerminalCore({ renderer: "kb-canvas" });
-  core._fontFaces = fontFaces;
+  const core = new TerminalCore({ renderer: "canvas" });
   core._wasm = (await WebAssembly.instantiate(module, core._createWasmImports())).exports;
   core._wasm.term_bootstrap();
   assert.equal(core._wasm.term_init(8, 3), 1);
@@ -232,7 +285,7 @@ for (const baseSlot of [0, 256]) {
   const partition = { baseSlot, slotCapacity: 256, generation: 1 };
   partitions.set(core, partition);
   core.setGlyphPartition(partition, 16);
-  core.setRenderer("kb-canvas");
+  await core.setRenderer("canvas");
   core.setRenderMetrics({ cellWidth: 8, cellHeight: 16, fontSize: 15 });
   core.write(baseSlot ? "second" : "first");
   core._setHost(host);
@@ -311,4 +364,4 @@ const bridgeSource = await readFile(new URL("TerminalCore.js", sourceRoot), "utf
 assert.doesNotMatch(bridgeSource, /get wasm\(|gpu_submit/);
 const packetSource = await readFile(new URL("FramePacket.js", sourceRoot), "utf8");
 assert.doesNotMatch(packetSource, /renderer\.|applyRenderer|WebAssembly/);
-console.log("render frame contract passed (ABI v5, browser assets, both text renderers)");
+console.log("render frame contract passed (ABI v6, browser assets, both text renderers)");

@@ -59,9 +59,17 @@ export function renderFontFamily(families) {
   }).join(", ");
 }
 
+export function validateRendererFont(renderer, font) {
+  if (renderer === "kb-stb" && font.canvasOnly) {
+    throw new TypeError("kb-stb requires wasmFontUrls font bytes; use canvas for browser-only fonts");
+  }
+  if (renderer === "kb-stb" && font.wasmId !== 0) {
+    throw new TypeError("kb-stb supports wasmId 0 only; supply faces through wasmFontUrls");
+  }
+}
+
 export function normalizeFont(font) {
   const value = { ...DEFAULT_FONT, ...(font || {}) };
-  if (value.canvasOnly) throw new TypeError("canvasOnly fonts are unsupported: both rasterizers require wasmFontUrls font bytes");
   value.size = Math.min(32, Math.max(8, Math.round(Number(value.size) || DEFAULT_FONT.size)));
   value.ligatures = value.ligatures !== false;
   value.wasmId = Number.isInteger(value.wasmId) ? value.wasmId : 0;

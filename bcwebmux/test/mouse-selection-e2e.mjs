@@ -14,7 +14,7 @@ assert.ok(serverPath && webRoot, "usage: mouse-selection-e2e.mjs SERVER WEB_ROOT
 const serverPort = await freePort();
 const debugPort = await freePort();
 const profile = await mkdtemp(path.join(os.tmpdir(), "bcwebmux-mouse-selection-"));
-const server = spawn(serverPath, ["--web-root", webRoot, "--port", String(serverPort)], {
+const server = spawn(serverPath, ["--config", "/dev/null", "--web-root", webRoot, "--port", String(serverPort)], {
   stdio: ["ignore", "pipe", "pipe"],
 });
 let serverLog = "";

@@ -11,7 +11,7 @@ export interface GpuAdapterInfoDraft {
 
 export interface GpuTerminalStatsDraft {
   backend: "webgpu" | "webgl2";
-  textRenderer: "kb-stb" | "kb-canvas";
+  textRenderer: "kb-stb" | "canvas";
   shaderF16: boolean;
   fontFamily: string;
   fontReloads: number;
@@ -53,7 +53,7 @@ export interface TerminalViewElements {
   composition: HTMLDivElement;
 }
 
-export type TerminalRenderer = "kb-stb" | "kb-canvas";
+export type TerminalRenderer = "kb-stb" | "canvas";
 
 export type TerminalRenderBackend = "auto" | "webgpu" | "webgl2";
 
@@ -77,8 +77,8 @@ export interface TerminalFont {
   size: number;
   ligatures: boolean;
   fallbacks: readonly string[];
-  /** Browser-only fonts are unsupported; both rasterizers use wasmFontUrls. */
-  canvasOnly?: false;
+  /** Browser-only font: valid for canvas, rejected by kb-stb. */
+  canvasOnly?: boolean;
 }
 
 export interface TerminalDebugElements {
@@ -90,7 +90,7 @@ export interface TerminalDebugElements {
 
 export interface TerminalOptions {
   wasmUrl?: string | URL;
-  /** Font URLs in regular, bold, italic, bold-italic order; relative URLs resolve beside wasmUrl. */
+  /** kb-stb fonts in regular, bold, italic, bold-italic order; fetched only when needed. Relative URLs resolve beside wasmUrl. */
   wasmFontUrls?: readonly [string | URL, string | URL, string | URL, string | URL];
   renderer?: TerminalRenderer;
   renderBackend?: TerminalRenderBackend;
@@ -110,7 +110,7 @@ export interface TerminalOptions {
 
 export interface TerminalCoreOptions {
   wasmUrl?: string | URL;
-  /** Font URLs in regular, bold, italic, bold-italic order; relative URLs resolve beside wasmUrl. */
+  /** kb-stb fonts in regular, bold, italic, bold-italic order; fetched only when needed. Relative URLs resolve beside wasmUrl. */
   wasmFontUrls?: readonly [string | URL, string | URL, string | URL, string | URL];
   renderer?: TerminalRenderer;
   font?: Partial<TerminalFont>;
@@ -201,8 +201,8 @@ export interface FramePacket {
   readonly bitmapUploadPixels: Uint8Array;
   readonly canvasRequests: DataView;
   readonly canvasRequestsCount: number;
-  readonly canvasPaths: DataView;
-  readonly canvasPathsCount: number;
+  readonly canvasText: Uint8Array;
+  readonly canvasTextLen: number;
   readonly textRows: DataView;
   readonly textCells: DataView;
   readonly textBytes: Uint8Array;
@@ -252,7 +252,7 @@ export declare class TerminalCore implements IDisposable {
   paste(text: string): void;
   setTheme(theme: TerminalTheme): void;
   setFont(font: Partial<TerminalFont>): void;
-  setRenderer(renderer: TerminalRenderer): void;
+  setRenderer(renderer: TerminalRenderer): Promise<TerminalRenderer>;
   setRenderMetrics(layout: { cellWidth: number; cellHeight: number; fontSize: number }): number;
   setGlyphPartition(partition: GlyphPartition, atlasColumns: number): number;
   consumeFrame(consumer: (packet: FramePacket) => void | boolean, expectations: FrameExpectations): 0 | 1;
@@ -313,7 +313,7 @@ export declare class Terminal implements IDisposable {
   paste(text: string): void;
   setTheme(theme: TerminalTheme): void;
   setFont(font: Partial<TerminalFont>): Promise<void>;
-  setRenderer(renderer: TerminalRenderer): void;
+  setRenderer(renderer: TerminalRenderer): Promise<TerminalRenderer>;
   setGrainStrength(value: number): void;
   setGlyphCacheMaxBytes(value: number): number;
   setSoftModifiers(value: number): void;

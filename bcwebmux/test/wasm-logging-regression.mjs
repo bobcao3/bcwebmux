@@ -41,7 +41,7 @@ const bytes = new TextEncoder().encode(fixture);
 
 // Exercise the JS host bridge and Zig logger with whole-buffer and bytewise input.
 for (const chunkSize of [bytes.length, 1]) {
-  const core = new TerminalCore({ renderer: "kb-canvas" });
+  const core = new TerminalCore({ renderer: "canvas" });
   const instance = await WebAssembly.instantiate(module, core._createWasmImports());
   core._wasm = instance.exports;
   const e = instance.exports;

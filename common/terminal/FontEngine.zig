@@ -39,8 +39,6 @@ pub const RenderStats = struct {
 };
 
 pub const max_layout_glyphs: usize = 128;
-pub const max_path_commands: usize = 1024 * 1024;
-pub const max_run_path_commands: usize = 32768;
 
 pub const Glyph = struct {
     id: c_int,
@@ -61,24 +59,6 @@ pub const Layout = struct {
     glyphs: [max_layout_glyphs]Glyph = undefined,
     count: usize = 0,
     stats: RenderStats,
-};
-
-pub const PathCommand = extern struct {
-    op: u32,
-    x: f32 = 0,
-    y: f32 = 0,
-    cx: f32 = 0,
-    cy: f32 = 0,
-    cx1: f32 = 0,
-    cy1: f32 = 0,
-};
-
-pub const PathOp = enum(u32) {
-    move = 0,
-    line = 1,
-    quadratic = 2,
-    cubic = 3,
-    close = 4,
 };
 
 const Face = struct {
@@ -302,61 +282,6 @@ pub fn rasterize(self: *Self, layout: *const Layout, mask: []u8) !void {
         defer alloc.free(bitmap);
         c.stbtt_MakeGlyphBitmapSubpixel(&face.raster, bitmap.ptr, glyph_width, glyph_height, glyph_width, layout.scale_x, layout.scale_y, shift_x, shift_y, glyph.id);
         composite(mask[0..required], width, layout.metrics.cell_height, bitmap, glyph_width, glyph_height, origin_x + x0, origin_y + y0);
-    }
-}
-
-fn appendPath(
-    commands: *std.ArrayListUnmanaged(PathCommand),
-    command: PathCommand,
-    initial_len: usize,
-) !void {
-    if (commands.items.len >= max_path_commands or commands.items.len - initial_len >= max_run_path_commands)
-        return error.TooManyPathCommands;
-    for ([_]f32{ command.x, command.y, command.cx, command.cy, command.cx1, command.cy1 }) |value| {
-        if (!std.math.isFinite(value) or @abs(value) > 1048576) return error.InvalidPathCoordinate;
-    }
-    if (commands.items.len == commands.capacity)
-        try commands.ensureTotalCapacityPrecise(alloc, @min(max_path_commands, @max(64, commands.capacity * 2)));
-    commands.appendAssumeCapacity(command);
-}
-
-pub fn outline(self: *Self, layout: *const Layout, commands: *std.ArrayListUnmanaged(PathCommand)) !void {
-    const face = try self.ensureFace(layout.style);
-    const initial_len = commands.items.len;
-    errdefer commands.shrinkRetainingCapacity(initial_len);
-    for (layout.glyphs[0..layout.count]) |glyph| {
-        var vertices: ?[*]c.stbtt_vertex = null;
-        const count = c.stbtt_GetGlyphShape(&face.raster, glyph.id, &vertices);
-        defer if (vertices) |value| c.stbtt_FreeShape(&face.raster, value);
-        if (count < 0 or count > max_run_path_commands) return error.TooManyPathCommands;
-        if (count > 0 and vertices == null) return error.InvalidGlyphPath;
-        var open = false;
-        for (0..@intCast(count)) |index| {
-            const vertex = vertices.?[index];
-            const x = glyph.x + @as(f32, @floatFromInt(vertex.x)) * layout.scale_x;
-            const y = glyph.baseline - @as(f32, @floatFromInt(vertex.y)) * layout.scale_y;
-            switch (vertex.type) {
-                c.STBTT_vmove => {
-                    if (open) try appendPath(commands, .{ .op = @intFromEnum(PathOp.close) }, initial_len);
-                    try appendPath(commands, .{ .op = @intFromEnum(PathOp.move), .x = x, .y = y }, initial_len);
-                    open = true;
-                },
-                c.STBTT_vline => {
-                    if (!open) return error.InvalidGlyphPath;
-                    try appendPath(commands, .{ .op = @intFromEnum(PathOp.line), .x = x, .y = y }, initial_len);
-                },
-                c.STBTT_vcurve => {
-                    if (!open) return error.InvalidGlyphPath;
-                    try appendPath(commands, .{ .op = @intFromEnum(PathOp.quadratic), .x = x, .y = y, .cx = glyph.x + @as(f32, @floatFromInt(vertex.cx)) * layout.scale_x, .cy = glyph.baseline - @as(f32, @floatFromInt(vertex.cy)) * layout.scale_y }, initial_len);
-                },
-                c.STBTT_vcubic => {
-                    if (!open) return error.InvalidGlyphPath;
-                    try appendPath(commands, .{ .op = @intFromEnum(PathOp.cubic), .x = x, .y = y, .cx = glyph.x + @as(f32, @floatFromInt(vertex.cx)) * layout.scale_x, .cy = glyph.baseline - @as(f32, @floatFromInt(vertex.cy)) * layout.scale_y, .cx1 = glyph.x + @as(f32, @floatFromInt(vertex.cx1)) * layout.scale_x, .cy1 = glyph.baseline - @as(f32, @floatFromInt(vertex.cy1)) * layout.scale_y }, initial_len);
-                },
-                else => return error.InvalidGlyphPath,
-            }
-        }
-        if (open) try appendPath(commands, .{ .op = @intFromEnum(PathOp.close) }, initial_len);
     }
 }
 

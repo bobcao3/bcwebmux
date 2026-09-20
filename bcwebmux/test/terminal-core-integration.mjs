@@ -18,7 +18,7 @@ assert.ok(backend === "webgl2" || backend === "webgpu", "RENDER_BACKEND must be 
 const serverPort = await freePort();
 const debugPort = await freePort();
 const profile = await mkdtemp(path.join(os.tmpdir(), "bcwebmux-terminal-core-integration-"));
-const server = spawn(serverPath, ["--web-root", webRoot, "--port", String(serverPort)], {
+const server = spawn(serverPath, ["--config", "/dev/null", "--web-root", webRoot, "--port", String(serverPort)], {
   stdio: ["ignore", "pipe", "pipe"],
 });
 let serverLog = "";
@@ -119,8 +119,10 @@ try {
   assert.equal(result.disposeReplies, 1);
   assert.equal(result.userData, "u");
   assert.equal(result.hostData, "u");
+  assert.equal(result.canvasFontLifecycle, true);
   const exceptions = pageCdp.events.filter((event) => event.method === "Runtime.exceptionThrown");
   assert.deepEqual(exceptions, [], JSON.stringify(exceptions));
+  console.log(JSON.stringify({ terminalCore: "ok", backend, deviceScaleFactor, canvasFontLifecycle: true }));
 } finally {
   pageCdp?.close();
   browserCdp?.close();

@@ -2,10 +2,10 @@
 // Copyright (c) 2026 Cheng Cao
 
 import {
-  SUBMISSION_SIZE, FRAME_SIZE, CANVAS_REQUEST_SIZE, PATH_COMMAND_SIZE,
-  MAX_PATH_COMMANDS, MAX_RUN_PATH_COMMANDS, MAX_RUN_PIXELS, PATH_OP,
+  SUBMISSION_SIZE, FRAME_SIZE, CANVAS_REQUEST_SIZE, CANVAS_TEXT_UNIT_SIZE,
+  MAX_RUN_TEXT_BYTES, MAX_RUN_CODEPOINTS, MAX_RUN_PIXELS,
 } from "./browser/render/FrameSchema.js";
-const strictDecoder = new TextDecoder("utf-8", { fatal: true });
+const strictDecoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 
 function validateRange(memoryLength, ptr, length, label) {
   if (!Number.isSafeInteger(ptr) || !Number.isSafeInteger(length) || ptr < 0 || length < 0 ||
@@ -21,41 +21,22 @@ function validateRecords(memoryLength, ptr, count, size, label) {
   validateRange(memoryLength, ptr, count * size, label);
 }
 
-export function validateCanvasPath(commands, offset, count) {
-  if (!(commands instanceof DataView) || !Number.isSafeInteger(offset) ||
-      !Number.isSafeInteger(count) || offset < 0 || count < 0 ||
-      count > MAX_RUN_PATH_COMMANDS ||
-      offset > Math.floor(commands.byteLength / PATH_COMMAND_SIZE) ||
-      count > Math.floor(commands.byteLength / PATH_COMMAND_SIZE) - offset) {
-    throw new Error("invalid renderer Canvas path range");
+export function decodeCanvasText(bytes, offset, length) {
+  if (!(bytes instanceof Uint8Array) || !Number.isSafeInteger(offset) ||
+      !Number.isSafeInteger(length) || offset < 0 || length < 1 || length > MAX_RUN_TEXT_BYTES ||
+      offset > bytes.byteLength || length > bytes.byteLength - offset) {
+    throw new Error("invalid renderer Canvas text range");
   }
-  let open = false;
-  for (let index = 0; index < count; index += 1) {
-    const base = (offset + index) * PATH_COMMAND_SIZE;
-    const op = commands.getUint32(base, true);
-    if (op > PATH_OP.close) throw new Error("invalid renderer Canvas path op");
-    for (let value = 0; value < 6; value += 1) {
-      const coordinate = commands.getFloat32(base + 4 + value * 4, true);
-      if (!Number.isFinite(coordinate) || Math.abs(coordinate) > 1048576) {
-        throw new Error("invalid renderer Canvas path coordinate");
-      }
-    }
-    if (op === PATH_OP.move) {
-      if (open) throw new Error("invalid renderer Canvas path contour");
-      open = true;
-    } else if (op === PATH_OP.close) {
-      if (!open) throw new Error("invalid renderer Canvas path contour");
-      open = false;
-    } else if (!open) {
-      throw new Error("invalid renderer Canvas path contour");
-    }
-  }
-  if (open) throw new Error("invalid renderer Canvas path contour");
+  let text;
+  try { text = strictDecoder.decode(bytes.subarray(offset, offset + length)); }
+  catch { throw new Error("invalid renderer Canvas UTF-8"); }
+  if ([...text].length > MAX_RUN_CODEPOINTS) throw new Error("invalid renderer Canvas text count");
+  return text;
 }
 
 export function parseFramePacket(memory, submissionPtr, expectations) {
   const { partition, abi, coreGeneration, configGeneration, token } = expectations;
-  if (abi !== 5 || expectations.cellSize !== 8 || expectations.styleSize !== 12 ||
+  if (abi !== 6 || expectations.cellSize !== 8 || expectations.styleSize !== 12 ||
       expectations.frameSize !== FRAME_SIZE || expectations.packetSize !== SUBMISSION_SIZE) {
     throw new Error("invalid frame schema expectations");
   }
@@ -74,8 +55,8 @@ export function parseFramePacket(memory, submissionPtr, expectations) {
   if (!(memory instanceof ArrayBuffer)) throw new Error("invalid renderer memory");
   validateRange(memory.byteLength, submissionPtr, SUBMISSION_SIZE, "header");
   const header = new DataView(memory, submissionPtr, SUBMISSION_SIZE);
-  if (header.getUint32(0, true) !== 0x5355424d || header.getUint32(4, true) !== 5 ||
-      header.getUint32(8, true) !== SUBMISSION_SIZE || header.getUint32(12, true) !== PATH_COMMAND_SIZE) {
+  if (header.getUint32(0, true) !== 0x5355424d || header.getUint32(4, true) !== 6 ||
+      header.getUint32(8, true) !== SUBMISSION_SIZE || header.getUint32(12, true) !== CANVAS_TEXT_UNIT_SIZE) {
     throw new Error("invalid renderer submission");
   }
   if (header.getUint32(112, true) !== token ||
@@ -106,8 +87,8 @@ export function parseFramePacket(memory, submissionPtr, expectations) {
   const bitmapUploadPixelsLen = header.getUint32(72, true);
   const canvasRequestsPtr = header.getUint32(76, true);
   const canvasRequestsCount = header.getUint32(80, true);
-  const canvasPathsPtr = header.getUint32(84, true);
-  const canvasPathsCount = header.getUint32(88, true);
+  const canvasTextPtr = header.getUint32(84, true);
+  const canvasTextLen = header.getUint32(88, true);
   const textRowsPtr = header.getUint32(92, true);
   const textCellsPtr = header.getUint32(96, true);
   const textBytesPtr = header.getUint32(100, true);
@@ -145,11 +126,11 @@ export function parseFramePacket(memory, submissionPtr, expectations) {
   const canvasRequests = new DataView(memory, canvasRequestsPtr, canvasRequestsCount * CANVAS_REQUEST_SIZE);
   validateRange(memory.byteLength, bitmapUploadPixelsPtr, bitmapUploadPixelsLen, "bitmap upload pixels");
   const bitmapUploadPixels = new Uint8Array(memory, bitmapUploadPixelsPtr, bitmapUploadPixelsLen);
-  if (canvasPathsCount > MAX_PATH_COMMANDS) throw new Error("invalid renderer Canvas path count");
-  validateRecords(memory.byteLength, canvasPathsPtr, canvasPathsCount, PATH_COMMAND_SIZE, "Canvas paths");
-  const canvasPaths = new DataView(memory, canvasPathsPtr, canvasPathsCount * PATH_COMMAND_SIZE);
+  if (canvasTextLen > canvasRequestsCount * MAX_RUN_TEXT_BYTES) throw new Error("invalid renderer Canvas text count");
+  validateRecords(memory.byteLength, canvasTextPtr, canvasTextLen, CANVAS_TEXT_UNIT_SIZE, "Canvas text");
+  const canvasText = new Uint8Array(memory, canvasTextPtr, canvasTextLen);
   validateRange(memory.byteLength, textBytesPtr, textBytesLen, "text bytes");
-  if (frame.getUint32(0, true) !== 0x46574342 || frame.getUint32(4, true) !== 5) {
+  if (frame.getUint32(0, true) !== 0x46574342 || frame.getUint32(4, true) !== 6) {
     throw new Error("invalid renderer frame");
   }
   const cols = frame.getUint32(8, true);
@@ -206,7 +187,7 @@ export function parseFramePacket(memory, submissionPtr, expectations) {
       throw new Error("invalid renderer bitmap upload");
     }
   }
-  let canvasPathOffset = 0;
+  let canvasTextOffset = 0;
   for (let index = 0; index < canvasRequestsCount; index += 1) {
     const base = index * CANVAS_REQUEST_SIZE;
     const slot = canvasRequests.getUint32(base, true);
@@ -214,20 +195,20 @@ export function parseFramePacket(memory, submissionPtr, expectations) {
     const spanCells = canvasRequests.getUint32(base + 8, true);
     const offset = canvasRequests.getUint32(base + 12, true);
     const length = canvasRequests.getUint32(base + 16, true);
-    if (canvasRequests.getUint32(base + 20, true) !== 0 || slot < glyphPartitionBase || slotCount === 0 ||
+    if (canvasRequests.getUint32(base + 20, true) > 3 || slot < glyphPartitionBase || slotCount === 0 ||
         slotCount > glyphPartitionBase + glyphSlotsUsed - slot ||
         spanCells < 1 || spanCells > 16 ||
         spanCells * expectations.atlas.tileWidth * expectations.atlas.tileHeight > MAX_RUN_PIXELS ||
-        slotCount !== spanCells || length > MAX_RUN_PATH_COMMANDS ||
-        offset !== canvasPathOffset || offset > canvasPathsCount ||
-        length > canvasPathsCount - offset) {
+        slotCount !== spanCells || length > MAX_RUN_TEXT_BYTES ||
+        offset !== canvasTextOffset || offset > canvasTextLen ||
+        length > canvasTextLen - offset) {
       throw new Error("invalid renderer Canvas request");
     }
-    validateCanvasPath(canvasPaths, offset, length);
-    canvasPathOffset = offset + length;
+    decodeCanvasText(canvasText, offset, length);
+    canvasTextOffset = offset + length;
   }
-  if (canvasPathOffset !== canvasPathsCount) throw new Error("incomplete renderer Canvas paths");
-  for (const ptr of [cellsPtr, stylesPtr, selectionsPtr, canvasPathsPtr]) {
+  if (canvasTextOffset !== canvasTextLen) throw new Error("incomplete renderer Canvas text");
+  for (const ptr of [cellsPtr, stylesPtr, selectionsPtr]) {
     if (ptr % 4) throw new Error("unaligned frame stream");
   }
   const styleData = new DataView(memory, stylesPtr + stylesFirst * expectations.styleSize, stylesCount * expectations.styleSize);
@@ -296,7 +277,7 @@ export function parseFramePacket(memory, submissionPtr, expectations) {
     selections: new Uint32Array(memory, selectionsPtr, selectionsCount),
     selectionBytes: new Uint8Array(memory, selectionsPtr, selectionsCount * 4),
     bitmapUploads, bitmapUploadsCount, bitmapUploadPixels,
-    canvasRequests, canvasRequestsCount, canvasPaths, canvasPathsCount,
+    canvasRequests, canvasRequestsCount, canvasText, canvasTextLen,
     textRows, textCells, textBytes, textChanged: textChanged !== 0,
     cols,
     rows,

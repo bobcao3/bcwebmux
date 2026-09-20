@@ -1,6 +1,6 @@
 # Kitty graphics and client rendering design
 
-Status: graphics proposal; prerequisite text refactor progress and the proposed correction to browser font rendering are recorded in section 7. The `canvas` text path described here is a design target, not the current outline-based `kb-canvas` implementation. Based on Ghostty `b32f20f3e8d25bb925ec545c54498e93518e7ced`. All source paths below are repository-root-relative.
+Status: graphics proposal; prerequisite text refactor progress and the browser font rendering correction are recorded in section 7. The `canvas` text path and local frame ABI v6 are implemented; Kitty graphics remains a design target. Based on Ghostty `b32f20f3e8d25bb925ec545c54498e93518e7ced`. All source paths below are repository-root-relative.
 
 This includes the prerequisite WASM/JS boundary refactor in section 7. The target is one client frame pipeline for text and graphics, not a second renderer bolted onto the current one. Native image admission/checkpoint rules remain independent of presentation.
 
@@ -293,7 +293,7 @@ decode ready / blink deadline / later animation deadline
 
 `consumeFrame` is one synchronous JS operation, not an async iterator or a general transaction framework. The two ABI calls replace the existing callback's implicit success/clean contract:
 
-The implemented layer-2 ABI v5 uses `term_frame_prepare() -> i32`: zero means unchanged, `-1` means preparation failure, `-2` means busy, and a positive value is the core-owned packet header address. `term_frame_token()` supplies its nonzero `u32` token. `term_frame_finish(token, accepted)` returns `1` on acceptance/rejection and `-2` on invalid token/acceptance value; even a mismatched finish releases the outstanding borrow and invalidates its caches. Tokens/revisions advance per prepared packet and survive terminal reset; core generation advances on initialization, configuration generation on configuration operations, and lease generation identifies the glyph partition. All are `u32`. The proposed text-payload ABI v6 in section 7.4 preserves this lifetime contract.
+The implemented layer-2 ABI v6 uses `term_frame_prepare() -> i32`: zero means unchanged, `-1` means preparation failure, `-2` means busy, and a positive value is the core-owned packet header address. `term_frame_token()` supplies its nonzero `u32` token. `term_frame_finish(token, accepted)` returns `1` on acceptance/rejection and `-2` on invalid token/acceptance value; even a mismatched finish releases the outstanding borrow and invalidates its caches. Tokens/revisions advance per prepared packet and survive terminal reset; core generation advances on initialization, configuration generation on configuration operations, and lease generation identifies the glyph partition. All are `u32`. The text-payload ABI v6 in section 7.4 preserves the v5 lifetime contract.
 
 The header is 156 bytes, retaining the compact 80-byte frame, 8-byte cell, and 12-byte style records. Header bytes 112–152 hold token, core/config/lease generations, full-frame flag, frame revision, graphics revision, graphics draw pointer/count, and graphics resource pointer/count. Graphics fields are currently zero. `TerminalCore.consumeFrame` fills core identities into explicit decoder expectations; consumers get borrowed views and scalar metadata, never packet addresses. Both backends upload synchronously and present only after accepted finish. WebGPU currently submits uploads separately from presentation; merging that orchestration remains a later-layer optimization.
 
@@ -315,9 +315,9 @@ GPU-backend choice remains `webgpu`/`webgl2`; each text path works with either.
 Replace the misleading `kb-canvas` setting with `canvas`, migrating persisted
 settings at the application boundary rather than retaining an outline-rendering mode.
 
-The current `kb-canvas` implementation shapes in WASM and passes STB outlines to
-Canvas. Filling paths does not invoke browser text rendering, so it cannot use
-the configured fallback stack or system emoji fonts. This proposal restores the
+The superseded `kb-canvas` implementation shaped in WASM and passed STB outlines to
+Canvas. Filling paths does not invoke browser text rendering, so it could not use
+the configured fallback stack or system emoji fonts. The `canvas` path restores the
 previous browser capability; it does not add a WASM font-discovery service,
 bundled fallback-font engine, or new color-glyph support.
 
@@ -359,15 +359,15 @@ STB's existing font-format coverage as part of this correction.
 
 #### Bounded text requests, not outline commands
 
-Replace the v5 Canvas path stream with a bounded UTF-8 text stream in a coordinated
-local ABI v6 update. This is proposed, not yet implemented. Retain the 156-byte
-header, 80-byte frame, 8-byte cell, 12-byte style and 24-byte Canvas request sizes.
-The proposed request is six `u32`s: first slot, slot count, span cells, UTF-8 byte
+The v6 update replaces the v5 Canvas path stream with a bounded UTF-8 text stream.
+It retains the 156-byte header, 80-byte frame, 8-byte cell, 12-byte style and
+24-byte Canvas request sizes.
+The request is six `u32`s: first slot, slot count, span cells, UTF-8 byte
 offset, UTF-8 byte length, and style index (regular=0, bold=1, italic=2,
 bold-italic=3). Header bytes 84/88 become the text pointer/byte length; byte 12
 declares a text unit size of 1 instead of a path-command stride of 28. Reject v5
-outline packets rather than interpreting them as strings. Remove obsolete path
-commands, outline extraction, and path validation once this replacement lands.
+outline packets rather than interpreting them as strings. The obsolete path
+commands, outline extraction, and path validation have been removed.
 
 Keep the existing 16-cell/32-codepoint run bounds and 16 Mi-pixel per-run bound.
 Limit text to 128 UTF-8 bytes per request and bound aggregate bytes by the bounded
@@ -447,7 +447,7 @@ Acceptance requires measured preparation/upload bytes, cache-miss work, wakeups 
 
 ### Frame ABI and dirty state
 
-The v4-to-v5 change introduced the pull-frame contract, core/config/lease generations, and reserved graphics fields. The next coordinated local ABI v6 change replaces Canvas outlines with the text requests in section 7.4; graphics integration must populate and validate the reserved graphics streams. Validate pointer/count bounds, finite floats, enums, source bounds, and identity in `FramePacket.js`. Ship matched WASM/JS assets, not permanently supported competing submission paths. This local ABI change does not itself change the native checkpoint codec or PTY protocol.
+The v4-to-v5 change introduced the pull-frame contract, core/config/lease generations, and reserved graphics fields. The coordinated local ABI v6 change replaces Canvas outlines with the text requests in section 7.4; graphics integration must populate and validate the reserved graphics streams. Validate pointer/count bounds, finite floats, enums, source bounds, and identity in `FramePacket.js`. Ship matched WASM/JS assets, not permanently supported competing submission paths. This local ABI change does not itself change the native checkpoint codec or PTY protocol.
 
 Include graphics dirty state, viewport movement, render metrics, and explicit core invalidation in `Terminal.term_frame_prepare()`'s early-return decision; text/cursor-only dirtiness misses image changes. Browser decode completion is presentation-only dirtiness and redraws the last authoritative draw list without reparsing output.
 
@@ -609,7 +609,7 @@ Animation later adds shared recipe validation and browser composition, not a nat
 | --- | --- |
 | `bcwebmux/build.zig`, `bcwebmux/build.zig.zon` | Pin opaque-capable Ghostty, enable graphics/profile for all instances, direct concrete-module imports/assets/tests; no native pixel-codec dependency |
 | `common/terminal/Terminal.zig`, `common/terminal/main.zig` | Pull frame prepare/finish, opaque setup, graphics dirtiness/resource exports, compound restore, epochs |
-| `common/terminal/RenderFrame.zig` (formerly `Wgpu.zig`) | Proposed frame v6: dispatch misses to kb/STB masks or Canvas UTF-8 requests without invoking kb for Canvas; image draws/resources, placeholder suppression, background flags |
+| `common/terminal/RenderFrame.zig` (formerly `Wgpu.zig`) | Frame v6: dispatch misses to kb/STB masks or Canvas UTF-8 requests without invoking kb for Canvas; image draws/resources, placeholder suppression, background flags |
 | `common/terminal/FontEngine.zig` | Keep kb shaping and STB rasterization for `kb-stb`; remove Canvas outline extraction, with no system-font discovery or new fallback engine |
 | `common/terminal/shaders/cell.wgsl` → `wgpuTerminal/src/browser/render/webgpu/shaders/cell.wgsl` | Browser-owned split background/transparent foreground shader; one composition model |
 | `common/terminal/grain.zig` and browser renderer assets | Relocate presentation grain data out of the WASM shader-initialization path; preserve visual output |
@@ -617,7 +617,7 @@ Animation later adds shared recipe validation and browser composition, not a nat
 | `wgpuTerminal/src/Terminal.js`, `wgpuTerminal/src/TerminalCoreHost.js` | Presenter ownership, attach/rollback through one frame path; remove `_wasm` and `_gpuInit`/`_gpuSubmit` coupling |
 | `wgpuTerminal/src/browser/ViewportController.js`, input/selection controllers | Semantic core methods rather than direct exports; shared versioned metrics |
 | `wgpuTerminal/src/TerminalOptions.js`, `wgpuTerminal/index.d.ts` | `kb-stb`/`canvas` options and path-specific font requirements; graphics profile, limits, diagnostics options |
-| `wgpuTerminal/src/FramePacket.js` (formerly `RendererSubmission.js`), `browser/render/FrameSchema.js` | Backend-independent proposed v6 UTF-8 request validation/typed views, used only by the core bridge; remove outline-command schema |
+| `wgpuTerminal/src/FramePacket.js` (formerly `RendererSubmission.js`), `browser/render/FrameSchema.js` | Backend-independent v6 UTF-8 request validation/typed views, used only by the core bridge; remove outline-command schema |
 | `wgpuTerminal/src/browser/render/CanvasAlphaMask.js`, glyph runtime and atlas files | Presenter-owned browser `fillText` using the configured font stack, batched alpha masks, font-readiness invalidation and explicit glyph leases; backend atlas files only allocate/upload |
 | `wgpuTerminal/src/browser/render/RenderBackend.js` | Image cache/device recreation |
 | `wgpuTerminal/src/browser/render/webgpu/GpuTerminal.js`, `wgpuTerminal/src/browser/render/webgpu/GpuTerminalResources.js` | GPU operations, layered draws, device recovery; remove WASM decoding and independent scheduling |

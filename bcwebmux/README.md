@@ -99,6 +99,7 @@ zig build unit-test
 zig build test
 zig build e2e
 zig build visual-test
+TEXT_RENDERER=canvas zig build text-renderer-test
 ```
 
 `server-test` runs native server tests; `unit-test` runs Zig unit tests.
@@ -106,6 +107,12 @@ The shell startup regression (requires `/bin/bash`) can also run directly:
 `node test/session-shell-integration.mjs ./zig-out/bin/bcwebmux-server`.
 `test` includes browser end-to-end tests, not just unit tests. Browser tests
 require Chromium and a physical Vulkan GPU (no SwiftShader/llvmpipe).
+
+`text-renderer-test` runs frame/font contracts, full-viewport goldens, GPU input
+tests and core/font-lifecycle tests (including DPR 4) without the unrelated
+session-transport recovery suite. Use `TEXT_RENDERER=canvas` for the GPU input
+tests' browser text path; omit it to exercise kb/STB there. Test server launches
+ignore personal server configuration without changing browser fontconfig.
 
 ### Full-screen visual regression tests
 
@@ -122,13 +129,20 @@ and bottom controls. Cases cover UTF-8 (CJK, combining accents, Greek/Cyrillic),
 emoji, ANSI styles/box drawing, and numbered `test/snapshot-fixture.zig` source.
 Scrollback cases capture the bottom, Home/top, and PageDown/middle; End must
 restore the original bottom image. Source is sent through the real shell/PTY.
-The Unicode preview uses `kb-canvas`; source/scrollback uses the default
-`kb-stb`, covering both rasterizers. **Known font limitation:** both use the
-same bundled JetBrains outlines, which lack the probed CJK/emoji characters.
-Those probes currently show missing-glyph boxes; these snapshots record that
-limitation, not successful CJK/emoji support. CSS/system fallback fonts do not
-fix it. Latin accents, Greek/Cyrillic, combining marks and box drawing are
-positive Unicode coverage. See the [font contract](../wgpuTerminal/README.md).
+The Unicode preview uses browser `canvas`; source/scrollback uses the default
+`kb-stb`, covering both text paths. Canvas uses the CSS/system font stack for
+CJK and emoji fallback. The test observes actual terminal `fillText` calls and
+checks nonblank alpha that differs from missing-glyph boxes, including combining
+marks, variation selectors, skin tones, flags and ZWJ sequences, before comparing
+screenshots. `*-font-probe.json` records that evidence. The shipped Noto Emoji web
+font and installed Noto CJK fonts provide this test environment's fallback coverage;
+install those CJK fonts for reproducible baselines. Color emoji RGB remains outside
+the alpha-only atlas contract. kb/STB still depends on the supplied TTF coverage.
+See the [font contract](../wgpuTerminal/README.md#text-paths-and-fonts).
+
+The Fira Code menu option uses an installed/browser-provided font and selects
+Canvas automatically. If Fira Code is unavailable, its configured fallback stack
+is used; the option does not add an external font download.
 
 - Baselines: `test/golden/{desktop,mobile}-{webgpu,webgl2}-*.webp`.
 - Actual PNGs and renderer-state JSON: `zig-out/screenshots/` (override with

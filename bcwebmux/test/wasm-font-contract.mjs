@@ -11,14 +11,16 @@ import {
 } from "../../wgpuTerminal/src/WasmFonts.js";
 
 const defaults = resolveWasmFontUrls("https://example.test/assets/terminal.wasm");
-for (const renderer of ["kb-stb", "kb-canvas"]) {
-  for (const Constructor of [TerminalCore, Terminal]) {
-    assert.throws(() => new Constructor({ renderer, font: { canvasOnly: true } }), /wasmFontUrls/);
-    const terminal = new Constructor({ renderer });
-    if (Constructor === Terminal) await assert.rejects(terminal.setFont({ canvasOnly: true }), /wasmFontUrls/);
-    else assert.throws(() => terminal.setFont({ canvasOnly: true }), /wasmFontUrls/);
-    if (Constructor === TerminalCore) terminal.dispose();
-  }
+for (const Constructor of [TerminalCore, Terminal]) {
+  assert.throws(() => new Constructor({ renderer: "kb-stb", font: { canvasOnly: true } }), /wasmFontUrls/);
+  const stb = new Constructor({ renderer: "kb-stb" });
+  if (Constructor === Terminal) await assert.rejects(stb.setFont({ canvasOnly: true }), /wasmFontUrls/);
+  else assert.throws(() => stb.setFont({ canvasOnly: true }), /wasmFontUrls/);
+  const canvas = new Constructor({ renderer: "canvas", font: { canvasOnly: true } });
+  await canvas.setFont({ cssFamily: "system-monospace", fallbacks: ["Noto Emoji"] });
+  await assert.rejects(canvas.setRenderer("kb-stb"), /wasmFontUrls/);
+  assert.equal(canvas.options.renderer, "canvas");
+  if (Constructor === TerminalCore) { stb.dispose(); canvas.dispose(); }
 }
 assert.deepEqual(defaults, DEFAULT_WASM_FONT_FILES.map(file => `https://example.test/assets/fonts/${file}`));
 assert.deepEqual(

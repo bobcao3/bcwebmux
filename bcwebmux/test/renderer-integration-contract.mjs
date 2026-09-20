@@ -27,8 +27,9 @@ async function inspect(dir) {
   }
 }
 await inspect(root);
+assert.match(await readFile(new URL("browser/render/CanvasAlphaMask.js", root), "utf8"), /fillText/);
 assert.doesNotMatch(await readFile(new URL("browser/render/CanvasAlphaMask.js", root), "utf8"),
-  /fillText|strokeText|measureText/);
+  /validateCanvasPath|PATH_OP/);
 assert.throws(() => new Terminal({ powerPreference: "turbo" }), /power preference/);
 assert.equal(new Terminal().options.powerPreference, undefined);
 const lostGl = { contextLost: true, initialized: true,
@@ -110,7 +111,7 @@ try {
     } else old.onDeviceLost();
     const task = terminal._recovering;
     assert.equal(terminal._recoverBackend(old), task, "coalesce loss notifications");
-    assert.throws(() => terminal.setRenderer("kb-canvas"), /renderer unavailable/);
+    await assert.rejects(terminal.setRenderer("canvas"), /renderer unavailable/);
     assert.throws(() => terminal.setGlyphCacheMaxBytes(1024 * 1024), /renderer unavailable/);
     terminal.setGrainStrength(7);
     assert.equal(await task, true);

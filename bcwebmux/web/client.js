@@ -98,7 +98,7 @@ const requestedRenderer = query.get("renderer");
 const requestedBackend = query.get("backend");
 const renderBackend = requestedBackend === "webgpu" || requestedBackend === "webgl2"
   ? requestedBackend : "auto";
-const textRenderer = requestedRenderer === "kb-canvas" ? "kb-canvas" : settings.renderer;
+const textRenderer = ["canvas", "kb-canvas"].includes(requestedRenderer) ? "canvas" : settings.renderer;
 if (query.has("gpu-test")) document.querySelector("#session-toggle").hidden = true;
 
 let softkeysVisibilityOverride = null;
@@ -505,9 +505,9 @@ settings.setOnFontChange(async (font) => {
     showClientError(error, "font error");
   }
 });
-settings.setOnRendererChange((renderer) => {
+settings.setOnRendererChange(async (renderer) => {
   try {
-    terminal.setRenderer(renderer);
+    await terminal.setRenderer(renderer);
   } catch (error) {
     showClientError(error, "renderer error");
     throw error;

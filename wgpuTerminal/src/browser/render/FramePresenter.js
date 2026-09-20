@@ -58,7 +58,8 @@ export class FramePresenter {
       const v = packet.canvasRequests, o = i * CANVAS_REQUEST_SIZE;
       this.canvasRasterizer ??= new CanvasGlyphRasterizer();
       this.canvasRasterizer.rasterize(v.getUint32(o, true), v.getUint32(o + 4, true), v.getUint32(o + 8, true),
-        packet.canvasPaths, v.getUint32(o + 12, true), v.getUint32(o + 16, true), b.atlas,
+        packet.canvasText, v.getUint32(o + 12, true), v.getUint32(o + 16, true),
+        v.getUint32(o + 20, true), b.atlas, b.activeTerminal.options.font,
         (...args) => b.uploadBitmap(...args));
     }
     b.uploadStyles(packet.stylesFirst, packet.styles, packet.styleBytes);

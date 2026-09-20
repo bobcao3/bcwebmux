@@ -113,7 +113,7 @@ export function selectTerminal(renderer, terminal) {
 }
 
 export function setTextRenderer(renderer, textRenderer) {
-  if (textRenderer !== "kb-stb" && textRenderer !== "kb-canvas") throw new Error("invalid text renderer");
+  if (textRenderer !== "kb-stb" && textRenderer !== "canvas") throw new Error("invalid text renderer");
   if (textRenderer === renderer.textRenderer) return null;
   return reconfigureGlyphAtlas(renderer, {
     ...metrics(renderer),

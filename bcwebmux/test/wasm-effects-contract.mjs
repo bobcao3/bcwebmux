@@ -7,7 +7,7 @@ import { TerminalCore } from "../../wgpuTerminal/src/TerminalCore.js";
 
 const wasmPath = process.argv[2] ?? new URL("../zig-out/web/terminal.wasm", import.meta.url);
 const module = await WebAssembly.compile(await readFile(wasmPath));
-const core = new TerminalCore({ renderer: "kb-canvas" });
+const core = new TerminalCore({ renderer: "canvas" });
 const imports = core._createWasmImports();
 const writes = [];
 let replies = "";

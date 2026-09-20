@@ -12,12 +12,17 @@ const FONT_SIZE_MAX = 32;
 const GLYPH_CACHE_MAX_MIB = 256;
 export const FONT_OPTIONS = Object.freeze({
   "jetbrains-mono": { name: "JetBrains Mono Nerd Font", cssFamily: "JetBrains Mono Nerd Font", wasmId: 0 },
+  "fira-code": { name: "Fira Code", cssFamily: "Fira Code", wasmId: 0, canvasOnly: true },
 });
 export const FONT_FALLBACK_VERSION = 1;
 export const DEFAULT_FONT_FALLBACKS = Object.freeze({
   "jetbrains-mono": Object.freeze([
     "ui-monospace", "Noto Emoji", "SFMono-Regular", "Cascadia Mono", "Noto Sans Mono CJK SC", "Noto Sans CJK SC",
     "Microsoft YaHei UI", "PingFang SC", "Noto Sans Symbols 2", "monospace",
+  ]),
+  "fira-code": Object.freeze([
+    "ui-monospace", "Noto Emoji", "SFMono-Regular", "Cascadia Mono", "Noto Sans Mono CJK SC", "Noto Sans CJK SC",
+    "Microsoft YaHei UI", "PingFang SC", "JetBrains Mono Nerd Font", "Noto Sans Symbols 2", "monospace",
   ]),
 });
 
@@ -135,7 +140,8 @@ function loadSettings() {
       ? Math.min(GLYPH_CACHE_MAX_MIB, Math.max(1, saved.glyphCacheMaxMiB))
       : DEFAULT_SETTINGS.glyphCacheMaxMiB;
     const perfMode = ["off", "simple", "detailed"].includes(saved.perfMode) ? saved.perfMode : DEFAULT_SETTINGS.perfMode;
-    const renderer = ["kb-stb", "kb-canvas"].includes(saved.renderer) ? saved.renderer : DEFAULT_SETTINGS.renderer;
+    const renderer = FONT_OPTIONS[fontFamily].canvasOnly || saved.renderer === "kb-canvas" ? "canvas"
+      : ["kb-stb", "canvas"].includes(saved.renderer) ? saved.renderer : DEFAULT_SETTINGS.renderer;
     const migrateFontFallbacks = !Object.hasOwn(saved, "fontFallbackVersion");
     const fontFallbacks = Object.fromEntries(Object.keys(FONT_OPTIONS).map(id => {
       const fallbacks = normalizeFontFamilies(saved.fontFallbacks?.[id], DEFAULT_FONT_FALLBACKS[id]);
@@ -180,6 +186,7 @@ function resolveProfile(settings) {
 function resolveFont(settings) {
   return {
     ...FONT_OPTIONS[settings.fontFamily],
+    canvasOnly: Boolean(FONT_OPTIONS[settings.fontFamily].canvasOnly),
     id: settings.fontFamily,
     size: settings.fontSize,
     ligatures: settings.ligatures,
@@ -225,7 +232,7 @@ export function initializeSettings() {
   let onOpen = () => {};
   let onClose = () => {};
   const syncRendererControl = () => {
-    rendererStbOption.disabled = false;
+    rendererStbOption.disabled = Boolean(FONT_OPTIONS[settings.fontFamily].canvasOnly);
   };
   const syncGrainStrength = () => {
     grainStrength.value = settings.grainStrength;
@@ -384,8 +391,9 @@ export function initializeSettings() {
     syncFontSize();
     applyFontSettings();
   });
-  fontSettingsForm.addEventListener("change", event => {
-    const requestedRenderer = ["kb-stb", "kb-canvas"].includes(fontSettingsForm.elements.renderer.value)
+  fontSettingsForm.addEventListener("change", async event => {
+    const previousFontFamily = settings.fontFamily;
+    const requestedRenderer = ["kb-stb", "canvas"].includes(fontSettingsForm.elements.renderer.value)
       ? fontSettingsForm.elements.renderer.value
       : DEFAULT_SETTINGS.renderer;
     const fontFamilyChanged = event.target === fontSettingsForm.elements.fontFamily;
@@ -395,13 +403,25 @@ export function initializeSettings() {
         : DEFAULT_SETTINGS.fontFamily;
       fontSettingsForm.elements.fontFallbacks.value = settings.fontFallbacks[settings.fontFamily].join("\n");
     }
-    const renderer = requestedRenderer;
+    const renderer = FONT_OPTIONS[settings.fontFamily].canvasOnly ? "canvas" : requestedRenderer;
     syncRendererControl();
     fontSettingsForm.elements.renderer.value = renderer;
     if (renderer !== settings.renderer) {
-      settings.renderer = renderer;
-      saveSettings(settings);
-      onRendererChange(renderer);
+      fontSettingsForm.elements.renderer.disabled = true;
+      try {
+        await onRendererChange(renderer);
+        settings.renderer = renderer;
+        saveSettings(settings);
+      } catch {
+        settings.fontFamily = previousFontFamily;
+        fontSettingsForm.elements.fontFamily.value = previousFontFamily;
+        fontSettingsForm.elements.fontFallbacks.value = settings.fontFallbacks[previousFontFamily].join("\n");
+        fontSettingsForm.elements.renderer.value = settings.renderer;
+        syncRendererControl();
+        return;
+      } finally {
+        fontSettingsForm.elements.renderer.disabled = false;
+      }
     }
     if (!fontFamilyChanged && event.target === fontSettingsForm.elements.renderer) return;
     settings.ligatures = fontSettingsForm.elements.ligatures.checked;

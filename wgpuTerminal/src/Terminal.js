@@ -38,6 +38,7 @@ import {
   DEFAULT_THEME,
   loadTerminalFonts,
   normalizeFont,
+  validateRendererFont,
   normalizePowerPreference,
   renderFontFamily,
 } from "./TerminalOptions.js";
@@ -56,7 +57,7 @@ export class Terminal {
     this.options = {
       wasmUrl: options.wasmUrl || "/terminal.wasm",
       wasmFontUrls: options.wasmFontUrls,
-      renderer: options.renderer === "kb-canvas" ? "kb-canvas" : "kb-stb",
+      renderer: options.renderer === "canvas" ? "canvas" : "kb-stb",
       renderBackend: normalizeRenderBackend(options.renderBackend),
       powerPreference: normalizePowerPreference(options.powerPreference),
       font: normalizeFont(options.font),
@@ -74,6 +75,8 @@ export class Terminal {
       clipboardWrite: options.clipboardWrite,
       canonicalGeometry: Boolean(options.canonicalGeometry),
     };
+    validateRendererFont(this.options.renderer, this.options.font);
+    this._rendererChangeGeneration = 0;
     this._opened = false;
     this._disposed = false;
     this._opening = null;
@@ -577,6 +580,15 @@ export class Terminal {
       target.addEventListener(type, listener, { signal: this._windowListenerController.signal });
     };
     listen(window, "focus", () => this._focusController.windowFocus());
+    listen(document.fonts, "loadingdone", () => {
+      if (this._disposed || this.options.renderer !== "canvas" || this._pendingFont) return;
+      for (const core of this._cores) if (core.ready) core.invalidateFrame();
+      if (this._presenter) this._presenter.canvasRasterizer = null;
+      this._presenter?.invalidate();
+      this._viewportController.remeasureCells();
+      this._viewportController.resize(this._viewportController.latestPixelViewport);
+      this._scheduler.schedule();
+    });
     listen(window, "blur", () => {
       this._inputController.clearShortcutState();
       this._focusController.windowBlur();
@@ -662,6 +674,7 @@ export class Terminal {
     this._assertMutable();
     const previousFont = this.options.font;
     const font = normalizeFont({ ...this.options.font, ...(fontOptions || {}) });
+    validateRendererFont(this.options.renderer, font);
     if (!this._terminalElement) {
       this.options.font = font;
       return font;
@@ -705,18 +718,36 @@ export class Terminal {
     }
   }
 
-  setRenderer(rendererName) {
+  async setRenderer(rendererName) {
     this._assertMutable();
-    const normalized = rendererName === "kb-canvas" ? "kb-canvas" : "kb-stb";
+    if (this._disposed) throw new Error("terminal is disposed");
+    const normalized = rendererName === "canvas" ? "canvas" : "kb-stb";
+    validateRendererFont(normalized, this.options.font);
+    const generation = ++this._rendererChangeGeneration;
     if (!this._core?.ready || !this._renderer) {
       this.options.renderer = normalized;
       this._activeTextRenderer = normalized;
       return normalized;
     }
     if (this._recovering || this._renderer.error) throw new Error("renderer unavailable");
+    const recoveryGeneration = this._recoveryGeneration;
+    const cores = [...this._cores];
+    await Promise.all(cores.map(core => core._prepareRenderer(normalized)));
+    this._assertMutable();
+    if (this._disposed) throw new Error("terminal is disposed");
+    if (generation !== this._rendererChangeGeneration) return this.options.renderer;
+    if (this._recovering || this._renderer.error || recoveryGeneration !== this._recoveryGeneration) {
+      throw new Error("renderer changed during text renderer preparation");
+    }
+    validateRendererFont(normalized, this.options.font);
+    if (this._pendingFont) validateRendererFont(normalized, this._pendingFont);
+    if ([...this._cores].some(core => !cores.includes(core))) {
+      throw new Error("terminal cores changed during text renderer preparation");
+    }
+    for (const core of this._cores) validateRendererFont(normalized, core.options.font);
     this._renderer.setTextRenderer(normalized);
     this._installGlyphPartitions();
-    for (const core of this._cores) core.setRenderer(normalized);
+    for (const core of this._cores) core._applyRenderer(normalized);
     this.options.renderer = normalized;
     this._activeTextRenderer = normalized;
     this._scheduler.schedule(true);
@@ -780,6 +811,7 @@ export class Terminal {
 
   _reloadRendererFont() {
     if (!this._renderer) return;
+    if (this._presenter) this._presenter.canvasRasterizer = null;
     this._renderer.reloadFont(getComputedStyle(this._terminalElement).fontFamily);
     this._installGlyphPartitions();
   }

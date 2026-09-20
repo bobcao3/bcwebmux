@@ -5,6 +5,7 @@ const operations = [];
 let fail = false;
 const core = {
   invalidations: 0,
+  options: { font: {} },
   invalidateFrame() { this.invalidations++; },
   consumeFrame(fn) { fn(packet); return 1; },
 };
@@ -13,7 +14,7 @@ const packet = {
   bitmapUploadsCount: 1, bitmapUploads: new DataView(new Uint32Array([0, 1, 0, 2]).buffer),
   bitmapUploadPixels: new Uint8Array(2), canvasRequestsCount: 1,
   canvasRequests: new DataView(new Uint32Array([1, 1, 1, 0, 1, 0]).buffer),
-  canvasPaths: new DataView(new ArrayBuffer(28)),
+  canvasText: new TextEncoder().encode("a"),
   stylesFirst: 0, styles: new Uint32Array(3), styleBytes: new Uint8Array(12),
   dirtyRangesCount: 1, dirtyRanges: new DataView(new Uint32Array([0, 1]).buffer),
   cells: new Uint8Array(16), selections: new Uint32Array(1),
@@ -34,9 +35,11 @@ const presenter = new FramePresenter({
   _submitFrameMetadata() { operations.push("metadata"); },
 }, backend);
 presenter.canvasRasterizer = {
-  rasterize(first, slots, span, paths, offset, count, atlas, upload) {
+  rasterize(first, slots, span, text, offset, count, style, atlas, font, upload) {
     assert.deepEqual([first, slots, span, offset, count], [1, 1, 1, 0, 1]);
-    assert.equal(paths, packet.canvasPaths);
+    assert.equal(text, packet.canvasText);
+    assert.equal(style, 0);
+    assert.equal(font, core.options.font);
     assert.equal(atlas, backend.atlas);
     upload(first, slots, new Uint8Array(2), 0, 2);
   },

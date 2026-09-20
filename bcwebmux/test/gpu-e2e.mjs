@@ -12,12 +12,12 @@ const [serverPath, webRoot] = process.argv.slice(2);
 assert.ok(serverPath && webRoot, "usage: gpu-e2e.mjs SERVER WEB_ROOT");
 const serverPort = await freePort();
 const debugPort = await freePort();
-const rendererQuery = process.env.TEXT_RENDERER === "kb-canvas" ? "&renderer=kb-canvas" : "";
+const rendererQuery = process.env.TEXT_RENDERER === "canvas" ? "&renderer=canvas" : "";
 const requestedBackend = process.env.RENDER_BACKEND === "webgl2" ? "webgl2" : "webgpu";
 const backendQuery = `&backend=${requestedBackend}`;
 const pageQuery = `?gpu-test=1${rendererQuery}${backendQuery}`;
 const profile = await mkdtemp(path.join(os.tmpdir(), "bcwebmux-gpu-e2e-"));
-const server = spawn(serverPath, ["--web-root", webRoot, "--port", String(serverPort)], {
+const server = spawn(serverPath, ["--config", "/dev/null", "--web-root", webRoot, "--port", String(serverPort)], {
   stdio: ["ignore", "pipe", "pipe"],
 });
 let serverLog = "";
@@ -89,7 +89,7 @@ try {
 
   const bundledPort = await freePort();
   let bundledLog = "";
-  bundledServer = spawn(serverPath, ["--port", String(bundledPort)], {
+  bundledServer = spawn(serverPath, ["--config", "/dev/null", "--port", String(bundledPort)], {
     stdio: ["ignore", "pipe", "pipe"],
   });
   bundledServer.stdout.on("data", data => { bundledLog += data; });
@@ -415,16 +415,33 @@ try {
     const rendererSelect = panels.FONT.querySelector("select");
     if (!rendererSelect) throw new Error("renderer select is missing");
     const rendererValues = [...rendererSelect.options].map(option => option.value);
-    if (JSON.stringify(rendererValues) !== JSON.stringify(["kb-stb", "kb-canvas"])) {
+    if (JSON.stringify(rendererValues) !== JSON.stringify(["kb-stb", "canvas"])) {
       throw new Error("renderer select options are invalid: " + JSON.stringify(rendererValues));
     }
     const fontFamilySelect = panels.FONT.querySelector('select[name="fontFamily"]');
     if (!fontFamilySelect) throw new Error("font family select is missing");
     const stbOption = [...rendererSelect.options].find(option => option.value === "kb-stb");
-    if ([...fontFamilySelect.options].some(option => option.value === "fira-code")) {
-      throw new Error("browser-only font option must not be offered");
+    if (![...fontFamilySelect.options].some(option => option.value === "fira-code")) {
+      throw new Error("browser-only font option is missing");
     }
     if (!stbOption || stbOption.disabled) throw new Error("kb-stb option is missing or disabled");
+    const previousTextRenderer = window.bcwebmux.state.textRenderer;
+    const waitFontSetting = async predicate => {
+      const end = deadline(3000);
+      while (!predicate() && performance.now() < end) await sleep(20);
+      if (!predicate()) throw new Error("browser font setting did not commit");
+    };
+    fontFamilySelect.value = "fira-code";
+    fontFamilySelect.dispatchEvent(new Event("change", { bubbles: true }));
+    await waitFontSetting(() => window.bcwebmux.state.textRenderer === "canvas" &&
+      window.bcwebmux.state.fontFamily?.startsWith('"Fira Code"'));
+    if (!stbOption.disabled) throw new Error("browser-only font did not disable STB");
+    fontFamilySelect.value = "jetbrains-mono";
+    fontFamilySelect.dispatchEvent(new Event("change", { bubbles: true }));
+    await waitFontSetting(() => !stbOption.disabled && window.bcwebmux.state.fontFamily?.startsWith('"JetBrains Mono Nerd Font"'));
+    rendererSelect.value = previousTextRenderer;
+    rendererSelect.dispatchEvent(new Event("change", { bubbles: true }));
+    await waitFontSetting(() => window.bcwebmux.state.textRenderer === previousTextRenderer && !rendererSelect.disabled);
     const fontFallbacks = panels.FONT.querySelector('textarea[name="fontFallbacks"]');
     if (!fontFallbacks) throw new Error("font fallbacks textarea is missing");
     const fallbackFamilies = fontFallbacks.value.split(/\\r?\\n/).map(family => family.trim());
@@ -814,7 +831,7 @@ try {
   assert.ok(Number.isInteger(state.atlasRequiredSlots) && state.atlasRequiredSlots >= state.cols * state.rows);
   assert.ok(state.atlasCapacity >= state.atlasRequiredSlots);
   assert.ok(state.glyphSlotsUsed >= 1 && state.glyphSlotsUsed <= state.atlasCapacity);
-  if (["kb-stb", "kb-canvas"].includes(state.textRenderer)) {
+  if (["kb-stb", "canvas"].includes(state.textRenderer)) {
     assert.ok(state.cacheHits > 0);
     assert.ok(state.cacheMisses >= 0);
     assert.ok(state.glyphSlotsUsed <= state.atlasRequiredSlots);

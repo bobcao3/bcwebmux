@@ -27,6 +27,7 @@ export async function createCore(host, options = {}) {
     host._registerTerminal(core, layout);
     const recoveryGeneration = host._recoveryGeneration;
     await core.open({ cols: layout.cols, rows: layout.rows, host });
+    await core._prepareRenderer(host.options.renderer);
     if (host._disposed || recoveryGeneration !== host._recoveryGeneration) {
       throw new Error("terminal changed during core creation");
     }
@@ -71,7 +72,7 @@ export function attachCore(host, core) {
       ? Math.max(layout.cols * layout.rows, core.cols * core.rows)
       : layout.cols * layout.rows);
     host._presenter.selectTerminal(core);
-    core.setRenderer(host.options.renderer);
+    core._applyRenderer(host.options.renderer);
     core.setFont(host.options.font);
     core.invalidateForAttach();
     if ((host.options.canonicalGeometry
@@ -86,7 +87,7 @@ export function attachCore(host, core) {
     host._core = previousCore;
     try {
       host._presenter.selectTerminal(previousCore);
-      previousCore.setRenderer(host.options.renderer);
+      previousCore._applyRenderer(host.options.renderer);
       previousCore.setFont(host.options.font);
       previousCore.invalidateForAttach();
       if ((host.options.canonicalGeometry
