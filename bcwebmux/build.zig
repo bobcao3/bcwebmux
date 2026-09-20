@@ -131,6 +131,31 @@ pub fn build(b: *std.Build) void {
     const run_graphics_proof = b.addRunArtifact(graphics_proof);
     const graphics_proof_step = b.step("kitty-proof-test", "Characterize no-fork Kitty APIs and snapshot replication limits (does not enable graphics)");
     graphics_proof_step.dependOn(&run_graphics_proof.step);
+    const graphics_wasm_ghostty = b.dependency("ghostty", .{
+        .target = wasm_target,
+        .optimize = wasm_optimize,
+        .simd = false,
+        .@"emit-lib-vt" = true,
+        .@"vt-features" = "-all,+snapshot,+kitty-graphics",
+    });
+    const graphics_wasm_proof = b.addExecutable(.{
+        .name = "kitty-adapter-proof",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("test/kitty-adapter-proof-wasm.zig"),
+            .target = wasm_target,
+            .optimize = wasm_optimize,
+            .imports = &.{.{
+                .name = "ghostty-vt",
+                .module = graphics_wasm_ghostty.module("ghostty-vt"),
+            }},
+        }),
+    });
+    graphics_wasm_proof.entry = .disabled;
+    graphics_wasm_proof.rdynamic = true;
+    graphics_wasm_proof.export_memory = true;
+    const graphics_wasm_proof_cmd = b.addSystemCommand(&.{ "node", "test/kitty-adapter-proof-wasm.mjs" });
+    graphics_wasm_proof_cmd.addFileArg(graphics_wasm_proof.getEmittedBin());
+    graphics_proof_step.dependOn(&graphics_wasm_proof_cmd.step);
     const snapshot_csi_file = snapshot_fixture_csi_run.addOutputFileArg("terminal-core-csi.snapshot");
     snapshot_fixture_csi_run.addArg("csi");
     const snapshot_fixture_utf8_run = b.addRunArtifact(snapshot_fixture);
