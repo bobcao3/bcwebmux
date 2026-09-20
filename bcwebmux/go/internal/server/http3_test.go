@@ -56,10 +56,10 @@ func tlsTestConfig(t *testing.T) (Config, *tls.Config) {
 }
 
 func TestHTTP3Flag(t *testing.T) {
-	if _, _, err := ParseConfig([]string{"--http3"}); err == nil {
+	if _, _, err := ParseConfig([]string{"--config", "/dev/null", "--http3"}); err == nil {
 		t.Fatal("HTTP3 without TLS accepted")
 	}
-	cfg, _, err := ParseConfig([]string{"--http3", "--tls-cert", "cert", "--tls-key", "key"})
+	cfg, _, err := ParseConfig([]string{"--config", "/dev/null", "--http3", "--tls-cert", "cert", "--tls-key", "key"})
 	if err != nil || !cfg.HTTP3 {
 		t.Fatalf("config: %+v %v", cfg, err)
 	}

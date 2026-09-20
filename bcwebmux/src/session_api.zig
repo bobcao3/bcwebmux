@@ -101,8 +101,6 @@ fn respondServer(registry: *Registry, request: anytype) !void {
     try json.beginObject();
     try json.objectField("name");
     try json.write(manifest.checkpoint_codec);
-    try json.objectField("ghosttyCommit");
-    try json.write(manifest.ghostty_commit);
     try json.objectField("terminalAbi");
     try json.write(manifest.terminal_abi);
     try json.objectField("terminalConfig");

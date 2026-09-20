@@ -22,8 +22,10 @@ var (
 
 // EngineConfig is copied by the native wrapper before OpenEngine returns.
 type EngineConfig struct {
-	Shell  string
-	Worker string
+	Shell                string
+	Term                 string // Empty selects xterm-ghostty.
+	DisableKittyGraphics bool   // Suppress the Kitty graphics environment hint.
+	Worker               string
 	// ExpectedOrigin is copied into the native engine for same-origin validation;
 	// the Go transport still enforces the check before calling native REST/WebSocket paths.
 	ExpectedOrigin string

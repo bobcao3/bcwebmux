@@ -48,7 +48,7 @@ export async function compareScreenshot({ png, name, goldenName = name, goldenDi
   try { golden = await readFile(goldenPath); }
   catch (error) {
     if (error.code !== "ENOENT") throw error;
-    throw new Error(`Missing ${goldenPath}; inspect ${actualPath}, then run UPDATE_GOLDEN=1 zig build visual-test`);
+    throw new Error(`Missing ${goldenPath}; inspect ${actualPath}, then rerun visual-e2e.mjs with UPDATE_GOLDEN=1`);
   }
   const expected = await decode(golden);
   assert.equal(expected.info.width, width, `${name}: golden width; actual: ${actualPath}`);

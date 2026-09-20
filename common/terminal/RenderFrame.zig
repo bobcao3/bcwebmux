@@ -7,6 +7,8 @@ const Self = @This();
 const FontEngine = @import("FontEngine.zig");
 const TextView = @import("TextView.zig");
 const BitmapBatch = @import("BitmapBatch.zig");
+const Scene = @import("graphics/Scene.zig");
+const Graphics = @import("graphics/Adapter.zig");
 
 const max_cached_codepoints = 32;
 const max_cached_span = 16;
@@ -32,6 +34,7 @@ font_inputs: [max_cached_codepoints]FontEngine.Input = undefined,
 font_engine: FontEngine = .{},
 text_view: TextView = .{},
 bitmap_batch: BitmapBatch = .{},
+graphics_scene: Scene = .{},
 frame: Frame = undefined,
 packet: Submission = undefined,
 pending_text_hash: ?u64 = null,
@@ -87,6 +90,7 @@ pub fn bootstrap(self: *Self) void {
     self.bitmap_cache_reset = true;
     self.canvas_requests = .empty;
     self.canvas_text = .empty;
+    self.graphics_scene = .{};
     self.pending_text_hash = null;
     self.pending_cursor_x = null;
     self.pending_cursor_y = null;
@@ -101,6 +105,7 @@ pub fn deinit(self: *Self) void {
     self.font_engine.deinit();
     self.text_view.deinit();
     self.bitmap_batch.deinit();
+    self.graphics_scene.deinit(allocator);
     self.cells.deinit(allocator);
     self.styles.deinit(allocator);
     self.selections.deinit(allocator);
@@ -370,6 +375,8 @@ comptime {
     std.debug.assert(@sizeOf(Style) == 12);
     std.debug.assert(@sizeOf(DirtyRange) == 8);
     std.debug.assert(@sizeOf(Submission) == 156);
+    std.debug.assert(@sizeOf(Scene.Resource) == 44);
+    std.debug.assert(@sizeOf(Scene.Draw) == 48);
 }
 
 pub fn setFontMetrics(self: *Self, cell_width: u16, cell_height: u16, font_size_px_value: u16) void {
@@ -548,16 +555,16 @@ fn rebuildCompactRow(self: *Self, state: *const ghostty.RenderState, render_cell
     }
 }
 
-pub fn prepare(self: *Self, state: *ghostty.RenderState, terminal: *ghostty.Terminal) !void {
+pub fn prepare(self: *Self, state: *ghostty.RenderState, terminal: *ghostty.Terminal, graphics: *Graphics) !void {
     return (switch (self.text_backend) {
-        .kb_stb, .canvas => self.prepareCached(state, terminal),
+        .kb_stb, .canvas => self.prepareCached(state, terminal, graphics),
     }) catch |err| {
         self.invalidateRenderCache();
         return err;
     };
 }
 
-fn prepareCached(self: *Self, state: *ghostty.RenderState, terminal: *ghostty.Terminal) !void {
+fn prepareCached(self: *Self, state: *ghostty.RenderState, terminal: *ghostty.Terminal, graphics: *Graphics) !void {
     self.canvas_requests.clearRetainingCapacity();
     self.canvas_text.clearRetainingCapacity();
     self.bitmap_batch.reset();
@@ -631,7 +638,7 @@ fn prepareCached(self: *Self, state: *ghostty.RenderState, terminal: *ghostty.Te
         const graphemes = slice.items(.grapheme);
         var x: usize = 0;
         while (x < cols) {
-            if (raws[x].wide == .spacer_tail or !raws[x].hasText()) {
+            if (raws[x].wide == .spacer_tail or !raws[x].hasText() or raws[x].codepoint() == ghostty.kitty.graphics.unicode.placeholder) {
                 x += 1;
                 continue;
             }
@@ -675,7 +682,7 @@ fn prepareCached(self: *Self, state: *ghostty.RenderState, terminal: *ghostty.Te
         var x: usize = 0;
         while (x < cols) {
             const raw = raws[x];
-            if (raw.wide == .spacer_tail or !raw.hasText()) {
+            if (raw.wide == .spacer_tail or !raw.hasText() or raw.codepoint() == ghostty.kitty.graphics.unicode.placeholder) {
                 x += 1;
                 continue;
             }
@@ -783,7 +790,7 @@ fn prepareCached(self: *Self, state: *ghostty.RenderState, terminal: *ghostty.Te
     const cursor_x: u32 = if (cursor) |pos| if (pos.wide_tail and pos.x > 0) pos.x - 1 else pos.x else std.math.maxInt(u16);
     self.frame = .{
         .magic = 0x46574342,
-        .version = 6,
+        .version = 7,
         .cols = state.cols,
         .rows = state.rows,
         .cell_count = @intCast(cell_count),
@@ -818,9 +825,10 @@ fn prepareCached(self: *Self, state: *ghostty.RenderState, terminal: *ghostty.Te
         self.text_view.inactiveSnapshot();
     const bitmap_uploads = self.bitmap_batch.uploads();
     const bitmap_upload_pixels = self.bitmap_batch.uploadPixels();
+    try self.graphics_scene.prepare(std.heap.wasm_allocator, terminal, graphics, self.font_cell_width, self.font_cell_height);
     self.packet = .{
         .magic = 0x5355424d,
-        .version = 6,
+        .version = 7,
         .byte_size = @sizeOf(Submission),
         .text_unit_size = 1,
         .frame_offset = try wasmOffset(&self.frame),
@@ -853,11 +861,11 @@ fn prepareCached(self: *Self, state: *ghostty.RenderState, terminal: *ghostty.Te
         .lease_generation = self.glyph_partition_generation,
         .flags = @intFromBool(full_rebuild),
         .revision = 0,
-        .graphics_revision = 0,
-        .graphics_draws_offset = 0,
-        .graphics_draws_count = 0,
-        .graphics_resources_offset = 0,
-        .graphics_resources_count = 0,
+        .graphics_revision = @truncate(terminal.screens.active.kitty_images.generation),
+        .graphics_draws_offset = try wasmOffset(self.graphics_scene.draws.items.ptr),
+        .graphics_draws_count = @intCast(self.graphics_scene.draws.items.len),
+        .graphics_resources_offset = try wasmOffset(self.graphics_scene.resources.items.ptr),
+        .graphics_resources_count = @intCast(self.graphics_scene.resources.items.len),
     };
     self.pending_text_hash = if (build_text_snapshot) snapshot.hash else null;
     self.pending_cursor_x = current_cursor_x;

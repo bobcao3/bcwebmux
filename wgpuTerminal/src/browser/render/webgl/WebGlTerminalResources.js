@@ -2,6 +2,7 @@
 // Copyright (c) 2026 Cheng Cao
 
 import { CELL_SIZE, STYLE_SIZE } from "../FrameSchema.js";
+import { initWebGlGraphics, disposeWebGlGraphics } from "./WebGlGraphics.js";
 
 const VERTEX_SOURCE = `#version 300 es
 precision highp float;
@@ -166,6 +167,59 @@ void main() {
 }
 `;
 
+const GLYPH_SOURCE = `#version 300 es
+precision highp float;
+precision highp int;
+uniform uint u_default_fg;
+uniform uint u_cell_width;
+uniform uint u_atlas_cols;
+uniform uint u_tile_width;
+uniform uint u_tile_height;
+uniform uint u_cursor_x;
+uniform uint u_cursor_y;
+uniform uint u_cursor_flags;
+uniform uint u_cursor_style;
+uniform uint u_blink_on;
+uniform sampler2D u_atlas;
+in vec2 v_local;
+flat in uvec2 v_cell_size;
+flat in uvec2 v_cell_coord;
+flat in uvec2 v_colors;
+flat in uvec2 v_flags_glyph;
+out vec4 output_color;
+vec3 rgb(uint color) {
+  return vec3(float((color >> 16u) & 255u), float((color >> 8u) & 255u), float(color & 255u)) / 255.0;
+}
+void main() {
+  uint flags = v_flags_glyph.x;
+  float y = v_local.y;
+  vec3 color = rgb(v_colors.x);
+  float opacity = 0.0;
+  if (((flags & 8u) != 0u && y >= float(v_cell_size.y) - 2.0 && y < float(v_cell_size.y) - 1.0) ||
+      ((flags & 16u) != 0u && y >= floor(float(v_cell_size.y) * 0.52) && y < floor(float(v_cell_size.y) * 0.52) + 1.0) ||
+      ((flags & 32u) != 0u && y < 1.0)) opacity = 1.0;
+  bool cursor_visible = (u_cursor_flags & 1u) != 0u && ((u_cursor_flags & 2u) == 0u || u_blink_on != 0u);
+  if (cursor_visible && v_cell_coord.x == u_cursor_x && v_cell_coord.y == u_cursor_y) {
+    if ((u_cursor_style == 0u && v_local.x < 2.0) ||
+        (u_cursor_style == 2u && y >= float(v_cell_size.y) - 2.0)) {
+      color = rgb(u_default_fg); opacity = 1.0;
+    } else if (u_cursor_style != 0u && u_cursor_style != 2u) {
+      color = rgb(u_default_fg); opacity = 0.45;
+    }
+  }
+  if (v_flags_glyph.y != 0u && ((flags & 128u) == 0u || u_blink_on != 0u)) {
+    uint subcell = uint(v_local.x) / u_cell_width;
+    uint slot = v_flags_glyph.y - 1u + subcell;
+    uvec2 tile = uvec2(slot % u_atlas_cols, slot / u_atlas_cols) * uvec2(u_tile_width, u_tile_height);
+    uvec2 pixel = uvec2(uint(v_local.x) % u_cell_width, uint(v_local.y));
+    float coverage = texelFetch(u_atlas, ivec2(tile + pixel), 0).r * ((flags & 4u) != 0u ? 0.62 : 1.0);
+    color = rgb(v_colors.x);
+    opacity = opacity + (1.0 - opacity) * coverage;
+  }
+  output_color = vec4(color, opacity);
+}
+`;
+
 function compileShader(gl, type, source) {
   const shader = gl.createShader(type);
   if (!shader) throw new Error("WebGL shader allocation failed");
@@ -179,9 +233,9 @@ function compileShader(gl, type, source) {
   return shader;
 }
 
-function createProgram(gl) {
+function createProgram(gl, fragmentSource = FRAGMENT_SOURCE) {
   const vertex = compileShader(gl, gl.VERTEX_SHADER, VERTEX_SOURCE);
-  const fragment = compileShader(gl, gl.FRAGMENT_SHADER, FRAGMENT_SOURCE);
+  const fragment = compileShader(gl, gl.FRAGMENT_SHADER, fragmentSource);
   const program = gl.createProgram();
   if (!program) throw new Error("WebGL program allocation failed");
   gl.attachShader(program, vertex);
@@ -240,6 +294,7 @@ export function initializeWebGl(renderer, grain, grainSize, maxCells, maxStyles,
   renderer.selectionTextureWidth = Math.min(maxCells, maxDimension);
   renderer.selectionTextureHeight = Math.ceil(maxCells / renderer.selectionTextureWidth);
   renderer.program = createProgram(gl);
+  renderer.glyphProgram = createProgram(gl, GLYPH_SOURCE);
   renderer.vertexArray = gl.createVertexArray();
   renderer.cellBuffer = gl.createBuffer();
   if (!renderer.vertexArray || !renderer.cellBuffer) throw new Error("WebGL cell buffer allocation failed");
@@ -265,6 +320,11 @@ export function initializeWebGl(renderer, grain, grainSize, maxCells, maxStyles,
     if (location === null) throw new Error(`WebGL uniform u_${name} unavailable`);
     renderer.uniforms[name] = location;
   }
+  renderer.glyphUniforms = Object.fromEntries(Object.keys(renderer.uniforms).map(name => [name, gl.getUniformLocation(renderer.glyphProgram, `u_${name}`)]));
+  gl.useProgram(renderer.glyphProgram);
+  gl.uniform1i(renderer.glyphUniforms.atlas, 0);
+  gl.uniform1i(renderer.glyphUniforms.styles, 1);
+  gl.uniform1i(renderer.glyphUniforms.selections, 2);
   gl.useProgram(renderer.program);
   gl.uniform1i(renderer.uniforms.atlas, 0);
   gl.uniform1i(renderer.uniforms.styles, 1);
@@ -276,6 +336,7 @@ export function initializeWebGl(renderer, grain, grainSize, maxCells, maxStyles,
   gl.disable(gl.DITHER);
   gl.disable(gl.SCISSOR_TEST);
   gl.bindVertexArray(null);
+  initWebGlGraphics(renderer);
   renderer.initialized = true;
   return 1;
 }
@@ -378,6 +439,7 @@ export function disposeWebGl(renderer) {
   const gl = renderer.gl;
   renderer.canvas.removeEventListener("webglcontextlost", renderer.contextLostListener);
   renderer.canvas.removeEventListener("webglcontextrestored", renderer.contextRestoredListener);
+  disposeWebGlGraphics(renderer);
   // Restored contexts have already destroyed these handles; deleting them pollutes GL error state.
   if (renderer.contextLost) {
     renderer.error = "disposed";
@@ -391,6 +453,7 @@ export function disposeWebGl(renderer) {
   gl.deleteBuffer(renderer.cellBuffer);
   gl.deleteVertexArray(renderer.vertexArray);
   gl.deleteProgram(renderer.program);
+  gl.deleteProgram(renderer.glyphProgram);
   renderer.error = "disposed";
   renderer.initialized = false;
 }

@@ -23,6 +23,8 @@ const Config = struct {
     port: u16 = 8080,
     web_root: ?[]const u8 = null,
     shell: ?[:0]const u8 = null,
+    term: [:0]const u8 = "xterm-ghostty",
+    kitty_graphics: bool = true,
     origin: ?[]const u8 = null,
     max_sessions: usize = 16,
 };
@@ -30,11 +32,11 @@ const Config = struct {
 pub fn main(init: std.process.Init) !void {
     const arena = init.arena.allocator();
     const args = try init.minimal.args.toSlice(arena);
-    if (args.len == 5 and std.mem.eql(u8, args[1], "--session-worker")) {
+    if (args.len == 7 and std.mem.eql(u8, args[1], "--session-worker") and (std.mem.eql(u8, args[6], "0") or std.mem.eql(u8, args[6], "1"))) {
         const cols = std.fmt.parseInt(u16, args[3], 10) catch return error.InvalidArgument;
         const rows = std.fmt.parseInt(u16, args[4], 10) catch return error.InvalidArgument;
         if (cols == 0 or rows == 0) return error.InvalidArgument;
-        try pty_worker.run(init.io, args[2], cols, rows, .{});
+        try pty_worker.run(init.io, args[2], args[5], args[6][0] == '1', cols, rows, .{});
         return;
     }
     if (args.len == 2 and std.mem.eql(u8, args[1], "--help")) {
@@ -44,6 +46,8 @@ pub fn main(init: std.process.Init) !void {
                 "  --port PORT\n" ++
                 "  --web-root DIR\n" ++
                 "  --shell SHELL\n" ++
+                "  --term TERM (default xterm-ghostty)\n" ++
+                "  --no-kitty-graphics\n" ++
                 "  --origin ORIGIN\n" ++
                 "  --max-sessions N\n",
             .{args[0]},
@@ -58,7 +62,7 @@ pub fn main(init: std.process.Init) !void {
     var origin_buffer: [512]u8 = undefined;
     const origin = config.origin orelse try std.fmt.bufPrint(&origin_buffer, "http://{s}:{d}", .{ config.host, config.port });
     const limits: session_manifest.Limits = .{ .max_live_sessions = config.max_sessions };
-    var registry = try SessionRegistry.init(std.heap.smp_allocator, init.io, args[0], shell, limits);
+    var registry = try SessionRegistry.init(std.heap.smp_allocator, init.io, args[0], shell, config.term, config.kitty_graphics, limits);
     defer registry.deinit();
     var assets = try vfs.Vfs.init(arena, embedded_assets);
     defer assets.deinit(arena);
@@ -114,6 +118,13 @@ fn parseArgs(args: []const [:0]const u8) !Config {
             i += 1;
             if (i >= args.len) return error.MissingArgument;
             config.shell = args[i];
+        } else if (std.mem.eql(u8, arg, "--term")) {
+            i += 1;
+            if (i >= args.len) return error.MissingArgument;
+            if (!pty_worker.validTerm(args[i])) return error.InvalidArgument;
+            config.term = args[i];
+        } else if (std.mem.eql(u8, arg, "--no-kitty-graphics")) {
+            config.kitty_graphics = false;
         } else if (std.mem.eql(u8, arg, "--origin")) {
             i += 1;
             if (i >= args.len) return error.MissingArgument;

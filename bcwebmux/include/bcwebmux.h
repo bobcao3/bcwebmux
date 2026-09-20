@@ -9,7 +9,7 @@
 extern "C" {
 #endif
 
-#define BCWMUX_ABI_VERSION 1u
+#define BCWMUX_ABI_VERSION 2u
 #define BCWMUX_UUID_BYTES 16u
 
 /*
@@ -45,6 +45,10 @@ typedef struct bcwebmux_engine_config {
     size_t worker_path_len;
     const uint8_t *shell;
     size_t shell_len;
+    /* NULL/zero selects xterm-ghostty for new PTY sessions. */
+    const uint8_t *term;
+    size_t term_len;
+    uint32_t disable_kitty_graphics; /* 1 suppresses the Kitty graphics environment hint. */
     /* NULL/zero disables native same-origin validation only for migration
      * callers that validate externally. */
     const uint8_t *expected_origin;

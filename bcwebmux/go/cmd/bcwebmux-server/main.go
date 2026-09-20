@@ -46,10 +46,12 @@ func main() {
 		expectedOrigin = server.OriginFor(cfg.Host, cfg.Port, cfg.TLSCert != "")
 	}
 	engine, err := native.OpenEngine(native.EngineConfig{
-		Shell:          cfg.Shell,
-		Worker:         cfg.Worker,
-		MaxSessions:    cfg.MaxSessions,
-		ExpectedOrigin: expectedOrigin,
+		Shell:                cfg.Shell,
+		Term:                 cfg.Term,
+		DisableKittyGraphics: !cfg.KittyGraphics,
+		Worker:               cfg.Worker,
+		MaxSessions:          cfg.MaxSessions,
+		ExpectedOrigin:       expectedOrigin,
 	})
 	if err != nil {
 		logger.Error("native engine initialization failed", "error", err)

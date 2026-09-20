@@ -36,7 +36,7 @@ export function decodeCanvasText(bytes, offset, length) {
 
 export function parseFramePacket(memory, submissionPtr, expectations) {
   const { partition, abi, coreGeneration, configGeneration, token } = expectations;
-  if (abi !== 6 || expectations.cellSize !== 8 || expectations.styleSize !== 12 ||
+  if (abi !== 7 || expectations.cellSize !== 8 || expectations.styleSize !== 12 ||
       expectations.frameSize !== FRAME_SIZE || expectations.packetSize !== SUBMISSION_SIZE) {
     throw new Error("invalid frame schema expectations");
   }
@@ -55,7 +55,7 @@ export function parseFramePacket(memory, submissionPtr, expectations) {
   if (!(memory instanceof ArrayBuffer)) throw new Error("invalid renderer memory");
   validateRange(memory.byteLength, submissionPtr, SUBMISSION_SIZE, "header");
   const header = new DataView(memory, submissionPtr, SUBMISSION_SIZE);
-  if (header.getUint32(0, true) !== 0x5355424d || header.getUint32(4, true) !== 6 ||
+  if (header.getUint32(0, true) !== 0x5355424d || header.getUint32(4, true) !== 7 ||
       header.getUint32(8, true) !== SUBMISSION_SIZE || header.getUint32(12, true) !== CANVAS_TEXT_UNIT_SIZE) {
     throw new Error("invalid renderer submission");
   }
@@ -66,9 +66,62 @@ export function parseFramePacket(memory, submissionPtr, expectations) {
       header.getUint32(128, true) > 1 || header.getUint32(132, true) !== token) {
     throw new Error("invalid frame identity");
   }
-  // Graphics streams are reserved, empty in this ABI implementation.
-  for (let offset = 136; offset < SUBMISSION_SIZE; offset += 4) {
-    if (header.getUint32(offset, true) !== 0) throw new Error("unsupported graphics stream");
+  const graphicsRevision = header.getUint32(136, true);
+  const drawsPtr = header.getUint32(140, true);
+  const drawsCount = header.getUint32(144, true);
+  const resourcesPtr = header.getUint32(148, true);
+  const resourcesCount = header.getUint32(152, true);
+  if (drawsCount > 2048 || resourcesCount > 512 || drawsPtr % 4 || resourcesPtr % 4) {
+    throw new Error("invalid graphics stream size");
+  }
+  validateRecords(memory.byteLength, drawsPtr, drawsCount, 48, "graphics draws");
+  validateRecords(memory.byteLength, resourcesPtr, resourcesCount, 44, "graphics resources");
+  const graphicsDraws = new DataView(memory, drawsPtr, drawsCount * 48);
+  const graphicsResources = new DataView(memory, resourcesPtr, resourcesCount * 44);
+  const graphicsBytes = [];
+  let sourceBytes = 0;
+  for (let i = 0; i < resourcesCount; i++) {
+    const o = i * 44;
+    const width = graphicsResources.getUint32(o + 16, true);
+    const height = graphicsResources.getUint32(o + 20, true);
+    const format = graphicsResources.getUint32(o + 24, true);
+    const compression = graphicsResources.getUint32(o + 28, true);
+    const length = graphicsResources.getUint32(o + 40, true);
+    const pixels = width * height;
+    if (graphicsResources.getUint32(o, true) > 1 || !graphicsResources.getUint32(o + 4, true) ||
+        !width || !height || width > 4096 || height > 4096 || pixels * 4 > 16 * 1024 * 1024 ||
+        ![24, 32, 100].includes(format) || compression > 1 ||
+        graphicsResources.getUint32(o + 32, true) > 32 * 1024 * 1024 ||
+        !length || length > 8 * 1024 * 1024 ||
+        (format !== 100 && compression === 0 && length !== pixels * (format === 24 ? 3 : 4))) {
+      throw new Error("invalid graphics resource");
+    }
+    sourceBytes += length;
+    if (sourceBytes > 32 * 1024 * 1024) throw new Error("graphics source budget exceeded");
+    const ptr = graphicsResources.getUint32(o + 36, true);
+    validateRange(memory.byteLength, ptr, length, "graphics source");
+    graphicsBytes.push(new Uint8Array(memory, ptr, length));
+  }
+  for (let i = 0; i < drawsCount; i++) {
+    const o = i * 48;
+    const index = graphicsDraws.getUint32(o, true);
+    if (index >= resourcesCount) throw new Error("invalid graphics draw resource");
+    const r = index * 44;
+    const width = graphicsDraws.getUint32(o + 16, true);
+    const height = graphicsDraws.getUint32(o + 20, true);
+    const x = graphicsDraws.getUint32(o + 24, true);
+    const y = graphicsDraws.getUint32(o + 28, true);
+    const sw = graphicsDraws.getUint32(o + 32, true);
+    const sh = graphicsDraws.getUint32(o + 36, true);
+    if (!width || !height || width > 0xffffff || height > 0xffffff ||
+        width * height > 16 * 1024 * 1024 || !sw || !sh ||
+        x > graphicsResources.getUint32(r + 16, true) ||
+        sw > graphicsResources.getUint32(r + 16, true) - x ||
+        y > graphicsResources.getUint32(r + 20, true) ||
+        sh > graphicsResources.getUint32(r + 20, true) - y ||
+        graphicsDraws.getUint32(o + 40, true) > 65535 || graphicsDraws.getUint32(o + 44, true) > 65535) {
+      throw new Error("invalid graphics draw geometry");
+    }
   }
   const framePtr = header.getUint32(16, true);
   const frameLen = header.getUint32(20, true);
@@ -130,7 +183,7 @@ export function parseFramePacket(memory, submissionPtr, expectations) {
   validateRecords(memory.byteLength, canvasTextPtr, canvasTextLen, CANVAS_TEXT_UNIT_SIZE, "Canvas text");
   const canvasText = new Uint8Array(memory, canvasTextPtr, canvasTextLen);
   validateRange(memory.byteLength, textBytesPtr, textBytesLen, "text bytes");
-  if (frame.getUint32(0, true) !== 0x46574342 || frame.getUint32(4, true) !== 6) {
+  if (frame.getUint32(0, true) !== 0x46574342 || frame.getUint32(4, true) !== 7) {
     throw new Error("invalid renderer frame");
   }
   const cols = frame.getUint32(8, true);
@@ -268,7 +321,7 @@ export function parseFramePacket(memory, submissionPtr, expectations) {
   return {
     token, coreGeneration, configGeneration, leaseGeneration: partition.generation,
     fullFrame: header.getUint32(128, true) === 1, revision: header.getUint32(132, true),
-    graphicsRevision: 0, graphicsDraws: new DataView(memory, 0, 0), graphicsResources: new DataView(memory, 0, 0),
+    graphicsRevision, graphicsDraws, graphicsResources, graphicsBytes,
     cells: new Uint8Array(memory, cellsPtr, cellsCount * expectations.cellSize),
     dirtyRangesCount, dirtyRanges,
     styles: new Uint32Array(memory, stylesPtr + stylesFirst * expectations.styleSize, stylesCount * 3),

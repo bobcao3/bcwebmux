@@ -17,6 +17,8 @@ import {
   setTextRenderer,
 } from "../GlyphAtlasRuntime.js";
 import { WebGlGlyphAtlas } from "./WebGlGlyphAtlas.js";
+import { GraphicsScene } from "../GraphicsScene.js";
+import { createWebGlGraphicsTexture, drawWebGlGraphics } from "./WebGlGraphics.js";
 
 function uploadIntegerRecords(gl, texture, textureWidth, first, count, components, format, source) {
   if (count === 0) return;
@@ -96,6 +98,7 @@ export class WebGlTerminal {
     this.grainStrength = 4;
     this.glyphPartitions = null;
     this.glyphSlotsUsed = 0;
+    this.graphicsScene = new GraphicsScene(this);
     this.activeTerminal = null;
     this.atlas = null;
     this.background = 0x111111;
@@ -209,6 +212,14 @@ export class WebGlTerminal {
 
   uploadBitmap(...args) { this.atlas.uploadBitmap(...args); }
 
+  createGraphicsTexture(width, height, data) {
+    return createWebGlGraphicsTexture(this, width, height, data);
+  }
+
+  destroyGraphicsTexture(texture) {
+    if (!this.contextLost) this.gl.deleteTexture(texture);
+  }
+
   uploadStyles(first, styles) {
     uploadIntegerRecords(this.gl, this.styleTexture, this.styleTextureWidth,
       first, styles.length / 3, 3, this.gl.RGB_INTEGER, styles);
@@ -222,6 +233,27 @@ export class WebGlTerminal {
   }
 
 
+  applyCellUniforms(uniforms, blinkOn) {
+    const gl = this.gl;
+    gl.uniform1ui(uniforms.cols, this.cols);
+    gl.uniform1ui(uniforms.cell_width, this.physicalCellWidth);
+    gl.uniform1ui(uniforms.cell_height, this.physicalCellHeight);
+    gl.uniform1ui(uniforms.viewport_width, this.canvas.width);
+    gl.uniform1ui(uniforms.viewport_height, this.canvas.height);
+    gl.uniform1ui(uniforms.default_fg, this.foreground);
+    gl.uniform1ui(uniforms.cursor_x, this.cursorX);
+    gl.uniform1ui(uniforms.cursor_y, this.cursorY);
+    gl.uniform1ui(uniforms.cursor_flags, this.cursorFlags);
+    gl.uniform1ui(uniforms.cursor_style, this.cursorStyle);
+    gl.uniform1ui(uniforms.atlas_cols, this.atlas.columns);
+    gl.uniform1f(uniforms.grain_strength, this.grainStrength);
+    gl.uniform1ui(uniforms.tile_width, this.atlas.tileWidth);
+    gl.uniform1ui(uniforms.tile_height, this.atlas.tileHeight);
+    gl.uniform1ui(uniforms.blink_on, blinkOn ? 1 : 0);
+    gl.uniform1ui(uniforms.style_texture_width, this.styleTextureWidth);
+    gl.uniform1ui(uniforms.selection_texture_width, this.selectionTextureWidth);
+  }
+
   presentCurrentState(blinkOn = true) {
     const gl = this.gl;
     if (!this.initialized || !this.rows || this.error || gl.isContextLost()) return;
@@ -229,23 +261,7 @@ export class WebGlTerminal {
     gl.useProgram(this.program);
     gl.bindVertexArray(this.vertexArray);
     gl.viewport(0, 0, this.canvas.width, this.canvas.height);
-    gl.uniform1ui(this.uniforms.cols, this.cols);
-    gl.uniform1ui(this.uniforms.cell_width, this.physicalCellWidth);
-    gl.uniform1ui(this.uniforms.cell_height, this.physicalCellHeight);
-    gl.uniform1ui(this.uniforms.viewport_width, this.canvas.width);
-    gl.uniform1ui(this.uniforms.viewport_height, this.canvas.height);
-    gl.uniform1ui(this.uniforms.default_fg, this.foreground);
-    gl.uniform1ui(this.uniforms.cursor_x, this.cursorX);
-    gl.uniform1ui(this.uniforms.cursor_y, this.cursorY);
-    gl.uniform1ui(this.uniforms.cursor_flags, this.cursorFlags);
-    gl.uniform1ui(this.uniforms.cursor_style, this.cursorStyle);
-    gl.uniform1ui(this.uniforms.atlas_cols, this.atlas.columns);
-    gl.uniform1f(this.uniforms.grain_strength, this.grainStrength);
-    gl.uniform1ui(this.uniforms.tile_width, this.atlas.tileWidth);
-    gl.uniform1ui(this.uniforms.tile_height, this.atlas.tileHeight);
-    gl.uniform1ui(this.uniforms.blink_on, blinkOn ? 1 : 0);
-    gl.uniform1ui(this.uniforms.style_texture_width, this.styleTextureWidth);
-    gl.uniform1ui(this.uniforms.selection_texture_width, this.selectionTextureWidth);
+    this.applyCellUniforms(this.uniforms, blinkOn);
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, this.atlas.texture);
     gl.activeTexture(gl.TEXTURE1);
@@ -262,6 +278,16 @@ export class WebGlTerminal {
     );
     gl.clear(gl.COLOR_BUFFER_BIT);
     gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, this.drawnCellCount);
+    if (drawWebGlGraphics(this, true)) {
+      gl.useProgram(this.glyphProgram);
+      gl.bindVertexArray(this.vertexArray);
+      this.applyCellUniforms(this.glyphUniforms, blinkOn);
+      gl.enable(gl.BLEND);
+      gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+      gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, this.drawnCellCount);
+      gl.disable(gl.BLEND);
+    }
+    drawWebGlGraphics(this, false);
     gl.flush();
     const submittedAt = performance.now();
     const elapsed = submittedAt - startedAt;

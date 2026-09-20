@@ -7,7 +7,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
-import { Cdp, freePort, terminateProcess, waitFor } from "./test-support.mjs";
+import { Cdp, freePort, localTls, terminateProcess, waitFor } from "./test-support.mjs";
 import { compareScreenshot } from "./visual-compare.mjs";
 
 const [serverPath, webRoot] = process.argv.slice(2);
@@ -30,7 +30,7 @@ await writeFile(path.join(outputDir, "index.html"), `<!doctype html>
 <h1>Full-viewport terminal screenshots</h1>
 <p>Click an image for native resolution. Desktop: 1440×900 @1×. Mobile: 390×844 @3× (1170×2532 pixels).
 Unicode probes verify browser font fallback for CJK, combining text and emoji.</p>
-${backends.map(backend => `<h2>${backend}</h2><section>${devices.flatMap(device => ["unicode-source", "scroll-bottom", "scroll-top", "scroll-middle", "scroll-return"].map(label => {
+${backends.map(backend => `<h2>${backend}</h2><section>${devices.flatMap(device => ["unicode-source", "scroll-bottom", "scroll-top", "scroll-middle", "scroll-return", "kitty-graphics"].map(label => {
   const name = `${device.name}-${backend}-${label}`;
   return `<figure class="${device.name}"><figcaption>${device.name} · ${label} · <a href="${name}.json">state</a></figcaption><a href="${name}.png"><img loading="lazy" src="${name}.png" alt="${name}"></a></figure>`;
 })).join("")}</section>`).join("")}`);
@@ -49,6 +49,7 @@ async function run(backend, device) {
   const port = await freePort();
   const debugPort = await freePort();
   let server, chromium, page, browser;
+  const tls = await localTls();
   let log = "";
   let processError;
   let sequence = 0;
@@ -62,18 +63,18 @@ async function run(backend, device) {
   try {
     await mkdir(outputDir, { recursive: true });
     await Promise.all(["png", "log"].map(extension => rm(path.join(outputDir, `${prefix}-failure.${extension}`), { force: true })));
-    server = spawn(serverPath, ["--config", "/dev/null", "--host", "127.0.0.1", "--origin", `http://127.0.0.1:${port}`, "--shell", "/bin/sh", "--web-root", webRoot, "--port", String(port)], { stdio: ["ignore", "pipe", "pipe"], detached: true });
+    server = spawn(serverPath, ["--config", "/dev/null", "--host", "127.0.0.1", "--tls-cert", tls.cert, "--tls-key", tls.key, "--origin", `https://127.0.0.1:${port}`, "--shell", "/bin/sh", "--web-root", webRoot, "--port", String(port)], { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, GODEBUG: "http2server=0" }, detached: true });
     server.detachedGroup = true;
     server.on("error", error => { processError = error; });
     server.stdout.on("data", chunk => { log += chunk; });
     server.stderr.on("data", chunk => { log += chunk; });
     await waitFor(async () => {
       if (processError) throw processError;
-      return (await fetch(`http://127.0.0.1:${port}/`).catch(() => null))?.ok;
+      return (await fetch(`https://127.0.0.1:${port}/`).catch(() => null))?.ok;
     }, 10000, "visual server did not start");
     chromium = spawn(process.env.CHROMIUM || "chromium", [
       "--headless=new", `--force-device-scale-factor=${device.deviceScaleFactor}`, "--window-size=1440,900",
-      "--no-sandbox", "--disable-dev-shm-usage", "--enable-unsafe-webgpu",
+      "--no-sandbox", "--disable-dev-shm-usage", "--ignore-certificate-errors", "--enable-unsafe-webgpu",
       "--use-angle=vulkan", "--ignore-gpu-blocklist", "--enable-features=Vulkan",
       "--disable-background-networking", `--remote-debugging-port=${debugPort}`,
       `--user-data-dir=${profile}`, "about:blank",
@@ -100,7 +101,7 @@ async function run(backend, device) {
     await page.call("Emulation.setTouchEmulationEnabled", { enabled: device.mobile, maxTouchPoints: device.mobile ? 5 : 1 });
     await page.call("Page.addScriptToEvaluateOnNewDocument", { source: `(${installFontProbe.toString()})()` });
     await page.call("Page.addScriptToEvaluateOnNewDocument", { source: `localStorage.setItem("bcwebmux.settings.v1", JSON.stringify({ renderer: 'canvas', grainStrength: 0, perfMode: ${JSON.stringify(device.mobile ? "simple" : "detailed")} }));` });
-    await page.call("Page.navigate", { url: `http://127.0.0.1:${port}/?gpu-test=1&renderer=canvas&backend=${backend}` });
+    await page.call("Page.navigate", { url: `https://127.0.0.1:${port}/?gpu-test=1&renderer=canvas&backend=${backend}` });
     await until("window.bcwebmux?.connected === true", "terminal did not connect");
     await evaluate(`(async () => {
       if (document.querySelector('#notification-dialog').open) document.querySelector('#notification-dialog-later').click();
@@ -219,6 +220,29 @@ async function run(backend, device) {
     await until("window.bcwebmux.state.scrollOffset + window.bcwebmux.state.scrollLength === window.bcwebmux.state.scrollTotal", "End did not restore live bottom");
     const returned = await capture("scroll-return", "scroll-bottom");
     assert.deepEqual(returned, bottom, "returning to bottom changed the screenshot");
+
+    // Protocol transitions are covered by session-browser-resume; this visual
+    // fixture checks a presented image using the same goldens as text.
+    const pixels = Buffer.alloc(12 * 8 * 4);
+    for (let y = 0; y < 8; y++) for (let x = 0; x < 12; x++) {
+      const color = x < 6 ? (y < 4 ? [240, 40, 55, 255] : [35, 110, 240, 255])
+        : (y < 4 ? [50, 220, 95, 255] : [245, 70, 225, 128]);
+      pixels.set(color, (y * 12 + x) * 4);
+    }
+    await output([
+      "\x1b[2;1H\x1b[1;36mKitty graphics / PTY → GPU\x1b[0m",
+      "\x1b[4;1HRGBA image · four colors · alpha blend",
+      "\x1b[12;3H\x1b[37mtext beneath translucent pixels\x1b[0m",
+      `\x1b[6;3H\x1b_Ga=T,q=2,f=32,s=12,v=8,i=71,c=20,r=12;${pixels.toString("base64")}\x1b\\`,
+      "\x1b[20;1H\x1b[90mRendered by the GPU, not terminal glyphs.\x1b[0m",
+    ].join(""), true);
+    await until(`(async () => {
+      const { data, width } = await window.bcwebmux.readPixels();
+      const { physicalCellWidth: cw, physicalCellHeight: ch } = window.bcwebmux.state;
+      const i = (Math.floor(7 * ch) * width + Math.floor(4 * cw)) * 4;
+      return data[i] > 180 && data[i + 1] < 80 && data[i + 2] < 90;
+    })()`, "Kitty graphics scene did not reach GPU pixels");
+    await capture("kitty-graphics");
     const exceptions = page.events.filter(event => event.method === "Runtime.exceptionThrown");
     assert.deepEqual(exceptions, []);
     console.log(JSON.stringify({ device: device.name, backend, results }));
@@ -235,6 +259,7 @@ async function run(backend, device) {
     await terminateProcess(chromium);
     await terminateProcess(server);
     await rm(profile, { recursive: true, force: true });
+    await tls.dispose();
   }
 }
 

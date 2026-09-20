@@ -11,7 +11,13 @@ keep the replicas synchronized.
 
 ## Get started
 
-Prerequisites: Zig 0.16.0, Node/npm, GNU tar, Linux, and a modern Chromium browser with WebGPU or WebGL2. `zig build` provisions a pinned Go toolchain itself and defaults to musl; no system Go or C toolchain is required.
+Prerequisites: Zig 0.16.0, Node/npm, GNU tar, Linux, a local `~/ghostty`
+checkout of `b32f20f` with local WASM portability edits described in the
+[graphics plan](../docs/kitty-graphics.md), and a modern Chromium browser with
+WebGPU or WebGL2. `zig build` provisions a pinned Go toolchain itself and defaults
+to musl; no system Go or C toolchain is required. `bcwebmux/build.zig.zon`
+resolves `../../ghostty` relative to `bcwebmux/`, so this setup is currently
+machine-local rather than reproducible from this repository alone.
 
 ```sh
 # From the repository root
@@ -43,7 +49,7 @@ Malformed TOML, unknown keys, and unreadable discovered files are fatal; `--help
 not read configuration. All scalar CLI options override the file, including
 `--http3=false`. Paths in TOML are relative to the process working directory;
 there is no shell or tilde expansion. Supported keys are shown below, plus legacy
-`host` and `origin` (single strings), `web-root`, `shell`, and `worker`.
+`host` and `origin` (single strings), `web-root`, `shell`, `term`, `kitty-graphics`, and `worker`.
 
 Example `~/.config/bcwebmux/config.toml` (replace addresses, origins, and TLS paths
 with your own; omit any range not present on this machine):
@@ -57,6 +63,10 @@ tls-key = "/path/to/key.pem"
 http3 = true
 max-sessions = 16
 ```
+
+New shells default to `TERM=xterm-ghostty` with Kitty graphics advertised.
+Override with `--term` / `term`, or opt out of the Kitty hint with
+`--kitty-graphics=false` / `kitty-graphics = false`.
 
 `listen` accepts hostnames, IP literals, or CIDRs, all on the shared `port`.
 Repeat `--listen` to replace the entire file list. Explicit `--host` clears the
@@ -101,29 +111,23 @@ From `bcwebmux/`:
 
 ```sh
 zig build
-zig build server-test
-zig build unit-test
-zig build kitty-proof-test
-zig build test
-zig build e2e
-zig build visual-test
-TEXT_RENDERER=canvas zig build text-renderer-test
+zig build test                      # Zig tests only
+zig build gotest                    # Go tests using the pinned toolchain and zig cc
+zig build gotest -Dtarget=aarch64-linux-musl  # compile Go tests for another target
+node --test test/network-relay.test.mjs test/network-recovery.test.mjs
+node test/visual-e2e.mjs ./zig-out/bin/bcwebmux-server ./zig-out/web
 ```
 
-`server-test` runs native server tests; `unit-test` runs Zig unit tests.
-`kitty-proof-test` characterizes the pinned libghostty graphics APIs and snapshot
-limitations in a separate graphics-enabled test build. It does not enable graphics
-in the application; passing characterization tests is not feature acceptance.
+`zig build test` uses Zig's test runner only. `gotest` uses Go's test runner;
+for a nonnative target, it compiles tests instead of trying to run them.
+JavaScript and browser tests run under Node, outside `build.zig`, after
+`zig build` installs the server and web assets. Browser runs require Chromium
+and a physical Vulkan GPU (no SwiftShader/llvmpipe). See the
+[graphics integration plan](../docs/kitty-graphics.md).
 The shell startup regression (requires `/bin/bash`) can also run directly:
 `node test/session-shell-integration.mjs ./zig-out/bin/bcwebmux-server`.
-`test` includes browser end-to-end tests, not just unit tests. Browser tests
-require Chromium and a physical Vulkan GPU (no SwiftShader/llvmpipe).
-
-`text-renderer-test` runs frame/font contracts, full-viewport goldens, GPU input
-tests and core/font-lifecycle tests (including DPR 4) without the unrelated
-session-transport recovery suite. Use `TEXT_RENDERER=canvas` for the GPU input
-tests' browser text path; omit it to exercise kb/STB there. Test server launches
-ignore personal server configuration without changing browser fontconfig.
+Use `TEXT_RENDERER=canvas` with browser tests to exercise browser-canvas text;
+omit it for kb/STB. Test server launches ignore personal server configuration.
 
 ### Glyph texture inspector
 
@@ -135,8 +139,9 @@ Debug captures are limited to 16 Mi pixels and run only on request.
 
 ### Full-screen visual regression tests
 
-`zig build visual-test` runs the screenshot suite alone; `e2e` and `test` also
-include it. Both WebGPU and WebGL2 are tested at fixed viewport sizes:
+After `zig build`, run `node --test test/visual-compare.test.mjs` and
+`node test/visual-e2e.mjs ./zig-out/bin/bcwebmux-server ./zig-out/web`.
+Both WebGPU and WebGL2 are tested at fixed viewport sizes:
 
 | Device | CSS viewport | DPR | Screenshot pixels |
 | --- | --- | --- | --- |
@@ -148,6 +153,8 @@ and bottom controls. Cases cover UTF-8 (CJK, combining accents, Greek/Cyrillic),
 emoji, ANSI styles/box drawing, and numbered `test/snapshot-fixture.zig` source.
 Scrollback cases capture the bottom, Home/top, and PageDown/middle; End must
 restore the original bottom image. Source is sent through the real shell/PTY.
+The `kitty-graphics` case sends a four-color RGBA Kitty image through the PTY
+and compares the full viewport against goldens on both backends and devices.
 The Unicode preview uses browser `canvas`; source/scrollback uses the default
 `kb-stb`, covering both text paths. Canvas uses the CSS/system font stack for
 CJK and emoji fallback. The test observes actual terminal `fillText` calls and
@@ -167,8 +174,8 @@ is used; the option does not add an external font download.
 - Actual PNGs and renderer-state JSON: `zig-out/screenshots/` (override with
   `BCWEBMUX_SCREENSHOT_DIR`). Failed comparisons also save magenta diff PNGs.
 - Open `zig-out/screenshots/index.html` to browse all captures at full resolution.
-- Update intentionally: `UPDATE_GOLDEN=1 zig build visual-test`, inspect the
-  images, then rerun without `UPDATE_GOLDEN`.
+- Update intentionally: set `UPDATE_GOLDEN=1` for the visual command above,
+  inspect the images, then rerun without that variable.
 - Optional: `RENDER_BACKEND=webgpu` or `webgl2` to run only that backend;
   `CHROMIUM=/path/to/chromium` to select the browser.
 

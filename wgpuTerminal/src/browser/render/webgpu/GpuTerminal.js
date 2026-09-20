@@ -11,6 +11,8 @@ import {
   dispose as disposeResources,
 } from "./GpuTerminalResources.js";
 import { GlyphAtlas } from "./GlyphAtlas.js";
+import { GraphicsScene } from "../GraphicsScene.js";
+import { createGpuGraphicsTexture, drawGpuGraphics } from "./GpuGraphics.js";
 import {
   reconfigureGlyphAtlas as reconfigureGlyphAtlasGlyphAtlas,
   setTextRenderer as setTextRendererGlyphAtlas,
@@ -66,6 +68,7 @@ export class GpuTerminal {
     };
     this.adapterFallback = Boolean(adapter.isFallbackAdapter);
     this.context = canvas.getContext("webgpu");
+    this.graphicsScene = new GraphicsScene(this);
     this.format = navigator.gpu.getPreferredCanvasFormat();
     this.maxCells = 0;
     this.cellSize = 0;
@@ -332,6 +335,12 @@ export class GpuTerminal {
       colorAttachments: [{ view: this.offscreenView, clearValue: { r, g, b, a: 1 }, loadOp: "clear", storeOp: "store" }],
     });
     offscreen.executeBundles([this.cellBundle]);
+    if (drawGpuGraphics(this, offscreen, true)) {
+      offscreen.setPipeline(this.glyphPipeline);
+      offscreen.setBindGroup(0, this.cellBindGroup);
+      offscreen.drawIndirect(this.drawIndirectBuffer, 0);
+    }
+    drawGpuGraphics(this, offscreen, false);
     offscreen.end();
     encoder.copyTextureToTexture(
       { texture: this.offscreen },
@@ -365,6 +374,12 @@ export class GpuTerminal {
   }
 
   readGlyphAtlas() { return this.atlas.readPixels(); }
+
+  createGraphicsTexture(width, height, data) {
+    return createGpuGraphicsTexture(this, width, height, data);
+  }
+
+  destroyGraphicsTexture(texture) { texture.destroy(); }
 
   async readPixels() { return readPixelsResources(this); }
 

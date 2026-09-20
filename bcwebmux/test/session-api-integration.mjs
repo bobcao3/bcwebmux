@@ -3,15 +3,17 @@
 
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { freePort, terminateProcess, waitFor as poll } from "./test-support.mjs";
+import { freePort, localTls, terminateProcess, waitFor as poll } from "./test-support.mjs";
 const waitFor = (check, timeout, message) => poll(check, timeout, message, 25);
 
 const serverPath = process.argv[2];
 if (!serverPath) throw new Error("usage: node test/session-api-integration.mjs SERVER");
 
 const port = await freePort();
-const base = `http://127.0.0.1:${port}`;
-const server = spawn(serverPath, ["--port", String(port), "--origin", base, "--max-sessions", "2"], {
+const tls = await localTls();
+const base = `https://127.0.0.1:${port}`;
+const server = spawn(serverPath, ["--config", "/dev/null", "--tls-cert", tls.cert, "--tls-key", tls.key,
+  "--port", String(port), "--origin", base, "--max-sessions", "2"], {
   stdio: ["ignore", "pipe", "pipe"],
 });
 let logs = "";
@@ -35,7 +37,7 @@ try {
   assert.equal(info.principal, "local");
   assert.equal(info.persistence, "memory");
   assert.equal(info.liveSessionLifetime, "daemon");
-  assert.equal(info.checkpointCodec.name, "ghostty-snapshot");
+  assert.equal(info.checkpointCodec.name, "ghostty-snapshot+kitty-graphics-v1");
   assert.equal(info.commandProfiles[0].id, "shell");
   assert.equal(info.limits.maxLiveSessions, 2);
   assert.equal(info.limits.scrollbackBytes, 8 * 1024 * 1024);
@@ -160,6 +162,7 @@ try {
   assert.equal(oversized.status, 413);
 } finally {
   await terminateProcess(server);
+  await tls.dispose();
 }
 
 await verifyNaturalExit();
@@ -187,8 +190,11 @@ function createSession(key, body, origin = base) {
 
 async function verifyNaturalExit() {
   const port = await freePort();
-  const localBase = `http://127.0.0.1:${port}`;
+  const tls = await localTls();
+  const localBase = `https://127.0.0.1:${port}`;
   const secondServer = spawn(serverPath, [
+    "--config", "/dev/null",
+    "--tls-cert", tls.cert, "--tls-key", tls.key,
     "--port", String(port),
     "--origin", localBase,
     "--shell", "/bin/true",
@@ -238,6 +244,7 @@ async function verifyNaturalExit() {
     assert.equal(deleteResponse.status, 204);
   } finally {
     await terminateProcess(secondServer);
+    await tls.dispose();
   }
 }
 

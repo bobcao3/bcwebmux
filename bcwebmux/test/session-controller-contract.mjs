@@ -73,7 +73,7 @@ class MockTerminal {
 
 class MockTransport {
   constructor() {
-    this.state = { connected: true };
+    this.state = { connected: true, serverInstance: "contract-server" };
     this.failAttach = false;
     this.active = null;
     this.lastAttachOptions = null;
@@ -120,19 +120,21 @@ class MockApi {
   constructor(values) {
     this.values = new Map(values.map(value => [value.id, { ...value, geometry: { ...value.geometry } }]));
     this.revision = Math.max(1, ...values.map(value => Number(value.revision ?? 0)));
+    this.serverInstance = "contract-server";
     this.listOverride = null;
     this.renameOverride = null;
     this.nextId = values.length + 1;
     this.lastCreateOptions = null;
   }
 
-  async info() { return { protocol: "bcw.sessions", serverInstance: "contract-server", principal: "contract-user" }; }
+  async info() { return { protocol: "bcw.sessions", serverInstance: this.serverInstance, principal: "contract-user" }; }
   async list() {
     if (this.listOverride) return this.listOverride();
     return { revision: this.revision, sessions: [...this.values.values()].map(value => ({ ...value, geometry: { ...value.geometry }, revision: this.revision })) };
   }
   async get(id) { return this.values.get(id); }
   async create(options) {
+    if (this.failCreate) throw new Error("injected session creation failure");
     this.lastCreateOptions = { ...options };
     this.revision += 1;
     const value = metadata(`session-${this.nextId++}`, this.revision, options.name ?? "");
@@ -151,6 +153,21 @@ class MockApi {
 }
 
 function disposable() { return { dispose() {} }; }
+
+function waitForController(controller, condition) {
+  return new Promise((resolve, reject) => {
+    let listener;
+    const timeout = setTimeout(() => { listener.dispose(); reject(new Error("controller transition did not complete")); }, 5000);
+    const check = () => {
+      if (!condition()) return;
+      clearTimeout(timeout);
+      listener.dispose();
+      resolve();
+    };
+    listener = controller.onChange(check);
+    check();
+  });
+}
 
 async function harness(values, coreLimit = 4) {
   const terminal = new MockTerminal();
@@ -344,6 +361,63 @@ async function harness(values, coreLimit = 4) {
   await assert.rejects(starting, /controller is disposed/);
   assert.equal(controller.coreCount, 0);
   assert.equal(controller.activeSessionId, null);
+}
+
+
+{
+  const { controller, terminal, transport, api } = await harness([metadata("vanished", 90)]);
+  const oldCore = controller.activeCore;
+  let resolveOldList;
+  api.listOverride = () => new Promise(resolve => { resolveOldList = resolve; });
+  const oldRefresh = controller.refresh();
+  assert.equal(typeof resolveOldList, "function");
+  api.listOverride = null;
+  api.values.clear();
+  api.values.set("replacement", metadata("replacement", 1));
+  api.revision = 1;
+  api.serverInstance = transport.state.serverInstance = "replacement-server";
+  const recovered = waitForController(controller, () => controller.activeSessionId === "replacement" && controller.get("vanished") === null);
+  transport.emitStatus("ready");
+  await recovered;
+  assert.equal(controller.get("vanished"), null);
+  assert.equal(oldCore.disposed, true);
+  assert.equal(controller.coreCount, 1);
+  assert.equal(terminal.core, controller.activeCore);
+  assert.ok(controller.storageKey.includes("replacement-server"));
+  resolveOldList({ revision: 91, sessions: [metadata("vanished", 91)] });
+  await oldRefresh;
+  assert.equal(controller.get("vanished"), null, "old in-flight list restored a vanished session");
+  controller.dispose();
+}
+
+{
+  const { controller, transport, api } = await harness([metadata("vanished", 90)]);
+  api.values.clear();
+  api.revision = 1;
+  api.serverInstance = transport.state.serverInstance = "empty-new-server";
+  const recovered = waitForController(controller, () => controller.activeSessionId !== "vanished" && controller.activeSessionId != null && controller.get("vanished") === null);
+  transport.emitStatus("ready");
+  await recovered;
+  assert.equal(controller.get("vanished"), null);
+  assert.ok(api.values.has(controller.activeSessionId));
+  controller.dispose();
+}
+
+{
+  const { controller, transport, api } = await harness([metadata("vanished", 90)]);
+  api.values.clear();
+  api.revision = 1;
+  api.failCreate = true;
+  api.serverInstance = transport.state.serverInstance = "empty-unavailable-server";
+  const cleared = waitForController(controller, () => controller.get("vanished") === null && controller.activeSessionId === null);
+  transport.emitStatus("ready");
+  await cleared;
+  api.failCreate = false;
+  const recovered = await controller.create();
+  assert.equal(controller.activeSessionId, recovered.id);
+  await controller.refresh();
+  assert.equal(controller.get("vanished"), null);
+  controller.dispose();
 }
 
 console.log(JSON.stringify({ sessionControllerContract: "ok" }));

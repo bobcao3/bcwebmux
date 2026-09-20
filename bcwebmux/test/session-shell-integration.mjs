@@ -26,6 +26,7 @@ PROBE='${probe}'
 export PROBE
 printf '%s\\n' "$@" > "$PROBE.args"
 pwd -P > "$PROBE.cwd"
+env | grep -E '^(TERM|COLORTERM|TERM_PROGRAM|KITTY_WINDOW_ID)=' | sort > "$PROBE.env"
 readlink "/proc/$PPID/cwd" > "$PROBE.worker-cwd"
 exec /bin/bash --noprofile --norc "$@" -c 'shopt -q login_shell || exit 42; pwd -P > "$PROBE.login"'
 `, { mode: 0o700 });
@@ -41,11 +42,11 @@ try {
   ]) {
     const port = await freePort();
     const base = `http://127.0.0.1:${port}`;
-    for (const suffix of ["args", "cwd", "login", "worker-cwd"]) await rm(`${probe}.${suffix}`, { force: true });
+    for (const suffix of ["args", "cwd", "login", "worker-cwd", "env"]) await rm(`${probe}.${suffix}`, { force: true });
     const env = { ...process.env };
     if (value === undefined) delete env.HOME;
     else env.HOME = value;
-    const server = spawn(serverPath, ["--config", join(root, "config.toml"), "--port", String(port), "--origin", base, "--shell", shell], {
+    const server = spawn(serverPath, ["--config", join(root, "config.toml"), "--port", String(port), "--origin", base, "--shell", shell, ...(name === "explicit" ? ["--term", "screen-256color", "--kitty-graphics=false"] : [])], {
       cwd: outside, env, stdio: ["ignore", "pipe", "pipe"],
     });
     let logs = "";
@@ -73,6 +74,7 @@ try {
         assert.equal((await readFile(`${probe}.cwd`, "utf8")).trim(), expected, name);
         assert.equal((await readFile(`${probe}.login`, "utf8")).trim(), expected, name);
         assert.equal((await readFile(`${probe}.worker-cwd`, "utf8")).trim(), outside, "worker cwd must not change");
+        assert.equal(await readFile(`${probe}.env`, "utf8"), `COLORTERM=truecolor\n${name === "explicit" ? "" : "KITTY_WINDOW_ID=1\n"}TERM_PROGRAM=bcwebmux\nTERM=${name === "explicit" ? "screen-256color" : "xterm-ghostty"}\n`, name);
       } else {
         assert.equal(exited.exitStatus, 126 << 8, name);
         assert.ok(exited.outputOffset > 0, "home failure must emit a diagnostic");

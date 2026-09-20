@@ -128,8 +128,8 @@ pub const Connection = struct {
     }
 };
 
-pub fn spawn(io: std.Io, executable: []const u8, shell: []const u8, cols: u16, rows: u16) !Connection {
-    if (executable.len == 0 or shell.len == 0 or std.mem.indexOfScalar(u8, executable, 0) != null or std.mem.indexOfScalar(u8, shell, 0) != null) return error.InvalidArgument;
+pub fn spawn(io: std.Io, executable: []const u8, shell: []const u8, term: []const u8, kitty_graphics: bool, cols: u16, rows: u16) !Connection {
+    if (executable.len == 0 or shell.len == 0 or std.mem.indexOfScalar(u8, executable, 0) != null or std.mem.indexOfScalar(u8, shell, 0) != null or !@import("pty_worker.zig").validTerm(term)) return error.InvalidArgument;
     var sockets: [2]c_int = .{ -1, -1 };
     // std.Io Socket.createPair only supports IP families.
     if (c.socketpair(c.AF_UNIX, c.SOCK_SEQPACKET | c.SOCK_CLOEXEC, 0, &sockets) != 0)
@@ -147,7 +147,7 @@ pub fn spawn(io: std.Io, executable: []const u8, shell: []const u8, cols: u16, r
         const cols_text = try std.fmt.bufPrint(&cols_buffer, "{d}", .{cols});
         const rows_text = try std.fmt.bufPrint(&rows_buffer, "{d}", .{rows});
         break :blk try std.process.spawn(io, .{
-            .argv = &.{ executable, "--session-worker", shell, cols_text, rows_text },
+            .argv = &.{ executable, "--session-worker", shell, cols_text, rows_text, term, if (kitty_graphics) "1" else "0" },
             .stdin = .{ .file = files[1] },
             .stdout = .{ .file = files[1] },
             .stderr = .inherit,
@@ -227,6 +227,6 @@ test "seqpacket boundaries, readiness, validation, close, and receive cancellati
     try std.testing.expectError(error.WorkerClosed, b.awaitReady(io));
 
     if (@import("builtin").os.tag == .linux) {
-        try std.testing.expectError(error.WorkerClosed, spawn(io, "/bin/true", "/bin/sh", 80, 24));
+        try std.testing.expectError(error.WorkerClosed, spawn(io, "/bin/true", "/bin/sh", "xterm-ghostty", true, 80, 24));
     }
 }

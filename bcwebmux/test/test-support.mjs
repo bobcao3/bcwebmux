@@ -2,10 +2,26 @@
 // Copyright (c) 2026 Cheng Cao
 
 import { once } from "node:events";
+import { mkdtemp, rm } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { spawnSync } from "node:child_process";
 import net from "node:net";
 import { setTimeout as delay } from "node:timers/promises";
 
 export { delay };
+
+export async function localTls() {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "bcwebmux-tls-"));
+  const cert = path.join(dir, "cert.pem");
+  const key = path.join(dir, "key.pem");
+  const result = spawnSync("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes",
+    "-keyout", key, "-out", cert, "-days", "1", "-subj", "/CN=127.0.0.1",
+    "-addext", "subjectAltName=IP:127.0.0.1"], { stdio: "ignore" });
+  if (result.status !== 0) { await rm(dir, { recursive: true, force: true }); throw new Error("local TLS certificate failed"); }
+  process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
+  return { cert, key, dispose: () => rm(dir, { recursive: true, force: true }) };
+}
 
 export async function freePort() {
   const listener = net.createServer();

@@ -217,3 +217,37 @@ fn fragment(input: VertexOutput) -> @location(0) vec4<f32> {
   }
   return vec4<f32>(vec3<f32>(result), 1.0);
 }
+
+@fragment
+fn fragmentGlyph(input: VertexOutput) -> @location(0) vec4<f32> {
+  let flags = input.flags;
+  let y = input.local.y;
+  var color = rgb(input.fg);
+  var opacity: f32 = 0.0;
+  if (((flags & 8u) != 0u && y >= f32(input.cell_size.y) - 2.0 && y < f32(input.cell_size.y) - 1.0) ||
+      ((flags & 16u) != 0u && y >= floor(f32(input.cell_size.y) * 0.52) && y < floor(f32(input.cell_size.y) * 0.52) + 1.0) ||
+      ((flags & 32u) != 0u && y < 1.0)) { opacity = 1.0; }
+  let cursor_visible = (uniforms.cursor_flags & 1u) != 0u && ((uniforms.cursor_flags & 2u) == 0u || uniforms.blink_on != 0u);
+  if (cursor_visible && input.cell_x == uniforms.cursor_x && input.cell_y == uniforms.cursor_y) {
+    if ((uniforms.cursor_style == 0u && input.local.x < 2.0) ||
+        (uniforms.cursor_style == 2u && y >= f32(input.cell_size.y) - 2.0)) {
+      color = rgb(uniforms.default_fg);
+      opacity = 1.0;
+    } else if (uniforms.cursor_style != 0u && uniforms.cursor_style != 2u) {
+      color = rgb(uniforms.default_fg);
+      opacity = 0.45;
+    }
+  }
+  if (input.glyph != 0u && ((flags & 128u) == 0u || uniforms.blink_on != 0u)) {
+    let subcell = u32(input.local.x) / uniforms.cell_width;
+    let slot = input.glyph - 1u + subcell;
+    let tile = vec2<u32>(slot % uniforms.atlas_cols, slot / uniforms.atlas_cols) *
+      vec2<u32>(uniforms.tile_width, uniforms.tile_height);
+    let pixel = vec2<u32>(u32(input.local.x) % uniforms.cell_width, u32(input.local.y));
+    let coverage = textureLoad(atlas_texture, vec2<i32>(tile + pixel), 0).r *
+      select(1.0, 0.62, (flags & 4u) != 0u);
+    color = rgb(input.fg);
+    opacity = opacity + (1.0 - opacity) * coverage;
+  }
+  return vec4<f32>(vec3<f32>(color), opacity);
+}

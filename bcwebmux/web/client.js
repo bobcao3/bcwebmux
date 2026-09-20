@@ -629,7 +629,7 @@ window.bcwebmux = {
   write(text) { terminal.input(text); },
   paste(text) { terminal.paste(text); },
 };
-if (query.has("gpu-test")) {
+if (query.has("gpu-test") || query.has("session-test")) {
   window.bcwebmux.readPixels = () => terminal.readPixels();
 }
 if (query.has("session-test")) {

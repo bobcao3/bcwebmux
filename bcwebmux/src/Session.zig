@@ -3,6 +3,8 @@
 
 const std = @import("std");
 const ghostty = @import("ghostty-vt");
+const Graphics = @import("terminal-graphics");
+const GraphicsCheckpoint = @import("terminal-graphics-checkpoint");
 const manifest = @import("session_manifest.zig");
 const worker = @import("session_worker.zig");
 
@@ -265,6 +267,7 @@ journal: Journal,
 connection: worker.Connection,
 mirror_terminal: ghostty.Terminal,
 mirror_stream: ghostty.TerminalStream,
+graphics: Graphics,
 mirror_reply_failed: bool = false,
 attachments: [max_attachment_slots]AttachmentState = [_]AttachmentState{.{}} ** max_attachment_slots,
 input_dedup: [max_input_dedup_entries]InputDedupEntry = [_]InputDedupEntry{.{}} ** max_input_dedup_entries,
@@ -286,6 +289,8 @@ pub fn create(
     io: std.Io,
     executable: []const u8,
     shell: []const u8,
+    term: []const u8,
+    kitty_graphics: bool,
     limits: manifest.Limits,
     registry_revision: *std.atomic.Value(u64),
     id: Id,
@@ -305,6 +310,7 @@ pub fn create(
         .max_scrollback_bytes = limits.scrollback_bytes,
     });
     errdefer mirror.deinit(allocator);
+    mirror.setKittyGraphicsSizeLimit(allocator, 16 * 1024 * 1024);
 
     self.* = .{
         .allocator = allocator,
@@ -323,15 +329,16 @@ pub fn create(
         .connection = undefined,
         .mirror_terminal = mirror,
         .mirror_stream = undefined,
+        .graphics = Graphics.init(allocator),
     };
     @memcpy(self.name[0..name.len], name);
     self.mirror_stream = ghostty.TerminalStream.init(.{
         .allocator = allocator,
-        .handler = configuredHandler(&self.mirror_terminal),
+        .handler = configuredHandler(&self.mirror_terminal, term),
         .continuation_max_bytes = continuation_limit,
     });
     errdefer self.mirror_stream.deinit();
-    self.connection = try worker.spawn(io, executable, shell, geometry.cols, geometry.rows);
+    self.connection = try worker.spawn(io, executable, shell, term, kitty_graphics, geometry.cols, geometry.rows);
     self.state = .running;
     return self;
 }
@@ -339,6 +346,7 @@ pub fn create(
 pub fn destroy(self: *Self) void {
     self.connection.finish(self.io);
     self.mirror_stream.deinit();
+    self.graphics.deinit();
     self.mirror_terminal.deinit(self.allocator);
     self.journal.deinit();
     freeCheckpoint(self.allocator, &self.current_checkpoint);
@@ -581,7 +589,7 @@ fn acceptOutput(self: *Self, bytes: []const u8) !void {
     if (self.mirror_stream.handler.semantic_failure) return error.MirrorSemanticFailure;
     if (self.bytes_since_checkpoint >= self.limits.checkpoint_output_bytes or
         (monotonicMs(self.io) - self.checkpoint_at_monotonic_ms) >= self.limits.checkpoint_interval_ms)
-        try self.createCheckpoint(now);
+        self.createCheckpoint(now) catch |err| if (err != error.CaptureDeferred) return err;
 }
 
 fn acceptExit(self: *Self, status: i32) !void {
@@ -593,8 +601,8 @@ fn acceptExit(self: *Self, status: i32) !void {
     self.next_event_seq += 1;
     self.exit_status = status;
     self.last_activity_ms = now;
-    try self.createCheckpoint(now);
-    if (self.attachment_count == 0) self.journal.release();
+    self.createCheckpoint(now) catch |err| if (err != error.CaptureDeferred) return err;
+    if (self.attachment_count == 0 and self.checkpoint_event_seq == self.next_event_seq - 1) self.journal.release();
     self.state = .exited;
     self.bumpRevision();
 }
@@ -608,8 +616,15 @@ fn recordFailedExit(self: *Self, status: i32) void {
 
 fn ensureJournalCapacity(self: *Self, byte_count: usize) !void {
     if (self.journal.canAppend(byte_count)) return;
-    try self.createCheckpoint(nowMs(self.io));
+    const captured = captured: {
+        self.createCheckpoint(nowMs(self.io)) catch |err| {
+            if (err != error.CaptureDeferred) return err;
+            break :captured false;
+        };
+        break :captured true;
+    };
     if (!self.journal.canAppend(byte_count)) {
+        if (!captured) return error.JournalFull;
         self.dropAttachmentsForRetentionLocked();
         self.journal.clear();
     }
@@ -626,10 +641,12 @@ fn dropAttachmentsForRetentionLocked(self: *Self) void {
 }
 
 fn createCheckpoint(self: *Self, now: i64) !void {
+    if (!self.graphics.safeToCapture()) return error.CaptureDeferred;
     var continuation: std.Io.Writer.Allocating = .init(self.allocator);
     defer continuation.deinit();
     try self.mirror_stream.writeContinuation(&continuation.writer);
     if (continuation.written().len > continuation_limit) return error.ContinuationTooLarge;
+    if (continuation.written().len != 0) return error.CaptureDeferred;
 
     var encoded: std.Io.Writer.Allocating = .init(self.allocator);
     defer encoded.deinit();
@@ -639,8 +656,20 @@ fn createCheckpoint(self: *Self, now: i64) !void {
         else
             .{ .bytes = continuation.written() },
     });
-    if (encoded.written().len > self.limits.max_checkpoint_bytes) return error.CheckpointTooLarge;
-    const bytes = try encoded.toOwnedSlice();
+    var metadata: std.Io.Writer.Allocating = .init(self.allocator);
+    defer metadata.deinit();
+    try GraphicsCheckpoint.encode(self.allocator, &metadata.writer, &self.mirror_terminal);
+    var packaged: std.Io.Writer.Allocating = .init(self.allocator);
+    defer packaged.deinit();
+    var header: [12]u8 = undefined;
+    @memcpy(header[0..4], "KGST");
+    std.mem.writeInt(u32, header[4..8], @intCast(encoded.written().len), .little);
+    std.mem.writeInt(u32, header[8..12], @intCast(metadata.written().len), .little);
+    try packaged.writer.writeAll(&header);
+    try packaged.writer.writeAll(encoded.written());
+    try packaged.writer.writeAll(metadata.written());
+    if (packaged.written().len > self.limits.max_checkpoint_bytes) return error.CheckpointTooLarge;
+    const bytes = try packaged.toOwnedSlice();
     var digest: [32]u8 = undefined;
     std.crypto.hash.sha2.Sha256.hash(bytes, &digest, .{});
     freeCheckpoint(self.allocator, &self.current_checkpoint);
@@ -720,10 +749,13 @@ fn monotonicMs(io: std.Io) i64 {
 
 const Handler = ghostty.TerminalStream.Handler;
 
-fn configuredHandler(value: *ghostty.Terminal) Handler {
+fn configuredHandler(value: *ghostty.Terminal, term: []const u8) Handler {
     var handler = value.vtHandler();
-    handler.terminfo_name = "xterm-256color";
+    handler.kitty_graphics = executeGraphics;
+    handler.apc_handler.max_bytes.put(.kitty, 1024 * 1024);
+    handler.terminfo_name = term;
     handler.effects.write_pty = effectWritePty;
+    handler.effects.device_attributes = effectDeviceAttributes;
     handler.effects.title_changed = effectTitle;
     handler.effects.size = effectSize;
     handler.effects.enquiry = effectEnquiry;
@@ -732,6 +764,13 @@ fn configuredHandler(value: *ghostty.Terminal) Handler {
     handler.effects.bell = null;
     handler.effects.desktop_notification = null;
     return handler;
+}
+
+fn executeGraphics(handler: *Handler, cmd: *ghostty.kitty.graphics.Command) ?ghostty.kitty.graphics.Response {
+    const self: *Self = @fieldParentPtr("mirror_terminal", handler.terminal);
+    const response = self.graphics.execute(handler.terminal, cmd);
+    if (self.graphics.fatal) handler.semantic_failure = true;
+    return response;
 }
 
 fn effectSize(handler: *Handler) ?ghostty.size_report.Size {
@@ -752,6 +791,10 @@ fn effectVersion(_: *Handler) []const u8 {
     return "bcwebmux 0.1.0";
 }
 
+fn effectDeviceAttributes(_: *Handler) ghostty.device_attributes.Attributes {
+    return .{};
+}
+
 fn effectWritePty(handler: *Handler, bytes: []const u8) void {
     if (bytes.len == 0) return;
     const self: *Self = @fieldParentPtr("mirror_terminal", handler.terminal);
@@ -768,6 +811,28 @@ fn effectTitle(handler: *Handler) void {
     @memcpy(self.title[0..length], title[0..length]);
     self.title_len = @intCast(length);
     self.bumpRevision();
+}
+
+test "terminal answers primary device attributes for image viewer probes" {
+    const testing = std.testing;
+    const Capture = struct {
+        var reply: [64]u8 = undefined;
+        var length: usize = 0;
+
+        fn write(_: *Handler, bytes: []const u8) void {
+            @memcpy(reply[0..bytes.len], bytes);
+            length = bytes.len;
+        }
+    };
+    Capture.length = 0;
+    var terminal = try ghostty.Terminal.init(testing.io, testing.allocator, .{ .cols = 50, .rows = 45 });
+    defer terminal.deinit(testing.allocator);
+    var handler = configuredHandler(&terminal, "xterm-ghostty");
+    handler.effects.write_pty = Capture.write;
+    var stream = ghostty.TerminalStream.init(.{ .allocator = testing.allocator, .handler = handler });
+    defer stream.deinit();
+    stream.nextSlice("\x1b[c");
+    try testing.expectEqualStrings("\x1b[?62;22c", Capture.reply[0..Capture.length]);
 }
 
 test "journal preserves ordered output and resize" {

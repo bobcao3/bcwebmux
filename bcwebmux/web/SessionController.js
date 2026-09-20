@@ -71,7 +71,7 @@ export class SessionController {
   #switchTail = Promise.resolve(); #pendingSwitches = new Map()
   #subscriptions = []
   #events = { change: emitter(), active: emitter(), title: emitter(), bell: emitter(), notification: emitter(), error: emitter(), status: emitter() }
-  #serverInfo = null; #storageKey = null; #storageDenied = false; #listRevision = 0
+  #serverInfo = null; #storageKey = null; #storageDenied = false; #listRevision = 0; #serverEpoch = 0; #restartPromise = null
 
   constructor(options = {}) {
     this.#terminal = options.terminal ?? options.host
@@ -85,6 +85,7 @@ export class SessionController {
       this.#syncPointers()
       this.#events.status.emit(label, state)
       this.#events.change.emit({ type: "status", label, state, controller: this })
+      if (label === "ready") this.#checkServerInstance()
     }))
     this.#subscriptions.push(this.#transport.onError?.(error => this.#reportError(error, true)))
     this.#subscriptions.push(this.#transport.onAttachmentChanged?.(() => {
@@ -163,6 +164,7 @@ export class SessionController {
     this.#events.change.emit({ type: "started", controller: this })
     if (!this.#refreshTimer) this.#refreshTimer = setInterval(() => {
       if (globalThis.document?.hidden === true) return
+      if (this.#checkServerInstance()) return
       if (!this.sessions.some(session => !this.isAttached(session.id))) return
       this.refresh().catch(error => this.#reportRefreshError(error))
     }, 3000)
@@ -175,8 +177,10 @@ export class SessionController {
     this.#refreshing = true
     try {
       const requestedAtRevision = this.#listRevision
+      const serverEpoch = this.#serverEpoch
       const list = await this.#api.list()
       if (this.#disposed) throw new Error("session controller is disposed")
+      if (serverEpoch !== this.#serverEpoch) return this.sessions
       this.#replaceList(list, requestedAtRevision)
       this.#syncPointers()
       if (this.#refreshError) {
@@ -190,6 +194,56 @@ export class SessionController {
         this.#refreshQueued = false
         queueMicrotask(() => this.refresh().catch(error => this.#reportRefreshError(error)))
       }
+    }
+  }
+
+  #checkServerInstance() {
+    const instance = this.#transport.state?.serverInstance
+    if (!this.#started || !this.#serverInfo || !instance || instance === this.#serverInfo.serverInstance) return false
+    if (!this.#restartPromise) {
+      const operation = this.#reconcileServer(instance)
+      this.#restartPromise = operation
+      operation.catch(error => this.#reportRefreshError(error)).finally(() => {
+        if (this.#restartPromise === operation) this.#restartPromise = null
+      })
+    }
+    return true
+  }
+
+  async #reconcileServer(instance) {
+    const info = await this.#api.info()
+    if (info?.protocol !== "bcw.sessions" || info.serverInstance !== instance) throw new Error("server instance changed during session refresh")
+    const list = await this.#api.list()
+    if (this.#disposed || this.#transport.state?.serverInstance !== instance) return
+    const values = Array.isArray(list) ? list : list?.sessions ?? []
+    const seen = new Set(values.map(value => stringId(value)))
+    const missingActive = this.#activeId && !seen.has(this.#activeId) ? this.#activeId : null
+    this.#serverEpoch++
+    this.#listRevision = 0
+    this.#removedIds.clear()
+    this.#serverInfo = info
+    this.#transport.configureServer?.(info)
+    this.#setStorageScope(info.serverInstance, info.principal)
+    this.#replaceList(list)
+    if (!missingActive) return
+    let selected = this.#readLastSession()
+    if (!selected || !this.#metadata.has(selected) || selected === missingActive) {
+      selected = this.sessions.filter(item => item.id !== missingActive && item.state === "running")
+        .sort((a, b) => activityTime(b) - activityTime(a))[0]?.id
+    }
+    try {
+      if (!selected) selected = (await this.create({ activate: false })).id
+      await this.switchTo(selected)
+    } finally {
+      const old = this.#cores.get(missingActive)
+      if (this.#activeId === missingActive) {
+        this.#detach(old)
+        this.#activeId = null
+        this.#events.active.emit(null, this)
+      }
+      this.#metadata.delete(missingActive)
+      if (old && (this.#activeId || old.core !== this.#terminal.core)) this.#closeEntry(old)
+      this.#events.change.emit({ type: "list", controller: this, revision: this.#listRevision })
     }
   }
 
@@ -355,7 +409,7 @@ export class SessionController {
     if (!entry.core || entry.core.disposed) {
       const hostCore = this.#terminal.core
       const inUse = [...this.#cores.values()].some(item => item !== entry && item.core === hostCore)
-      const core = !inUse && hostCore ? hostCore : await this.#terminal.createCore()
+      const core = !inUse && hostCore && !hostCore.disposed ? hostCore : await this.#terminal.createCore()
       if (this.#disposed || this.#cores.get(metadata.id) !== entry) {
         if (core !== hostCore) core?.dispose?.()
         throw new Error("session core creation was canceled")
@@ -480,7 +534,7 @@ export class SessionController {
       if (previous && error !== current.error) changed = true
       seen.add(metadata.id)
     }
-    for (const [id, entry] of [...this.#cores]) if (!seen.has(id) && id !== this.#activeId && !this.#pendingSwitches.has(id)) { this.#closeEntry(entry); changed = true }
+    for (const [id, entry] of [...this.#cores]) if (!seen.has(id) && id !== this.#activeId && !this.#pendingSwitches.has(id) && (this.#activeId || entry.core !== this.#terminal.core)) { this.#closeEntry(entry); changed = true }
     for (const id of [...this.#metadata.keys()]) if (!seen.has(id) && id !== this.#activeId && !this.#pendingSwitches.has(id)) { this.#metadata.delete(id); changed = true }
     if (changed) this.#events.change.emit({ type: "list", controller: this, revision: this.#listRevision })
   }

@@ -35,7 +35,7 @@ func TestConfigDiscoveryAndOverrides(t *testing.T) {
 		}
 		return c
 	}
-	if c := parse(); c.Port != DefaultPort {
+	if c := parse(); c.Port != DefaultPort || c.Term != "xterm-ghostty" || !c.KittyGraphics {
 		t.Fatal(c)
 	}
 	putConfig(t, filepath.Join(home, ".bcwebmux.toml"), "port = 8101\n")
@@ -50,12 +50,14 @@ http3 = true
 tls-cert = "cert"
 tls-key = "key"
 max-sessions = 19
+term = "xterm-256color"
+kitty-graphics = false
 `)
-	if c := parse(); c.Port != 8102 || !c.HTTP3 || len(c.Listen) != 2 || len(c.Origins) != 2 {
+	if c := parse(); c.Port != 8102 || !c.HTTP3 || len(c.Listen) != 2 || len(c.Origins) != 2 || c.Term != "xterm-256color" || c.KittyGraphics {
 		t.Fatal(c)
 	}
-	c := parse("--port=8103", "--http3=false", "--listen=127.0.0.3", "--listen=127.0.0.4", "--origin=https://cli.example")
-	if c.Port != 8103 || c.HTTP3 || !reflect.DeepEqual(c.Listen, []string{"127.0.0.3", "127.0.0.4"}) || !reflect.DeepEqual(c.origins(), []string{"https://cli.example"}) {
+	c := parse("--port=8103", "--http3=false", "--listen=127.0.0.3", "--listen=127.0.0.4", "--origin=https://cli.example", "--term=screen-256color", "--kitty-graphics=true")
+	if c.Port != 8103 || c.HTTP3 || c.Term != "screen-256color" || !c.KittyGraphics || !reflect.DeepEqual(c.Listen, []string{"127.0.0.3", "127.0.0.4"}) || !reflect.DeepEqual(c.origins(), []string{"https://cli.example"}) {
 		t.Fatal(c)
 	}
 	if c := parse("--host=127.0.0.5"); len(c.Listen) != 0 || c.Host != "127.0.0.5" {

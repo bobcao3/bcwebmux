@@ -87,8 +87,9 @@ do not retain GPU resources after readback. They include unused/stale cache slot
 semantic callbacks and perform DOM coordinate conversion. Terminal versions one
 frozen render-metric configuration shared with cores, backend, pointer and IME;
 CSS cell metrics also drive the text mirror. `FramePresenter` owns submission
-state and `FrameScheduler` alone schedules presentation. The v6 frame carries
-STB alpha masks or bounded UTF-8 Canvas requests, not glyph outlines.
+state and `FrameScheduler` alone schedules presentation. The v7 frame carries
+STB alpha masks or bounded UTF-8 Canvas requests, plus bounded Kitty image
+sources and placements; it does not carry glyph outlines.
 
 ## Text paths and fonts
 
@@ -154,8 +155,9 @@ For server-authoritative session transports, set `canonicalGeometry: true`, send
 - [../bcwebmux/test/](../bcwebmux/test/): browser and contract tests shared with the application. See the [application README](../bcwebmux/README.md#develop) for test commands.
 
 Rebuild WASM assets after changing the low-level engine. See the [repository overview](../README.md) for component boundaries.
-`zig build render-frame-test` in `bcwebmux/` includes fake-backend recovery and
-architecture contracts. The physical terminal-core browser test also accepts
+Run JavaScript contracts directly with Node, outside `zig build`; see the
+[application development guide](../bcwebmux/README.md#develop). The physical
+terminal-core browser test also accepts
 `RENDER_RECOVERY=1` with `RENDER_BACKEND=webgpu` or `webgl2` to force device/context
 loss and verify recovery before running the normal core/atlas/capture checks.
 Architecture and design documents live in the repository-root [docs/](../docs/README.md).

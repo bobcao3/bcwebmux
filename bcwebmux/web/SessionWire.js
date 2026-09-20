@@ -8,7 +8,7 @@ import {
   writeUint16LE,
 } from "./protocol.js";
 
-export const ABI_DIGEST = hexBytes("58a138c7a389cb11458eeaca32bb21aedfb06b8ed396b84d816f49cb73acf644");
+export const ABI_DIGEST = hexBytes("9f9159876f7ba9efca0a0410aa307cb533a5a3aef86072427eaf208591b50ae6");
 
 export function createEmitter() {
   const listeners = new Set();

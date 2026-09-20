@@ -36,6 +36,7 @@ export class FramePresenter {
   }
   selectTerminal(core) {
     this.invalidate();
+    this.backend.graphicsScene?.dispose();
     this.submissionMetadata = {};
     this.core = core;
     atlasRuntime.selectTerminal(this.backend, core);
@@ -44,6 +45,7 @@ export class FramePresenter {
 
   upload(packet) {
     const b = this.backend;
+    b.graphicsScene?.update(packet);
     for (const key of ["glyphSlotsUsed", "cols", "rows", "cacheHits", "cacheMisses", "background", "foreground",
       "cursorX", "cursorY", "cursorFlags", "cursorStyle"]) b[key] = packet[key];
     for (const key of ["cols", "rows", "viewportMode", "scrollTotal", "scrollOffset", "scrollLength"]) {

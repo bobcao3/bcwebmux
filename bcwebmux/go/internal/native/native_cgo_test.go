@@ -10,7 +10,7 @@ import (
 	"testing"
 )
 
-const terminalABI = "bcwebmux-ghostty-f4f9991-snapshot-8m-continuation-1m-glyph-cell-partitions-pty-zstd-stream"
+const terminalABI = "bcwebmux-graphics-frame-v7-checkpoint-v1-continuation-1m-glyph-cell-partitions-pty-zstd-stream"
 
 // TestNativeEngineABI exercises the actual cgo ownership boundary without
 // spawning a shell. /bin/true is only used as the worker path; the test does

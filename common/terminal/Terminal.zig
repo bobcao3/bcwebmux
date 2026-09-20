@@ -4,6 +4,8 @@
 const std = @import("std");
 const ghostty = @import("ghostty-vt");
 const RenderFrame = @import("RenderFrame.zig");
+const Graphics = @import("graphics/Adapter.zig");
+const GraphicsCheckpoint = @import("graphics/Checkpoint.zig");
 const FontEngine = @import("FontEngine.zig");
 
 const Self = @This();
@@ -39,6 +41,7 @@ selection_snapshot: ?[:0]const u8 = null,
 hyperlink_snapshot: [4096]u8 = undefined,
 hyperlink_snapshot_len: u32 = 0,
 renderer: RenderFrame = .{},
+graphics: Graphics = undefined,
 
 extern "host" fn user_write(ptr: [*]const u8, len: usize) i32;
 extern "host" fn terminal_reply(ptr: [*]const u8, len: usize) i32;
@@ -52,6 +55,7 @@ const ClipboardWriteInfo = @typeInfo(ClipboardWriteFn).@"fn";
 const ClipboardWrite = ClipboardWriteInfo.params[1].type.?;
 
 pub fn bootstrap(self: *Self) void {
+    self.graphics = Graphics.init(alloc);
     self.terminal = null;
     self.stream = null;
     self.render_state = .empty;
@@ -144,6 +148,7 @@ pub fn term_init(self: *Self, cols: u16, rows: u16) i32 {
         .max_scrollback_bytes = 8 * 1024 * 1024,
     }) catch return 0;
     const value = if (self.terminal) |*t| t else return 0;
+    value.setKittyGraphicsSizeLimit(alloc, 16 * 1024 * 1024);
     self.stream = ghostty.TerminalStream.init(.{
         .allocator = alloc,
         .handler = configuredHandler(value),
@@ -200,6 +205,8 @@ pub fn term_deinit(self: *Self) void {
     }
     self.deinit_pending = false;
     if (self.stream) |*value| value.deinit();
+    self.graphics.deinit();
+    self.graphics = Graphics.init(alloc);
     self.stream = null;
     self.render_state.deinit(alloc);
     self.render_state = .empty;
@@ -243,21 +250,35 @@ pub fn term_snapshot_restore(self: *Self, len: u32) i32 {
 
     self.busy = true;
     defer self.finishBusy();
-    var source: std.Io.Reader = .fixed(staged);
+    var snapshot: []const u8 = staged;
+    var metadata: ?[]const u8 = null;
+    if (staged.len >= 12 and std.mem.eql(u8, staged[0..4], "KGST")) {
+        const snapshot_len = std.mem.readInt(u32, staged[4..8], .little);
+        const metadata_len = std.mem.readInt(u32, staged[8..12], .little);
+        if (snapshot_len > staged.len - 12 or metadata_len != staged.len - 12 - snapshot_len) return 0;
+        snapshot = staged[12..][0..snapshot_len];
+        metadata = staged[12 + snapshot_len ..];
+    }
+    var source: std.Io.Reader = .fixed(snapshot);
     var decoded = ghostty.snapshot.decodeExact(alloc, io, &source, .{
         .max_continuation_bytes = continuation_capacity,
     }) catch return 0;
     defer decoded.deinit(alloc);
     var replacement_terminal: ghostty.Terminal = decoded.toOwned();
+    var replacement_owned = true;
+    defer if (replacement_owned) replacement_terminal.deinit(alloc);
+    replacement_terminal.setKittyGraphicsSizeLimit(alloc, 16 * 1024 * 1024);
+    if (metadata) |bytes| GraphicsCheckpoint.restore(alloc, &replacement_terminal, bytes) catch return 0;
     var replacement_render_state: ghostty.RenderState = .empty;
     replacement_render_state.update(alloc, &replacement_terminal) catch {
         replacement_render_state.deinit(alloc);
-        replacement_terminal.deinit(alloc);
         return 0;
     };
 
     if (self.stream) |*value| value.deinit();
     self.stream = null;
+    self.graphics.deinit();
+    self.graphics = Graphics.init(alloc);
     self.render_state.deinit(alloc);
     self.render_state = .empty;
     if (self.terminal) |*value| {
@@ -266,7 +287,7 @@ pub fn term_snapshot_restore(self: *Self, len: u32) i32 {
     }
 
     self.terminal = replacement_terminal;
-    replacement_terminal = undefined;
+    replacement_owned = false;
     self.selection_gesture = .init;
     self.freeSelectionSnapshot();
     self.hyperlink_snapshot_len = 0;
@@ -303,7 +324,7 @@ pub fn term_feed(self: *Self, len: u32) i32 {
     self.busy = true;
     defer self.finishBusy();
     value.nextSlice(self.staging[0..len]);
-    return 1;
+    return if (value.handler.semantic_failure) 0 else 1;
 }
 
 pub fn term_resize(self: *Self, cols: u16, rows: u16, cell_width: u16, cell_height: u16, glyph_cell_width: u16, glyph_cell_height: u16, glyph_font_size_px: u16) i32 {
@@ -535,8 +556,11 @@ fn freeSnapshotStaging(self: *Self) void {
 
 fn configuredHandler(value: *ghostty.Terminal) Handler {
     var handler = value.vtHandler();
+    handler.kitty_graphics = effectGraphics;
+    handler.apc_handler.max_bytes.put(.kitty, 1024 * 1024);
     handler.terminfo_name = "xterm-256color";
     handler.effects.write_pty = effectWritePty;
+    handler.effects.device_attributes = effectDeviceAttributes;
     handler.effects.bell = effectBell;
     handler.effects.title_changed = effectTitle;
     handler.effects.size = effectSize;
@@ -545,6 +569,13 @@ fn configuredHandler(value: *ghostty.Terminal) Handler {
     handler.effects.desktop_notification = effectDesktopNotification;
     handler.effects.clipboard_write = effectClipboardWrite;
     return handler;
+}
+
+fn effectGraphics(handler: *Handler, cmd: *ghostty.kitty.graphics.Command) ?ghostty.kitty.graphics.Response {
+    const self = owner(handler);
+    const response = self.graphics.execute(handler.terminal, cmd);
+    if (self.graphics.fatal) handler.semantic_failure = true;
+    return response;
 }
 
 fn packedRgb(value: u32) ghostty.color.RGB {
@@ -798,8 +829,8 @@ pub fn term_frame_prepare(self: *Self) i32 {
         previous_cursor_visible != self.render_state.cursor.visible or
         previous_cursor_blinking != self.render_state.cursor.blinking or
         previous_cursor_style != self.render_state.cursor.visual_style;
-    if (self.render_state.dirty == .false and !cursor_changed and !self.render_requested) return 0;
-    self.renderer.prepare(&self.render_state, value) catch {
+    if (self.render_state.dirty == .false and !cursor_changed and !self.render_requested and !self.graphics.state_changed) return 0;
+    self.renderer.prepare(&self.render_state, value, &self.graphics) catch {
         self.rejectFrame();
         return -1;
     };
@@ -827,6 +858,7 @@ pub fn term_frame_finish(self: *Self, token: u32, accepted: u32) i32 {
         return if (valid) 1 else -2;
     }
     self.renderer.accept();
+    self.graphics.state_changed = false;
     self.render_requested = false;
     self.render_state.clean();
     return 1;
@@ -849,6 +881,10 @@ fn owner(handler: *Handler) *Self {
 fn effectWritePty(handler: *Handler, data: []const u8) void {
     if (owner(handler).replay_mode) return;
     if (data.len != 0) _ = terminal_reply(data.ptr, data.len);
+}
+
+fn effectDeviceAttributes(_: *Handler) ghostty.device_attributes.Attributes {
+    return .{};
 }
 
 fn effectBell(handler: *Handler) void {

@@ -81,6 +81,7 @@ const metadata = {
   generation: "22222222-2222-4222-8222-222222222222",
 };
 const geometry = { cols: 80, rows: 24, cellWidthPx: 8, cellHeightPx: 16 };
+const backendInstance = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 class Core {
   disposed = 0;
   writes = [];
@@ -109,6 +110,7 @@ async function welcome(h, socket = h.sockets.at(-1), rtt = 40) {
   const hello = socket.last(F.HELLO);
   await h.clock.advance(rtt);
   const payload = new Uint8Array(88);
+  payload.set(uuidBytes(backendInstance), 0);
   payload.set(ABI_DIGEST, 16);
   writeUint32LE(payload, 48, MAX_FRAME_LENGTH);
   writeUint32LE(payload, 52, 1024);
@@ -121,6 +123,14 @@ async function welcome(h, socket = h.sockets.at(-1), rtt = 40) {
   await flush();
   return socket;
 }
+test("WELCOME exposes backend restart identity", async t => {
+  const h = harness(t);
+  const ready = h.transport.connect();
+  await welcome(h);
+  await ready;
+  assert.equal(h.transport.state.serverInstance, backendInstance);
+});
+
 async function pong(h, rtt = 40, socket = h.sockets.at(-1)) {
   const ping = socket.last(F.PING);
   assert.ok(ping);

@@ -37,6 +37,8 @@ allocator: std.mem.Allocator,
 io: std.Io,
 executable: []const u8,
 shell: []const u8,
+term: []const u8,
+kitty_graphics: bool,
 limits: manifest.Limits,
 server_instance: Session.Id,
 mutex: std.Io.Mutex = .init,
@@ -53,6 +55,8 @@ pub fn init(
     io: std.Io,
     executable: []const u8,
     shell: []const u8,
+    term: []const u8,
+    kitty_graphics: bool,
     limits: manifest.Limits,
 ) !Self {
     if (limits.max_exited_sessions < limits.max_live_sessions or limits.max_exited_sessions > 64 or limits.max_attachments_per_session > Session.max_attachment_slots) return error.InvalidLimits;
@@ -60,6 +64,8 @@ pub fn init(
     errdefer allocator.free(owned_executable);
     const owned_shell = try allocator.dupe(u8, shell);
     errdefer allocator.free(owned_shell);
+    const owned_term = try allocator.dupe(u8, term);
+    errdefer allocator.free(owned_term);
     var server_instance: Session.Id = undefined;
     try randomId(io, &server_instance);
     var self: Self = .{
@@ -67,6 +73,8 @@ pub fn init(
         .io = io,
         .executable = owned_executable,
         .shell = owned_shell,
+        .term = owned_term,
+        .kitty_graphics = kitty_graphics,
         .limits = limits,
         .server_instance = server_instance,
     };
@@ -84,6 +92,7 @@ pub fn deinit(self: *Self) void {
     self.sessions.deinit(self.allocator);
     self.allocator.free(self.executable);
     self.allocator.free(self.shell);
+    self.allocator.free(self.term);
     self.* = undefined;
 }
 
@@ -141,6 +150,8 @@ pub fn create(
         self.io,
         self.executable,
         self.shell,
+        self.term,
+        self.kitty_graphics,
         self.limits,
         &self.revision,
         id,

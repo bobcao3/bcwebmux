@@ -36,6 +36,8 @@ type Config struct {
 	Port           int
 	WebRoot        string
 	Shell          string
+	Term           string
+	KittyGraphics  bool
 	Origin         string
 	MaxSessions    uint64
 	TLSCert        string
@@ -50,13 +52,15 @@ type Config struct {
 // ParseConfig parses the server's stable command-line interface. It does not
 // bind a socket or start the native engine.
 func ParseConfig(args []string) (Config, bool, error) {
-	cfg := Config{Port: DefaultPort, MaxSessions: DefaultMaxSessions}
+	cfg := Config{Port: DefaultPort, MaxSessions: DefaultMaxSessions, Term: "xterm-ghostty", KittyGraphics: true}
 	flags := flag.NewFlagSet("bcwebmux-server", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	flags.StringVar(&cfg.Host, "host", cfg.Host, "bind host")
 	flags.IntVar(&cfg.Port, "port", cfg.Port, "bind port")
 	flags.StringVar(&cfg.WebRoot, "web-root", "", "asset directory")
 	flags.StringVar(&cfg.Shell, "shell", "", "shell")
+	flags.StringVar(&cfg.Term, "term", cfg.Term, "TERM for session shells")
+	flags.BoolVar(&cfg.KittyGraphics, "kitty-graphics", cfg.KittyGraphics, "advertise Kitty graphics to session shells")
 	var origins, listens []string
 	var configPath string
 	flags.StringVar(&configPath, "config", "", "TOML config file")
@@ -112,6 +116,10 @@ func ParseConfig(args []string) (Config, bool, error) {
 			cfg.WebRoot = cli.WebRoot
 		case "shell":
 			cfg.Shell = cli.Shell
+		case "term":
+			cfg.Term = cli.Term
+		case "kitty-graphics":
+			cfg.KittyGraphics = cli.KittyGraphics
 		case "max-sessions":
 			cfg.MaxSessions = cli.MaxSessions
 		case "tls-cert":
@@ -136,6 +144,9 @@ func ParseConfig(args []string) (Config, bool, error) {
 	}
 	if cfg.MaxSessions == 0 || cfg.MaxSessions > uint64(^uint32(0)) {
 		return Config{}, false, fmt.Errorf("invalid max sessions %d", cfg.MaxSessions)
+	}
+	if cfg.Term == "" || len(cfg.Term) > 256 || strings.ContainsAny(cfg.Term, "\x00\r\n= \t") {
+		return Config{}, false, fmt.Errorf("invalid term %q", cfg.Term)
 	}
 	if (cfg.TLSCert == "") != (cfg.TLSKey == "") {
 		return Config{}, false, errors.New("--tls-cert and --tls-key must be supplied together")
@@ -229,5 +240,5 @@ func OriginFor(host string, port int, tlsEnabled bool) string {
 }
 
 func Usage(program string) string {
-	return fmt.Sprintf("usage: %s [options]\n  --config FILE (otherwise XDG/HOME discovery)\n  --listen HOST/IP/CIDR (repeatable; defaults to origin hostnames when host/listen omitted)\n  --host HOST (legacy single listener)\n  --port PORT\n  --web-root DIR\n  --shell SHELL\n  --origin ORIGIN (repeatable exact allowlist)\n  --max-sessions N\n  --tls-cert FILE\n  --tls-key FILE\n  --http3\n  --worker FILE\n", program)
+	return fmt.Sprintf("usage: %s [options]\n  --config FILE (otherwise XDG/HOME discovery)\n  --listen HOST/IP/CIDR (repeatable; defaults to origin hostnames when host/listen omitted)\n  --host HOST (legacy single listener)\n  --port PORT\n  --web-root DIR\n  --shell SHELL\n  --term TERM (default xterm-ghostty)\n  --kitty-graphics[=false] (advertise Kitty graphics; default true)\n  --origin ORIGIN (repeatable exact allowlist)\n  --max-sessions N\n  --tls-cert FILE\n  --tls-key FILE\n  --http3\n  --worker FILE\n", program)
 }

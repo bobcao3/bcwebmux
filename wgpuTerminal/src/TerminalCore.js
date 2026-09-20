@@ -286,7 +286,7 @@ export class TerminalCore {
       if (ptr < 0) throw new Error(`frame preparation failed: ${ptr}`);
       token = this._wasm.term_frame_token();
       const packet = parseFramePacket(this._wasm.memory.buffer, ptr, {
-        abi: 6,
+        abi: 7,
         coreGeneration: this._wasm.term_core_generation(),
         configGeneration: this._wasm.term_config_generation(),
         partition: this._partition,

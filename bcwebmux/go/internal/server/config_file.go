@@ -40,18 +40,20 @@ func loadConfig(cfg *Config, explicit string) error {
 			return fmt.Errorf("config %s: %w", path, err)
 		}
 		var file struct {
-			Host        *string  `toml:"host"`
-			Listen      []string `toml:"listen"`
-			Port        *int     `toml:"port"`
-			WebRoot     *string  `toml:"web-root"`
-			Shell       *string  `toml:"shell"`
-			Origin      *string  `toml:"origin"`
-			Origins     []string `toml:"origins"`
-			MaxSessions *uint64  `toml:"max-sessions"`
-			TLSCert     *string  `toml:"tls-cert"`
-			TLSKey      *string  `toml:"tls-key"`
-			HTTP3       *bool    `toml:"http3"`
-			Worker      *string  `toml:"worker"`
+			Host          *string  `toml:"host"`
+			Listen        []string `toml:"listen"`
+			Port          *int     `toml:"port"`
+			WebRoot       *string  `toml:"web-root"`
+			Shell         *string  `toml:"shell"`
+			Term          *string  `toml:"term"`
+			KittyGraphics *bool    `toml:"kitty-graphics"`
+			Origin        *string  `toml:"origin"`
+			Origins       []string `toml:"origins"`
+			MaxSessions   *uint64  `toml:"max-sessions"`
+			TLSCert       *string  `toml:"tls-cert"`
+			TLSKey        *string  `toml:"tls-key"`
+			HTTP3         *bool    `toml:"http3"`
+			Worker        *string  `toml:"worker"`
 		}
 		meta, err := toml.Decode(string(data), &file)
 		if err != nil {
@@ -80,6 +82,12 @@ func loadConfig(cfg *Config, explicit string) error {
 		}
 		if file.Shell != nil {
 			cfg.Shell = *file.Shell
+		}
+		if file.Term != nil {
+			cfg.Term = *file.Term
+		}
+		if file.KittyGraphics != nil {
+			cfg.KittyGraphics = *file.KittyGraphics
 		}
 		if file.Origin != nil {
 			cfg.Origin = *file.Origin

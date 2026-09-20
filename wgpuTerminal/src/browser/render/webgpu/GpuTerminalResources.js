@@ -2,6 +2,7 @@
 // Copyright (c) 2026 Cheng Cao
 
 import { CELL_SIZE, STYLE_SIZE } from "../FrameSchema.js";
+import { initGpuGraphics, disposeGpuGraphics } from "./GpuGraphics.js";
 
 const UNIFORM_BUFFER_SIZE = 68;
 
@@ -58,12 +59,38 @@ export function initialize(renderer, cellSource, grain, grainSize, maxCellsValue
     ? cellSource.replace(shaderMarker, "enable f16;\nalias Lowp = f16;")
     : cellSource;
   const cellModule = device.createShaderModule({ code: selectedCellSource });
+  const cellLayout = device.createBindGroupLayout({ entries: [
+    { binding: 0, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: "uniform" } },
+    { binding: 1, visibility: GPUShaderStage.VERTEX, buffer: { type: "read-only-storage" } },
+    { binding: 2, visibility: GPUShaderStage.VERTEX, buffer: { type: "read-only-storage" } },
+    { binding: 3, visibility: GPUShaderStage.VERTEX, buffer: { type: "read-only-storage" } },
+    { binding: 4, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
+    { binding: 5, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
+  ] });
+  const cellPipelineLayout = device.createPipelineLayout({ bindGroupLayouts: [cellLayout] });
   renderer.cellPipeline = device.createRenderPipeline({
-    layout: "auto",
+    layout: cellPipelineLayout,
     vertex: { module: cellModule, entryPoint: "vertex" },
     fragment: { module: cellModule, entryPoint: "fragment", targets: [{ format: renderer.format }] },
     primitive: { topology: "triangle-list" },
   });
+  renderer.glyphPipeline = device.createRenderPipeline({
+    layout: cellPipelineLayout,
+    vertex: { module: cellModule, entryPoint: "vertex" },
+    fragment: {
+      module: cellModule,
+      entryPoint: "fragmentGlyph",
+      targets: [{
+        format: renderer.format,
+        blend: {
+          color: { srcFactor: "src-alpha", dstFactor: "one-minus-src-alpha", operation: "add" },
+          alpha: { srcFactor: "one", dstFactor: "one-minus-src-alpha", operation: "add" },
+        },
+      }],
+    },
+    primitive: { topology: "triangle-list" },
+  });
+  initGpuGraphics(renderer);
   renderer.initialized = true;
   rebuildCellBundle(renderer);
   return 1;
@@ -229,6 +256,7 @@ export function dispose(renderer) {
   renderer.selectionBuffer?.destroy?.();
   renderer.drawIndirectBuffer?.destroy?.();
   renderer.grainTexture?.destroy?.();
+  disposeGpuGraphics(renderer);
   renderer.device?.destroy?.();
   renderer.error = "disposed";
   renderer.initialized = false;

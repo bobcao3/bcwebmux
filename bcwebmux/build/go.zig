@@ -4,7 +4,6 @@ const std = @import("std");
 
 pub const GoBuild = struct {
     server: std.Build.LazyPath,
-    test_step: *std.Build.Step,
 };
 
 pub fn add(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode, web_assets: std.Build.LazyPath, core: *std.Build.Step.Compile, zstd: *std.Build.Step.Compile) GoBuild {
@@ -15,7 +14,7 @@ pub fn add(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builti
         else => @panic("Go frontend supports x86_64 and aarch64 targets"),
     };
     if (!target.result.abi.isMusl() and !target.result.abi.isGnu()) @panic("Go frontend requires a musl or GNU ABI");
-    const race = b.option(bool, "go-race", "Enable the Go race detector in go-test (native GNU target)") orelse false;
+    const race = b.option(bool, "go-race", "Enable the Go race detector in gotest (native GNU target)") orelse false;
     if (race and (!target.result.abi.isGnu() or target.result.cpu.arch != b.graph.host.result.cpu.arch)) @panic("-Dgo-race requires a native GNU target");
     const triple = target.query.zigTriple(b.allocator) catch @panic("out of memory");
     const cpu = target.query.serializeCpuAlloc(b.allocator) catch @panic("out of memory");
@@ -70,14 +69,14 @@ pub fn add(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builti
     const server = runs[0].addOutputFileArg("bcwebmux-server");
     runs[0].addArg("./cmd/bcwebmux-server");
     if (race) runs[1].addArg("-race");
-    const test_step = b.step("go-test", "Run Go tests natively, or compile them for a cross target");
+    const test_step = b.step("gotest", "Run Go tests natively, or compile them for a cross target");
     if (target.result.cpu.arch != b.graph.host.result.cpu.arch or target.result.os.tag != b.graph.host.result.os.tag) {
         runs[1].addArgs(&.{ "-c", "-o" });
         _ = runs[1].addOutputDirectoryArg("go-tests");
     }
     runs[1].addArg("./...");
     test_step.dependOn(&runs[1].step);
-    return .{ .server = server, .test_step = test_step };
+    return .{ .server = server };
 }
 
 fn hostTool(b: *std.Build, name: []const u8, source: []const u8) *std.Build.Step.Compile {

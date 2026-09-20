@@ -102,6 +102,7 @@ export class SessionTransport {
   #eventScratch = null
   #state = {
     connected: false,
+    serverInstance: null,
     status: "idle",
     generation: 0,
     unreleasedSockets: 0,
@@ -671,6 +672,7 @@ export class SessionTransport {
     attempt.phase = "ready";
     attempt.maxAttachments = readUint16LE(frame.payload, 68);
     this.#state.negotiationMs = attempt.helloSuspended || this.#document?.hidden ? null : this.#clock.now() - attempt.phaseStarted;
+    this.#state.serverInstance = bytesUuid(frame.payload.subarray(0, 16));
     this.#setStatus("ready", true);
     this.#state.retryAt = null;
     this.#settleReady();

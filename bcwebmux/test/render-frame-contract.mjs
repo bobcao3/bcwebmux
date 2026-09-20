@@ -157,7 +157,7 @@ for (const renderer of ["kb-stb", "canvas"]) {
   const ptr = e.term_frame_prepare();
   assert.ok(ptr > 0);
   const token = e.term_frame_token();
-  const identity = { ...expectations, abi: 6, coreGeneration: e.term_core_generation(),
+  const identity = { ...expectations, abi: 7, coreGeneration: e.term_core_generation(),
     configGeneration: e.term_config_generation(), token,
     partition: { baseSlot: 0, slotCapacity: 256, generation: 1 } };
   for (const override of [{ abi: 4 }, { abi: 5 }, { token: token + 1 }, { coreGeneration: 999 },
@@ -165,7 +165,7 @@ for (const renderer of ["kb-stb", "canvas"]) {
     assert.throws(() => parseFramePacket(e.memory.buffer, ptr, { ...identity, ...override }));
   }
   for (const [offset, invalid] of [[4, 5], [12, 28], [12, 0], [24, 0xffffffff], [28, 0xffffffff], [36, 0xffffffff],
-    [80, 257], [88, 1048577], [108, 2], [128, 2], [136, 1], [140, 4], [144, 1], [148, 4], [152, 1]]) {
+    [80, 257], [88, 1048577], [108, 2], [128, 2], [140, 3], [144, 2049], [148, 3], [152, 513]]) {
     const copy = e.memory.buffer.slice(0);
     new DataView(copy, ptr).setUint32(offset, invalid, true);
     assert.throws(() => parseFramePacket(copy, ptr, identity), `invalid header offset ${offset}`);
@@ -364,4 +364,4 @@ const bridgeSource = await readFile(new URL("TerminalCore.js", sourceRoot), "utf
 assert.doesNotMatch(bridgeSource, /get wasm\(|gpu_submit/);
 const packetSource = await readFile(new URL("FramePacket.js", sourceRoot), "utf8");
 assert.doesNotMatch(packetSource, /renderer\.|applyRenderer|WebAssembly/);
-console.log("render frame contract passed (ABI v6, browser assets, both text renderers)");
+console.log("render frame contract passed (ABI v7, browser assets, both text renderers)");

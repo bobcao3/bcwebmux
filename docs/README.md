@@ -9,9 +9,9 @@ repository-root `docs/` directory.
   liveness, recovery, backpressure, and replay contracts.
 - [Glyph cache design](glyph-cache-design.md): cell-sized glyph slots, shared
   atlas ownership, capacity limits, and terminal partitions.
-- [Kitty graphics design](kitty-graphics.md): no-fork libghostty integration,
-  upstream client examples, browser decoding and compound checkpoints;
-  image support remains proposed on the implemented shared renderer.
+- [Kitty graphics design](kitty-graphics.md): local Ghostty checkout,
+  WASM portability, checkpoint continuation and browser rendering;
+  compilation alone does not complete image support.
 
 ## Component guides
 

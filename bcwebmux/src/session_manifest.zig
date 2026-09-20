@@ -2,10 +2,9 @@
 // Copyright (c) 2026 Cheng Cao
 
 pub const protocol = "bcw.sessions";
-pub const checkpoint_codec = "ghostty-snapshot";
-pub const ghostty_commit = "f4f9991d2c188b7c1f364ed9e44b92dd3356bb2a";
-pub const terminal_abi = "bcwebmux-ghostty-f4f9991-snapshot-8m-continuation-1m-glyph-cell-partitions-pty-zstd-stream";
-pub const terminal_config = "xterm-256color;grapheme-cluster=1;scrollback=8388608;continuation=1048576";
+pub const checkpoint_codec = "ghostty-snapshot+kitty-graphics-v1";
+pub const terminal_abi = "bcwebmux-graphics-frame-v7-checkpoint-v1-continuation-1m-glyph-cell-partitions-pty-zstd-stream";
+pub const terminal_config = "xterm-ghostty;grapheme-cluster=1;scrollback=8388608;continuation=1048576";
 pub const command_profile = "shell";
 pub const max_connection_attachments: usize = 8;
 pub const max_credit_bytes: usize = 32 * 1024 * 1024;
@@ -27,7 +26,7 @@ pub const Limits = struct {
     max_frame_bytes: usize = 1024 * 1024,
     max_checkpoint_bytes: usize = 16 * 1024 * 1024,
     scrollback_bytes: usize = 8 * 1024 * 1024,
-    journal_bytes: usize = 8 * 1024 * 1024,
+    journal_bytes: usize = 16 * 1024 * 1024,
     checkpoint_output_bytes: usize = 2 * 1024 * 1024,
     checkpoint_interval_ms: i64 = 30_000,
     termination_grace_ms: i64 = 2_000,

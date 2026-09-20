@@ -18,6 +18,14 @@ const c = @cImport({
 });
 
 const packet_capacity = worker.packet_capacity;
+pub fn validTerm(term: []const u8) bool {
+    if (term.len == 0 or term.len > 256) return false;
+    for (term) |byte| {
+        if (byte <= ' ' or byte == 127 or byte == '=' or byte == 0) return false;
+    }
+    return true;
+}
+
 fn resolveHome(allocator: std.mem.Allocator) ![:0]const u8 {
     const env_home = c.getenv("HOME");
     const path = if (env_home != null and env_home[0] != 0)
@@ -44,8 +52,8 @@ fn workerTerminateSignalHandler(_: std.posix.SIG) callconv(.c) void {
     worker_terminate_signal.store(true, .release);
 }
 
-pub fn run(io: std.Io, shell: [:0]const u8, cols: u16, rows: u16, limits: manifest.Limits) !void {
-    if (shell.len == 0 or std.mem.indexOfScalar(u8, shell, 0) != null) return error.InvalidArgument;
+pub fn run(io: std.Io, shell: [:0]const u8, term: [:0]const u8, kitty_graphics: bool, cols: u16, rows: u16, limits: manifest.Limits) !void {
+    if (shell.len == 0 or std.mem.indexOfScalar(u8, shell, 0) != null or !validTerm(term)) return error.InvalidArgument;
     // Resolve NSS/passwd data and own the path before fork. Never change the
     // worker's cwd: only the terminal child should start in the user's home.
     const home = try resolveHome(std.heap.page_allocator);
@@ -76,8 +84,16 @@ pub fn run(io: std.Io, shell: [:0]const u8, cols: u16, rows: u16, limits: manife
             _ = c.write(std.posix.STDERR_FILENO, "\n", 1);
             c._exit(126);
         }
-        _ = c.setenv("TERM", "xterm-256color", 1);
+        _ = c.setenv("TERM", term.ptr, 1);
         _ = c.setenv("COLORTERM", "truecolor", 1);
+        _ = c.setenv("TERM_PROGRAM", "bcwebmux", 1);
+        // A nonzero synthetic window ID enables Kitty graphics clients which
+        // gate their protocol support on this variable rather than probing.
+        if (kitty_graphics) {
+            _ = c.setenv("KITTY_WINDOW_ID", "1", 1);
+        } else {
+            _ = c.unsetenv("KITTY_WINDOW_ID");
+        }
         var argv = [_:null]?[*:0]const u8{ shell.ptr, "-l" };
         _ = c.execvp(shell.ptr, @ptrCast(&argv));
         c._exit(127);

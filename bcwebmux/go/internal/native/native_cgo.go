@@ -34,11 +34,14 @@ type cgoSocket struct {
 func OpenEngine(config EngineConfig) (Engine, error) {
 	worker := []byte(config.Worker)
 	shell := []byte(config.Shell)
+	term := []byte(config.Term)
 	origin := []byte(config.ExpectedOrigin)
 	workerPtr := C.CBytes(worker)
 	defer C.free(workerPtr)
 	shellPtr := C.CBytes(shell)
 	defer C.free(shellPtr)
+	termPtr := C.CBytes(term)
+	defer C.free(termPtr)
 	originPtr := C.CBytes(origin)
 	defer C.free(originPtr)
 	if config.MaxSessions > uint64(^uint32(0)) {
@@ -52,6 +55,11 @@ func OpenEngine(config EngineConfig) (Engine, error) {
 	nativeConfig.worker_path_len = C.size_t(len(worker))
 	nativeConfig.shell = (*C.uint8_t)(shellPtr)
 	nativeConfig.shell_len = C.size_t(len(shell))
+	nativeConfig.term = (*C.uint8_t)(termPtr)
+	nativeConfig.term_len = C.size_t(len(term))
+	if config.DisableKittyGraphics {
+		nativeConfig.disable_kitty_graphics = 1
+	}
 	// Origin is checked in the Go transport; the native check is defense in depth.
 	nativeConfig.expected_origin = (*C.uint8_t)(originPtr)
 	nativeConfig.expected_origin_len = C.size_t(len(origin))
