@@ -2,9 +2,16 @@ package server
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
 	"errors"
 	"io"
 	"io/fs"
+	"math/big"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -51,8 +58,12 @@ func (e *fakeEngine) Close() error {
 
 func testAssets() fs.FS {
 	return fstest.MapFS{
-		"web/index.html": &fstest.MapFile{Data: []byte("<html><body>test</body></html>")},
-		"web/app.js":     &fstest.MapFile{Data: []byte("console.log('test')")},
+		"web/index.html":       &fstest.MapFile{Data: []byte("<html><body>test</body></html>")},
+		"web/app.js":           &fstest.MapFile{Data: []byte("console.log('test')")},
+		"web/auth/login.html":  &fstest.MapFile{Data: []byte("<html><body>sign in with a security key</body></html>")},
+		"web/auth/login.js":    &fstest.MapFile{Data: []byte("export {};")},
+		"web/auth/login.css":   &fstest.MapFile{Data: []byte("body {}")},
+		"web/auth/webauthn.js": &fstest.MapFile{Data: []byte("export {};")},
 	}
 }
 
@@ -314,5 +325,91 @@ func TestWebSocketPathRequiresExactOriginAndProtocol(t *testing.T) {
 				t.Fatalf("handshake response = %#v, err = %v", response, err)
 			}
 		})
+	}
+}
+
+// writeTestCertificate writes a self-signed certificate for the given DNS
+// names, which is enough to ask which origins it can cover.
+func writeTestCertificate(t *testing.T, dir string, dnsNames ...string) (certPath, keyPath string) {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	template := &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject:      pkix.Name{CommonName: dnsNames[0]},
+		DNSNames:     dnsNames,
+		NotBefore:    time.Now().Add(-time.Minute),
+		NotAfter:     time.Now().Add(time.Hour),
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	private, err := x509.MarshalPKCS8PrivateKey(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	certPath = filepath.Join(dir, "cert.pem")
+	keyPath = filepath.Join(dir, "key.pem")
+	if err := os.WriteFile(certPath, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(keyPath, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: private}), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return certPath, keyPath
+}
+
+// A certificate that does not name an origin leaves the browser on a
+// certificate error page, where WebAuthn fails with a security error instead of
+// prompting for a key. That is a certificate problem wearing an authentication
+// costume, so startup must name the origins at fault.
+func TestTLSWarningsNameOriginsOutsideTheCertificate(t *testing.T) {
+	directory := t.TempDir()
+	certPath, keyPath := writeTestCertificate(t, directory, "terminal.example", "localhost")
+	instance, err := New(Config{
+		Host: "127.0.0.1", Port: 0,
+		Origins:        []string{"https://localhost:8443", "https://terminal.example:8443", "https://bobcao3arch.local:8443"},
+		TLSCert:        certPath,
+		TLSKey:         keyPath,
+		AuthEnabled:    true,
+		AuthFile:       filepath.Join(directory, "auth.json"),
+		EmbeddedAssets: testAssets(),
+		Engine:         &fakeEngine{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = instance.Shutdown(ctx)
+	})
+	warnings := instance.TLSWarnings()
+	if len(warnings) != 1 || !strings.Contains(warnings[0], "https://bobcao3arch.local:8443") {
+		t.Fatalf("TLS warnings = %v", warnings)
+	}
+}
+
+// Without TLS in this process the certificate is somebody else's business.
+func TestTLSWarningsAreSilentWithoutACertificate(t *testing.T) {
+	instance, err := New(Config{
+		Host: "127.0.0.1", Port: 0, Origin: "http://localhost:8443",
+		EmbeddedAssets: testAssets(), Engine: &fakeEngine{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = instance.Shutdown(ctx)
+	})
+	if warnings := instance.TLSWarnings(); len(warnings) != 0 {
+		t.Fatalf("TLS warnings without a certificate = %v", warnings)
 	}
 }

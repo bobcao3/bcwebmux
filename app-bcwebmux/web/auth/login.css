@@ -1,0 +1,182 @@
+/* SPDX-License-Identifier: MIT */
+/* Copyright (c) 2026 Cheng Cao */
+
+/* The authentication pages are self-contained: they load no fonts and no
+   WebAssembly, so they stay small and render before the terminal starts. */
+
+:root {
+  color-scheme: dark;
+  --color-background: #0a0c10;
+  --color-foreground: #f0f3f6;
+  --color-surface: #161b22;
+  --color-border: #7a828e;
+  --color-accent: #58a6ff;
+  --color-muted: #9ea7b3;
+  --color-success: #3fb950;
+  --color-danger: #ff6a69;
+  --auth-font: ui-monospace, "Cascadia Mono", "SFMono-Regular", Consolas, monospace;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  min-height: 100%;
+}
+
+body {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  padding: 24px;
+  background: var(--color-background);
+  color: var(--color-foreground);
+  font-family: var(--auth-font);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+#auth-card {
+  width: min(620px, 100%);
+  border: 2px solid var(--color-border);
+  background: var(--color-background);
+  box-shadow: 4px 4px 0 var(--color-accent);
+}
+
+#auth-card > header {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 16px 18px;
+  border-bottom: 2px solid var(--color-border);
+  background: var(--color-surface);
+}
+
+#auth-card h1 {
+  margin: 0;
+  font-size: 18px;
+  letter-spacing: .06em;
+}
+
+#auth-card > header p {
+  margin: 0;
+  color: var(--color-muted);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+}
+
+#auth-card > section { padding: 18px; }
+
+#auth-card p { margin: 0 0 16px; color: var(--color-muted); }
+
+#auth-card > footer {
+  padding: 12px 18px 18px;
+  border-top: 2px solid var(--color-border);
+}
+
+#auth-card > footer p { margin: 0; font-size: 12px; }
+
+#auth-card code {
+  padding: 1px 5px;
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+  color: var(--color-foreground);
+  font-size: 12px;
+}
+
+button {
+  width: 100%;
+  min-height: 46px;
+  padding: 0 14px;
+  border: 2px solid var(--color-accent);
+  border-radius: 0;
+  background: var(--color-accent);
+  color: var(--color-background);
+  font: 700 13px/1 var(--auth-font);
+  letter-spacing: .04em;
+  cursor: pointer;
+}
+
+button:hover:not(:disabled),
+button:focus-visible:not(:disabled) {
+  border-color: var(--color-foreground);
+  background: var(--color-foreground);
+  outline: 0;
+}
+
+button:focus-visible:not(:disabled) { outline: 2px solid var(--color-accent); outline-offset: 2px; }
+
+button:disabled {
+  border-color: var(--color-muted);
+  background: transparent;
+  color: var(--color-muted);
+  cursor: not-allowed;
+}
+
+label {
+  display: block;
+  margin-bottom: 14px;
+  color: var(--color-muted);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+}
+
+input {
+  display: block;
+  width: 100%;
+  margin-top: 6px;
+  padding: 10px 12px;
+  border: 2px solid var(--color-border);
+  border-radius: 0;
+  background: var(--color-background);
+  color: var(--color-foreground);
+  font: 400 14px/1.4 var(--auth-font);
+  text-transform: none;
+}
+
+input:focus-visible { border-color: var(--color-accent); outline: 2px solid var(--color-accent); outline-offset: 1px; }
+
+#auth-status {
+  display: block;
+  margin-top: 14px;
+  min-height: 20px;
+  color: var(--color-muted);
+  font-size: 12px;
+  white-space: pre-wrap;
+}
+
+#auth-status[data-tone="ok"] { color: var(--color-success); }
+#auth-status[data-tone="error"] { color: var(--color-danger); }
+
+/* Reports are cleared when there is nothing to say; the reserved line must not
+   then leave a blank band between the last control and the footer. */
+#auth-status:empty { margin-top: 0; min-height: 0; }
+
+/* Authenticator-app code form: the baseline sign-in at every address. */
+#auth-intro { margin: 0 0 16px; }
+
+.auth-code-row { display: flex; gap: 10px; }
+
+.auth-code-row input {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+  padding: 10px 12px;
+  border: 2px solid var(--color-border);
+  border-radius: 0;
+  background: var(--color-background);
+  color: var(--color-foreground);
+  font: 700 20px/1.2 var(--auth-font);
+  letter-spacing: .18em;
+  text-align: center;
+}
+
+.auth-code-row input:focus-visible { border-color: var(--color-accent); outline: 2px solid var(--color-accent); outline-offset: 1px; }
+.auth-code-row input:disabled { color: var(--color-muted); }
+.auth-code-row button { width: auto; min-width: 132px; flex: 0 0 auto; }
+
+#auth-action:not([hidden]) { margin-top: 16px; }
+#auth-action[hidden] { display: none; }

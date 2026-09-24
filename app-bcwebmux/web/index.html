@@ -155,6 +155,7 @@
       <button id="settings-tab-color" type="button" role="tab" aria-selected="true" aria-controls="settings-panel-color" data-settings-tab="color">COLOR</button>
       <button id="settings-tab-font" type="button" role="tab" aria-selected="false" aria-controls="settings-panel-font" data-settings-tab="font">FONT</button>
       <button id="settings-tab-perf" type="button" role="tab" aria-selected="false" aria-controls="settings-panel-perf" data-settings-tab="perf">PERF</button>
+      <button id="settings-tab-auth" type="button" role="tab" aria-selected="false" aria-controls="settings-panel-auth" data-settings-tab="auth">SECURITY</button>
     </div>
     <section id="settings-panel-color" role="tabpanel" aria-labelledby="settings-tab-color">
       <p>Select a terminal profile to apply its color scheme.</p>
@@ -232,6 +233,37 @@
         <legend>Glyph debug visualization</legend>
         <p>Inspect a snapshot of the shared glyph texture, including unused cache slots.</p>
         <button id="glyph-atlas-open" type="button" aria-haspopup="dialog">VIEW GLYPH TEXTURE</button>
+      </fieldset>
+    </section>
+    <section id="settings-panel-auth" role="tabpanel" aria-labelledby="settings-tab-auth" hidden>
+      <fieldset>
+        <legend>Sign-in factors</legend>
+        <p id="auth-summary">Loading enrolled factors…</p>
+        <div id="auth-credential-list" class="auth-credential-list"></div>
+        <p>Enroll one security key per device — the MacBook's Touch ID and the phone's
+        fingerprint are separate keys. Enrolling or removing one asks for a factor first:
+        a key here, or a code from the authenticator app.</p>
+        <label class="auth-key-label">Name the device you are enrolling
+          <input id="auth-key-name" name="auth-key-name" maxlength="64" autocomplete="off" placeholder="macbook · touch id">
+        </label>
+        <button id="auth-add-key" type="button">ADD SECURITY KEY</button>
+        <div id="auth-stepup-row" hidden>
+          <label class="auth-key-label" for="auth-stepup-code">Code from your authenticator app</label>
+          <form id="auth-stepup-form" novalidate>
+            <input id="auth-stepup-code" name="auth-stepup-code" type="text" inputmode="numeric"
+                   autocomplete="one-time-code" autocapitalize="off" autocorrect="off" spellcheck="false"
+                   maxlength="8" placeholder="000000">
+            <button id="auth-stepup-confirm" type="submit">UNLOCK</button>
+          </form>
+        </div>
+        <output id="auth-status" role="status" aria-live="polite"></output>
+      </fieldset>
+      <fieldset>
+        <legend>Session</legend>
+        <p>Signing out clears this browser's session. The enrolled factors stay enrolled;
+        anyone with shell access to the host can reset them with
+        <code>bcwebmux-server auth remove --all</code>.</p>
+        <button id="auth-sign-out" type="button">SIGN OUT</button>
       </fieldset>
     </section>
   </dialog>

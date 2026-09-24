@@ -1,0 +1,38 @@
+<!doctype html>
+<!-- SPDX-License-Identifier: MIT -->
+<!-- Copyright (c) 2026 Cheng Cao -->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#0a0c10">
+  <meta name="robots" content="noindex">
+  <title>bcwebmux · sign in</title>
+  <link rel="stylesheet" href="/login.css">
+</head>
+<body>
+  <main id="auth-card">
+    <header>
+      <h1>[ BCWEBMUX ]</h1>
+      <p id="auth-subtitle">Sign in to continue</p>
+    </header>
+    <section>
+      <p id="auth-intro">This terminal is protected. Enter the current code from your authenticator app.</p>
+      <form id="auth-code-form" novalidate>
+        <div class="auth-code-row">
+          <input id="auth-code" name="code" type="text" inputmode="numeric" autocomplete="one-time-code"
+                 autocapitalize="off" autocorrect="off" spellcheck="false" maxlength="8" placeholder="000000"
+                 enterkeyhint="go" aria-describedby="auth-status" aria-label="Authenticator app code">
+          <button id="auth-verify" type="submit">VERIFY</button>
+        </div>
+      </form>
+      <button id="auth-action" type="button" hidden>SIGN IN WITH SECURITY KEY</button>
+      <output id="auth-status" role="status" aria-live="polite">Checking this address…</output>
+    </section>
+    <footer>
+      <p>Enroll TOTP on host: <code>bcwebmux-server auth totp</code></p>
+    </footer>
+  </main>
+  <script type="module" src="/login.js"></script>
+</body>
+</html>

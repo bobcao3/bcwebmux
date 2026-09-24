@@ -43,7 +43,7 @@ and [`index.d.ts`](wgpuTerminal/index.d.ts) for the public API.
 - Builds and tests: [`app-bcwebmux/build.zig`](app-bcwebmux/build.zig) and [`app-bcwebmux/test/`](app-bcwebmux/test/). Tests cover the application and reusable terminal; Go and Zig tests also live alongside their sources.
 
 Edit source directories, not generated `zig-out/`, `wgpuTerminal/dist/`,
-dependency caches (`zig-pkg/`, `node_modules/`), or vendored Go dependencies.
+or dependency caches (`zig-pkg/`, `node_modules/`, Go's module cache).
 
 ## License
 

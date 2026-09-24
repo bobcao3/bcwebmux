@@ -18,7 +18,7 @@ export async function runSessionWebSocketScenario(serverPath, deps) {
   const port = await freePort();
   const base = `http://127.0.0.1:${port}`;
   const wsUrl = `ws://127.0.0.1:${port}/ws`;
-  const server = spawn(serverPath, ["--port", String(port), "--origin", base, "--max-sessions", "2"], {
+  const server = spawn(serverPath, ["--config", "/dev/null", "--auth=false", "--port", String(port), "--origin", base, "--max-sessions", "2"], {
     stdio: ["ignore", "pipe", "pipe"],
   });
   let logs = "";

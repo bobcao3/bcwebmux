@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -30,20 +31,26 @@ const (
 // Config contains transport and native-engine configuration. EmbeddedAssets
 // must contain a top-level web directory (as produced by //go:embed web).
 type Config struct {
-	Listen         []string
-	Origins        []string
-	Host           string
-	Port           int
-	WebRoot        string
-	Shell          string
-	Term           string
-	KittyGraphics  bool
-	Origin         string
-	MaxSessions    uint64
-	TLSCert        string
-	TLSKey         string
-	HTTP3          bool
-	Worker         string
+	Listen        []string
+	Origins       []string
+	Host          string
+	Port          int
+	WebRoot       string
+	Shell         string
+	Term          string
+	KittyGraphics bool
+	Origin        string
+	MaxSessions   uint64
+	TLSCert       string
+	TLSKey        string
+	HTTP3         bool
+	Worker        string
+	// AuthEnabled keeps the browser surface behind a FIDO2 login whenever
+	// credentials are enrolled. AuthFile holds those credentials; whether a
+	// factor is enrolled, not this flag, decides if a login is required.
+	AuthEnabled    bool
+	AuthFile       string
+	AuthSessionTTL time.Duration
 	EmbeddedAssets fs.FS
 	Engine         native.Engine
 	Logger         *slog.Logger
@@ -52,7 +59,14 @@ type Config struct {
 // ParseConfig parses the server's stable command-line interface. It does not
 // bind a socket or start the native engine.
 func ParseConfig(args []string) (Config, bool, error) {
-	cfg := Config{Port: DefaultPort, MaxSessions: DefaultMaxSessions, Term: "xterm-ghostty", KittyGraphics: true}
+	return parseConfig(args, true)
+}
+
+// parseConfig parses the same interface. Validation of listeners is skipped
+// for the authentication subcommands, which only need the state file location
+// and must keep working when this machine's addresses changed.
+func parseConfig(args []string, validateListeners bool) (Config, bool, error) {
+	cfg := Config{Port: DefaultPort, MaxSessions: DefaultMaxSessions, Term: "xterm-ghostty", KittyGraphics: true, AuthEnabled: true}
 	flags := flag.NewFlagSet("bcwebmux-server", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	flags.StringVar(&cfg.Host, "host", cfg.Host, "bind host")
@@ -61,6 +75,9 @@ func ParseConfig(args []string) (Config, bool, error) {
 	flags.StringVar(&cfg.Shell, "shell", "", "shell")
 	flags.StringVar(&cfg.Term, "term", cfg.Term, "TERM for session shells")
 	flags.BoolVar(&cfg.KittyGraphics, "kitty-graphics", cfg.KittyGraphics, "advertise Kitty graphics to session shells")
+	flags.BoolVar(&cfg.AuthEnabled, "auth", cfg.AuthEnabled, "require a FIDO2 security key login once credentials are enrolled")
+	flags.StringVar(&cfg.AuthFile, "auth-file", "", "FIDO2 authentication state file")
+	flags.DurationVar(&cfg.AuthSessionTTL, "auth-session-ttl", 0, "browser login session lifetime (default 168h)")
 	var origins, listens []string
 	var configPath string
 	flags.StringVar(&configPath, "config", "", "TOML config file")
@@ -120,6 +137,12 @@ func ParseConfig(args []string) (Config, bool, error) {
 			cfg.Term = cli.Term
 		case "kitty-graphics":
 			cfg.KittyGraphics = cli.KittyGraphics
+		case "auth":
+			cfg.AuthEnabled = cli.AuthEnabled
+		case "auth-file":
+			cfg.AuthFile = cli.AuthFile
+		case "auth-session-ttl":
+			cfg.AuthSessionTTL = cli.AuthSessionTTL
 		case "max-sessions":
 			cfg.MaxSessions = cli.MaxSessions
 		case "tls-cert":
@@ -154,14 +177,22 @@ func ParseConfig(args []string) (Config, bool, error) {
 	if cfg.HTTP3 && cfg.TLSCert == "" {
 		return Config{}, false, errors.New("--http3 requires TLS")
 	}
-	if err := validateBindings(cfg); err != nil {
-		return Config{}, false, err
+	if validateListeners {
+		if err := validateBindings(cfg); err != nil {
+			return Config{}, false, err
+		}
 	}
 	if cfg.Shell == "" {
 		cfg.Shell = os.Getenv("SHELL")
 		if cfg.Shell == "" {
 			cfg.Shell = "/bin/sh"
 		}
+	}
+	if cfg.AuthSessionTTL < 0 {
+		return Config{}, false, fmt.Errorf("invalid session lifetime %s", cfg.AuthSessionTTL)
+	}
+	if cfg.AuthFile == "" {
+		cfg.AuthFile = defaultAuthFile()
 	}
 	return cfg, false, nil
 }
@@ -240,5 +271,20 @@ func OriginFor(host string, port int, tlsEnabled bool) string {
 }
 
 func Usage(program string) string {
-	return fmt.Sprintf("usage: %s [options]\n  --config FILE (otherwise XDG/HOME discovery)\n  --listen HOST/IP/CIDR (repeatable; defaults to origin hostnames when host/listen omitted)\n  --host HOST (legacy single listener)\n  --port PORT\n  --web-root DIR\n  --shell SHELL\n  --term TERM (default xterm-ghostty)\n  --kitty-graphics[=false] (advertise Kitty graphics; default true)\n  --origin ORIGIN (repeatable exact allowlist)\n  --max-sessions N\n  --tls-cert FILE\n  --tls-key FILE\n  --http3\n  --worker FILE\n", program)
+	return fmt.Sprintf("usage: %s [options]\n  --config FILE (otherwise XDG/HOME discovery)\n  --listen HOST/IP/CIDR (repeatable; defaults to origin hostnames when host/listen omitted)\n  --host HOST (legacy single listener)\n  --port PORT\n  --web-root DIR\n  --shell SHELL\n  --term TERM (default xterm-ghostty)\n  --kitty-graphics[=false] (advertise Kitty graphics; default true)\n  --origin ORIGIN (repeatable exact allowlist)\n  --max-sessions N\n  --tls-cert FILE\n  --tls-key FILE\n  --http3\n  --worker FILE\n  --auth[=false] (require a sign-in once a factor is enrolled; default true)\n  --auth-file FILE (default $XDG_STATE_HOME/bcwebmux/auth.json)\n  --auth-session-ttl DURATION (browser login lifetime; default 168h)\n\n  %s auth totp [--rotate] [--no-qr] [--account LABEL] [options]\n                                              enroll the authenticator app (baseline factor)\n  %s auth list [options]                      list enrolled factors\n  %s auth remove --totp|--id ID|--all [options]\n                                              remove an enrolled factor\n", program, program, program, program)
+}
+
+// defaultAuthFile is the per-user authentication state file, following the
+// XDG state directory so a restore or backup can treat it as machine state.
+func defaultAuthFile() string {
+	base := os.Getenv("XDG_STATE_HOME")
+	if base == "" {
+		if home, err := os.UserHomeDir(); err == nil && home != "" {
+			base = filepath.Join(home, ".local", "state")
+		}
+	}
+	if base == "" {
+		return ""
+	}
+	return filepath.Join(base, "bcwebmux", "auth.json")
 }

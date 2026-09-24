@@ -28,7 +28,7 @@ process.once("SIGTERM", () => void cleanup().finally(() => process.exit(124)));
 process.once("SIGINT", () => void cleanup().finally(() => process.exit(130)));
 
 try {
-  server = spawn(serverPath, ["--web-root", webRoot, "--port", String(serverPort), "--origin", base], { stdio: ["ignore", "pipe", "pipe"], detached: true });
+  server = spawn(serverPath, ["--auth=false", "--web-root", webRoot, "--port", String(serverPort), "--origin", base], { stdio: ["ignore", "pipe", "pipe"], detached: true });
   server.detachedGroup = true;
   server.stdout.on("data", data => { serverLog += data; });
   server.stderr.on("data", data => { serverLog += data; });

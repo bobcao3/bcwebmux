@@ -33,7 +33,7 @@ try {
   const port = await freePort();
   const origin = `https://127.0.0.1:${port}`;
   server = spawn(resolve(executable), [
-    "--host", "127.0.0.1", "--port", String(port), "--origin", origin,
+    "--auth=false", "--host", "127.0.0.1", "--port", String(port), "--origin", origin,
     "--tls-cert", cert, "--tls-key", key,
   ], { stdio: ["ignore", "pipe", "pipe"] });
   server.stdout.on("data", chunk => { logs += chunk; });

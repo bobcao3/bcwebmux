@@ -114,6 +114,11 @@ export class SessionApi {
       const code = typeof value?.error?.code === "string"
         ? value.error.code
         : value?.code || "request_failed";
+      // The session cookie is required by the whole API surface; report the
+      // expiry once so the application can hand back to the login page.
+      if (response.status === 401) {
+        globalThis.dispatchEvent?.(new Event("bcwebmux:unauthenticated"));
+      }
       throw new SessionApiError(message, {
         status: response.status,
         code,

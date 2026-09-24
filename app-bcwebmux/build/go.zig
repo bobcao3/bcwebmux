@@ -31,7 +31,7 @@ pub fn add(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builti
     provision.addArg("--output");
     const toolchain = provision.addOutputDirectoryArg("go-toolchain");
 
-    // Explicit online dependency maintenance using the same pinned compiler.
+    // Explicit dependency maintenance using the same pinned compiler.
     for ([_][]const u8{ "deps", "fmt" }) |command| {
         const maintenance = b.addRunArtifact(driver);
         maintenance.addDirectoryArg(toolchain);
@@ -43,7 +43,7 @@ pub fn add(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builti
         if (std.mem.eql(u8, command, "fmt")) maintenance.addArg("./...");
         maintenance.setCwd(b.path("go"));
         maintenance.has_side_effects = true;
-        b.step(b.fmt("go-{s}", .{command}), if (std.mem.eql(u8, command, "deps")) "Tidy and vendor Go dependencies with the pinned toolchain (online)" else "Format first-party Go sources with the pinned toolchain").dependOn(&maintenance.step);
+        b.step(b.fmt("go-{s}", .{command}), if (std.mem.eql(u8, command, "deps")) "Tidy Go dependencies with the pinned toolchain (online)" else "Format first-party Go sources with the pinned toolchain").dependOn(&maintenance.step);
     }
 
     const stage = b.addWriteFiles();
@@ -61,7 +61,7 @@ pub fn add(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builti
         run.addFileArg(b.path("include/bcwebmux.h"));
         run.addFileArg(core.getEmittedBin());
         run.addFileArg(zstd.getEmittedBin());
-        run.addArgs(&.{ arch, cache, command, "-trimpath", "-buildvcs=false", "-mod=vendor", link_flags });
+        run.addArgs(&.{ arch, cache, command, "-trimpath", "-buildvcs=false", "-mod=readonly", link_flags });
         run.setCwd(stage.getDirectory());
         slot.* = run;
     }

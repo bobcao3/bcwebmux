@@ -381,3 +381,99 @@
 #glyph-atlas-canvas { display: block; max-width: 100%; max-height: 100%; width: auto; height: auto; margin: 0 auto; image-rendering: pixelated; }
 #glyph-atlas-canvas[hidden] { display: none; }
 #glyph-atlas-canvas.actual-size { max-width: none; max-height: none; margin: 0; }
+
+/* Settings → SECURITY: the enrolled factors and the keys managed from here. */
+#settings-panel-auth fieldset + fieldset { margin-top: 18px; }
+#auth-credential-list { display: grid; gap: 8px; margin-bottom: 16px; }
+#auth-credential-list:empty { display: none; }
+.auth-credential {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 10px;
+  align-items: center;
+  padding: 10px 12px;
+  border: 2px solid var(--color-border);
+  background: var(--color-background);
+}
+.auth-credential-copy { display: flex; min-width: 0; flex-direction: column; gap: 4px; }
+.auth-credential-copy strong { font-size: 13px; overflow-wrap: anywhere; }
+.auth-credential-copy small { color: var(--color-muted); font-size: 10px; overflow-wrap: anywhere; }
+.auth-credential-badge {
+  padding: 2px 6px;
+  border: 1px solid var(--color-success);
+  color: var(--color-success);
+  font-size: 9px;
+  letter-spacing: .05em;
+  vertical-align: middle;
+}
+.auth-credential-remove {
+  min-height: 36px;
+  padding: 0 12px;
+  border: 2px solid var(--color-danger);
+  background: transparent;
+  color: var(--color-danger);
+  font: 700 11px/1 var(--terminal-font);
+}
+.auth-credential-remove:hover,
+.auth-credential-remove:focus-visible { background: var(--color-danger); color: var(--color-background); outline: 0; }
+.auth-key-label { display: block; margin-bottom: 12px; color: var(--color-muted); font-size: 11px; text-transform: uppercase; }
+.auth-key-label input {
+  display: block;
+  width: 100%;
+  margin-top: 6px;
+  padding: 8px 10px;
+  border: 2px solid var(--color-border);
+  border-radius: 0;
+  background: var(--color-background);
+  color: var(--color-foreground);
+  font: 400 13px/1.4 var(--terminal-font);
+  text-transform: none;
+}
+.auth-key-label input:focus-visible { border-color: var(--color-accent); outline: 2px solid var(--color-accent); outline-offset: 1px; }
+/* Code field that arms key management when the session signed in with the
+   authenticator app and has no key of its own to assert. */
+#auth-stepup-row { margin-bottom: 12px; }
+#auth-stepup-row[hidden] { display: none; }
+#auth-stepup-form { display: flex; gap: 8px; }
+#auth-stepup-form input {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 2px solid var(--color-border);
+  border-radius: 0;
+  background: var(--color-background);
+  color: var(--color-foreground);
+  font: 700 16px/1.2 var(--terminal-font);
+  letter-spacing: .18em;
+  text-align: center;
+}
+#auth-stepup-form input:focus-visible { border-color: var(--color-accent); outline: 2px solid var(--color-accent); outline-offset: 1px; }
+#auth-stepup-form button {
+  flex: 0 0 auto;
+  min-height: 40px;
+  padding: 8px 14px;
+  border: 2px solid var(--color-accent);
+  background: var(--color-accent);
+  color: var(--color-background);
+  font: 700 12px/1 var(--terminal-font);
+}
+#auth-stepup-form button:hover,
+#auth-stepup-form button:focus-visible { background: var(--color-foreground); border-color: var(--color-foreground); outline: 0; }
+#auth-add-key, #auth-sign-out {
+  min-height: 44px;
+  padding: 8px 14px;
+  border: 2px solid var(--color-accent);
+  background: var(--color-accent);
+  color: var(--color-background);
+  font: 700 12px/1 var(--terminal-font);
+}
+#auth-add-key:hover:not(:disabled),
+#auth-add-key:focus-visible:not(:disabled),
+#auth-sign-out:hover:not(:disabled),
+#auth-sign-out:focus-visible:not(:disabled) { background: var(--color-foreground); border-color: var(--color-foreground); outline: 0; }
+#auth-add-key:disabled, #auth-sign-out:disabled { opacity: .5; cursor: not-allowed; }
+#auth-status { display: block; margin-top: 12px; color: var(--color-muted); font-size: 11px; overflow-wrap: anywhere; }
+#auth-status[data-tone="ok"] { color: var(--color-success); }
+#auth-status[data-tone="error"] { color: var(--color-danger); }
+
+.auth-credential-badge-factor { border-color: var(--color-accent); color: var(--color-accent); }

@@ -46,7 +46,7 @@ try {
     const env = { ...process.env };
     if (value === undefined) delete env.HOME;
     else env.HOME = value;
-    const server = spawn(serverPath, ["--config", join(root, "config.toml"), "--port", String(port), "--origin", base, "--shell", shell, ...(name === "explicit" ? ["--term", "screen-256color", "--kitty-graphics=false"] : [])], {
+    const server = spawn(serverPath, ["--config", join(root, "config.toml"), "--auth=false", "--port", String(port), "--origin", base, "--shell", shell, ...(name === "explicit" ? ["--term", "screen-256color", "--kitty-graphics=false"] : [])], {
       cwd: outside, env, stdio: ["ignore", "pipe", "pipe"],
     });
     let logs = "";

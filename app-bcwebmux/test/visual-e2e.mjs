@@ -63,7 +63,7 @@ async function run(backend, device) {
   try {
     await mkdir(outputDir, { recursive: true });
     await Promise.all(["png", "log"].map(extension => rm(path.join(outputDir, `${prefix}-failure.${extension}`), { force: true })));
-    server = spawn(serverPath, ["--config", "/dev/null", "--host", "127.0.0.1", "--tls-cert", tls.cert, "--tls-key", tls.key, "--origin", `https://127.0.0.1:${port}`, "--shell", "/bin/sh", "--web-root", webRoot, "--port", String(port)], { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, GODEBUG: "http2server=0" }, detached: true });
+    server = spawn(serverPath, ["--config", "/dev/null", "--auth=false", "--host", "127.0.0.1", "--tls-cert", tls.cert, "--tls-key", tls.key, "--origin", `https://127.0.0.1:${port}`, "--shell", "/bin/sh", "--web-root", webRoot, "--port", String(port)], { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, GODEBUG: "http2server=0" }, detached: true });
     server.detachedGroup = true;
     server.on("error", error => { processError = error; });
     server.stdout.on("data", chunk => { log += chunk; });

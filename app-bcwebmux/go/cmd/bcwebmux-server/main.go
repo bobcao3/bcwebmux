@@ -24,6 +24,13 @@ var embeddedAssets embed.FS
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	slog.SetDefault(logger)
+	if len(os.Args) > 1 && os.Args[1] == "auth" {
+		if err := server.RunAuth(os.Args[0], os.Args[2:], logger); err != nil {
+			fmt.Fprintf(os.Stderr, "%s: %v\n", os.Args[0], err)
+			os.Exit(1)
+		}
+		return
+	}
 	cfg, help, err := server.ParseConfig(os.Args[1:])
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%s: %v\n%s", os.Args[0], err, "usage: "+os.Args[0]+" [options]\n")
@@ -67,6 +74,16 @@ func main() {
 		os.Exit(1)
 	}
 	logger.Info("server listening", "addresses", instance.Addrs(), "origins", instance.Origins(), "http3", cfg.HTTP3)
+	logger.Info("authentication", "state", instance.AuthStatus(), "file", cfg.AuthFile)
+	for _, warning := range instance.AuthWarnings() {
+		logger.Warn("authentication origin unusable", "detail", warning)
+	}
+	for _, warning := range instance.TLSWarnings() {
+		logger.Warn("origin outside the certificate", "detail", warning)
+	}
+	if !cfg.AuthEnabled {
+		logger.Warn("authentication is disabled; the terminal is reachable without a sign-in")
+	}
 
 	serveErr := make(chan error, 1)
 	go func() { serveErr <- instance.Serve() }()

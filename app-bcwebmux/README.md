@@ -16,9 +16,10 @@ browser with WebGPU or WebGL2. Ghostty is a pinned dependency: `build.zig.zon`
 fetches the `bobcao3/ghostty` fork branch `bcwebmux/wasm-kitty-graphics`
 (commit `a21f94b`), carrying the WASM portability edits described in the
 [graphics plan](../docs/kitty-graphics.md). No local checkout is needed, and the
-build is reproducible from this repository alone. `zig build` provisions a
-pinned Go toolchain itself and defaults to musl; no system Go or C toolchain is
-required.
+build uses pinned dependencies but requires network access on a fresh checkout
+to download Go modules (and the Zig and npm dependencies). `zig build` provisions
+a pinned Go toolchain itself and defaults to musl; no system Go or C toolchain
+is required.
 
 ```sh
 # From the repository root
@@ -28,7 +29,59 @@ zig build -Doptimize=ReleaseSmall
 ./zig-out/bin/bcwebmux-server
 ```
 
-Open <http://localhost:8080>. Use `--help` for server options. Remote use should sit behind authenticated TLS and requires explicit host/origin options.
+Open <http://localhost:8080>. Use `--help` for server options. Remote use needs
+explicit host/origin options and either an enrolled FIDO2 security key (see
+[Authentication](#authentication)) or authenticated TLS in front of the service.
+
+To install on a phone, open the app on a **trusted HTTPS** origin (not plain HTTP
+to a LAN IP or a certificate-warning bypass), sign in if required, then use the
+browser's install/add-to-home-screen menu. The PWA service worker is network-only:
+the terminal requires a live server and is not available offline.
+
+## Authentication
+
+The browser surface is closed as soon as one factor is enrolled, and it works at
+every address the server answers on. The baseline is an authenticator app:
+
+```sh
+./zig-out/bin/bcwebmux-server auth totp          # prints a QR code, then asks
+./zig-out/bin/bcwebmux-server auth list
+./zig-out/bin/bcwebmux-server auth remove --totp # or --all
+```
+
+Scan the code with Google Authenticator, 1Password, Aegis, or any TOTP app,
+then type the six-digit code it shows back into the command: only a code that
+matches the new secret is stored, so a wrong scan or an interrupted run changes
+nothing and the service can keep running while you enroll.
+
+Every address then requires a sign-in, and `/login` presents a code field where
+a replayed or repeated wrong code is refused rather than retried forever.
+Sessions last `--auth-session-ttl` (default 168h) and survive a restart, so a
+device you use regularly rarely asks again.
+
+Security keys are an optional extra, enrolled from the browser:
+
+```sh
+./zig-out/bin/bcwebmux-server auth list          # factors, dates, last use
+./zig-out/bin/bcwebmux-server auth remove --id <id>
+```
+
+WebAuthn scopes a credential to a domain, so a key works at hostnames, and at
+`localhost` with a trusted certificate, but never at an IP-literal address —
+which is why the app stays the way in at `https://192.168.1.20:8443`. Origins
+that cannot hold a key are reported at startup. **Settings → SECURITY** is where
+keys are enrolled and removed, one per device, once signed in; the ceremony has
+to happen in the browser because that is where the key is. Every change asks for
+a fresh factor first — an assertion from an enrolled key, or a code from the
+app — so a stolen session cookie cannot add a key of its own.
+
+Deleting the state file, `auth remove --totp`, or `auth remove --all` revokes the
+sessions those factors issued and returns the service to its unauthenticated
+state, which the running service picks up within a second. `--auth=false`
+disables the requirement entirely (and logs a warning); it exists for tests and
+for recovery when a factor set is unusable. See the
+[authentication design](../docs/authentication.md) for the ceremony, stored
+state, gate behaviour, and threat model.
 
 ## Server configuration
 
@@ -50,7 +103,8 @@ Malformed TOML, unknown keys, and unreadable discovered files are fatal; `--help
 not read configuration. All scalar CLI options override the file, including
 `--http3=false`. Paths in TOML are relative to the process working directory;
 there is no shell or tilde expansion. Supported keys are shown below, plus legacy
-`host` and `origin` (single strings), `web-root`, `shell`, `term`, `kitty-graphics`, and `worker`.
+`host` and `origin` (single strings), `web-root`, `shell`, `term`,
+`kitty-graphics`, `worker`, `auth`, `auth-file`, and `auth-session-ttl`.
 
 Example `~/.config/bcwebmux/config.toml` (replace addresses, origins, and TLS paths
 with your own; omit any range not present on this machine):
@@ -63,7 +117,16 @@ tls-cert = "/path/to/fullchain.pem"
 tls-key = "/path/to/key.pem"
 http3 = true
 max-sessions = 16
+auth-session-ttl = "168h"
+# auth = false
+# auth-file = "/var/lib/bcwebmux/auth.json"
 ```
+
+`auth = false` disables the authentication requirement. `auth-file` defaults to
+`$XDG_STATE_HOME/bcwebmux/auth.json`, or `~/.local/state/bcwebmux/auth.json`
+when `XDG_STATE_HOME` is unset; the file is created with mode 0600 and holds the
+enrolled public keys plus the session signing key. `auth-session-ttl` accepts Go
+duration strings and defaults to `168h`.
 
 New shells default to `TERM=xterm-ghostty` with Kitty graphics advertised.
 Override with `--term` / `term`, or opt out of the Kitty hint with
@@ -102,9 +165,10 @@ explicit allowlist; loopback-only listeners derive local origins if none is set.
 Every mutation and WebSocket upgrade still requires exactly one allowed Origin;
 this does not enable permissive CORS or disable CSRF checks. TLS certificates must
 cover the names/IPs browsers use. HTTP/3 requires TLS and UDP access on the same
-port as HTTPS. Origins are **not authentication**: restrict access with tailnet/
-firewall policies or an authenticated TLS proxy. All listeners share one session
-engine and assets. The startup log lists every bound address and accepted origin.
+port as HTTPS. Origins are **not authentication** on their own: until
+`auth totp` has run, restrict access with tailnet/firewall policies or an
+authenticated TLS proxy. All listeners share one session engine and assets. The
+startup log lists every bound address, accepted origin, and the enrolled factors.
 
 ## Develop
 
@@ -117,6 +181,8 @@ zig build gotest                    # Go tests using the pinned toolchain and zi
 zig build gotest -Dtarget=aarch64-linux-musl  # compile Go tests for another target
 node --test test/network-relay.test.mjs test/network-recovery.test.mjs
 node test/visual-e2e.mjs ./zig-out/bin/bcwebmux-server ./zig-out/web
+node test/auth-e2e.mjs ./zig-out/bin/bcwebmux-server ./zig-out/web
+node test/auth-totp-e2e.mjs ./zig-out/bin/bcwebmux-server ./zig-out/web
 ```
 
 `zig build test` uses Zig's test runner only. `gotest` uses Go's test runner;
@@ -128,7 +194,13 @@ and a physical Vulkan GPU (no SwiftShader/llvmpipe). See the
 The shell startup regression (requires `/bin/bash`) can also run directly:
 `node test/session-shell-integration.mjs ./zig-out/bin/bcwebmux-server`.
 Use `TEXT_RENDERER=canvas` with browser tests to exercise browser-canvas text;
-omit it for kb/STB. Test server launches ignore personal server configuration.
+omit it for kb/STB. Test server launches ignore personal server configuration
+and personal authentication state. `test/auth-e2e.mjs` drives the factor
+lifecycle (CLI enrollment of the app, code sign-in, per-device key enrollment
+from the settings panel, key sign-in, removal) through Chromium's virtual
+authenticator, and `test/auth-totp-e2e.mjs` drives the authenticator-app flow
+from an IP-literal origin; neither needs a real key and neither touches the
+machine's real `auth.json`.
 
 ### Glyph texture inspector
 
@@ -193,7 +265,10 @@ Rebuild after changing application assets or WASM sources. For terminal-only bui
 ## Source areas
 
 - [web/](web/): application UI and session/reconnect behavior; see [connection lifecycle](../docs/connection-lifecycle.md).
-- [go/](go/): HTTP/TLS, WebSockets, and server configuration.
+- [go/](go/): HTTP/TLS, WebSockets, server configuration, and authentication:
+  `go/internal/server/auth_totp.go` (the baseline factor and its limiter),
+  `auth.go`/`auth_http.go`/`auth_cli.go` (state, endpoints, subcommands),
+  `totp_qr.go` (terminal QR), and `go/cmd/bcwebmux-server/main.go`.
 - [src/](src/): native sessions, persistence, and PTYs. `src/server.zig` is the legacy Zig server, not the default Go frontend.
 - [build.zig](build.zig) and [test/](test/): build orchestration and application/reusable-terminal tests. Go and Zig tests also live alongside their sources.
 

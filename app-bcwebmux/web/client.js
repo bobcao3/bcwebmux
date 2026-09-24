@@ -8,6 +8,14 @@ import { SessionDrawer } from "./SessionDrawer.js";
 import { SessionTransport } from "./SessionTransport.js";
 import { initializeSettings } from "./settings.js";
 import { initializeGlyphAtlasDialog } from "./GlyphAtlasDialog.js";
+import { initializeAuthSettings } from "./AuthSettings.js";
+
+// Network-only worker: installation should not cache terminal output or authenticated assets.
+if ("serviceWorker" in navigator && isSecureContext) {
+  navigator.serviceWorker.register("/sw.js").catch(error => {
+    console.warn("service worker registration failed", error);
+  });
+}
 
 const terminalElement = document.querySelector("#terminal");
 const terminalIdentity = document.querySelector("#terminal-identity");
@@ -94,6 +102,10 @@ window.addEventListener("error", (event) => showClientError(event.error || event
 window.addEventListener("unhandledrejection", (event) => showClientError(event.reason));
 
 const settings = initializeSettings();
+const authSettings = initializeAuthSettings();
+// A session that expires while the page is open is only visible on the API
+// and websocket surfaces; both funnel here and hand back to the login page.
+window.addEventListener("bcwebmux:unauthenticated", () => location.replace("/login"));
 const query = new URLSearchParams(location.search);
 const requestedRenderer = query.get("renderer");
 const requestedBackend = query.get("backend");
@@ -518,8 +530,14 @@ settings.setOnRendererChange(async (renderer) => {
 settings.setOnGrainChange((strength) => terminal.setGrainStrength(strength));
 settings.setOnPerfChange(applyPerfMode);
 settings.setLifecycle({
-  onOpen: () => terminal.suspendFocus(),
-  onClose: () => terminal.resumeFocus({ focus: true }),
+  onOpen: () => {
+    terminal.suspendFocus();
+    authSettings.refresh();
+  },
+  onClose: () => {
+    authSettings.close();
+    terminal.resumeFocus({ focus: true });
+  },
 });
 
 function formatMs(value) {

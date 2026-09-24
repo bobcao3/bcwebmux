@@ -50,6 +50,28 @@ func newAssetServer(embedded fs.FS, root string) (*assetServer, error) {
 }
 
 func (a *assetServer) serve(w http.ResponseWriter, r *http.Request) {
+	a.serveCSP(w, r, assetCSP)
+}
+
+// servePath serves one known asset by its path under the web root. The
+// authentication pages have fixed URLs of their own, so they map to files
+// explicitly instead of through the request path.
+func (a *assetServer) servePath(w http.ResponseWriter, r *http.Request, rel, csp string) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		a.writeAssetError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	if !fs.ValidPath(rel) {
+		a.writeAssetError(w, http.StatusNotFound, "not found")
+		return
+	}
+	if a.root != "" && a.serveDisk(w, r, rel, csp) {
+		return
+	}
+	a.writeEmbedded(w, r, rel, csp)
+}
+
+func (a *assetServer) serveCSP(w http.ResponseWriter, r *http.Request, csp string) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		a.writeAssetError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
@@ -59,11 +81,13 @@ func (a *assetServer) serve(w http.ResponseWriter, r *http.Request) {
 		a.writeAssetError(w, http.StatusNotFound, "not found")
 		return
 	}
-	if a.root != "" {
-		if a.serveDisk(w, r, rel) {
-			return
-		}
+	if a.root != "" && a.serveDisk(w, r, rel, csp) {
+		return
 	}
+	a.writeEmbedded(w, r, rel, csp)
+}
+
+func (a *assetServer) writeEmbedded(w http.ResponseWriter, r *http.Request, rel, csp string) {
 	data, err := fs.ReadFile(a.embedded, path.Join("web", rel))
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
@@ -77,11 +101,11 @@ func (a *assetServer) serve(w http.ResponseWriter, r *http.Request) {
 		a.writeAssetError(w, http.StatusInternalServerError, "asset too large")
 		return
 	}
-	a.writeAsset(w, r, rel, data)
+	a.writeAsset(w, r, rel, data, csp)
 }
 
 // serveDisk returns false only when a missing file permits embedded fallback.
-func (a *assetServer) serveDisk(w http.ResponseWriter, r *http.Request, rel string) bool {
+func (a *assetServer) serveDisk(w http.ResponseWriter, r *http.Request, rel, csp string) bool {
 	file, err := os.OpenInRoot(a.root, filepath.FromSlash(rel))
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
@@ -102,7 +126,7 @@ func (a *assetServer) serveDisk(w http.ResponseWriter, r *http.Request, rel stri
 		return true
 	}
 	etag := etagFor(digest)
-	a.setAssetHeaders(w, contentType(rel), etag)
+	a.setAssetHeaders(w, contentType(rel), etag, csp)
 	// Use a zero modtime so the content digest, rather than timestamps, is the validator.
 	http.ServeContent(w, r, rel, time.Time{}, io.NewSectionReader(file, 0, info.Size()))
 	return true
@@ -118,19 +142,25 @@ func hashFile(file *os.File, size int64) ([32]byte, error) {
 	return digest, nil
 }
 
-func (a *assetServer) writeAsset(w http.ResponseWriter, r *http.Request, rel string, data []byte) {
+func (a *assetServer) writeAsset(w http.ResponseWriter, r *http.Request, rel string, data []byte, csp string) {
 	digest := sha256.Sum256(data)
 	etag := etagFor(digest)
-	a.setAssetHeaders(w, contentType(rel), etag)
+	a.setAssetHeaders(w, contentType(rel), etag, csp)
 	http.ServeContent(w, r, rel, time.Time{}, bytes.NewReader(data))
 }
 
-func (a *assetServer) setAssetHeaders(w http.ResponseWriter, mime, etag string) {
+func (a *assetServer) setAssetHeaders(w http.ResponseWriter, mime, etag, csp string) {
 	w.Header().Set("Content-Type", mime)
 	w.Header().Set("Cache-Control", assetCacheControl)
 	w.Header().Set("ETag", etag)
-	w.Header().Set("Content-Security-Policy", assetCSP)
+	w.Header().Set("Content-Security-Policy", csp)
 	w.Header().Set("X-Content-Type-Options", "nosniff")
+	if csp == authAssetCSP {
+		// Firefox can send Origin: null on POSTs from a document with a
+		// no-referrer policy. Keep referrers local to this origin instead;
+		// the authentication POSTs still require a real, allowed Origin.
+		w.Header().Set("Referrer-Policy", "same-origin")
+	}
 }
 
 func (a *assetServer) writeAssetError(w http.ResponseWriter, status int, message string) {

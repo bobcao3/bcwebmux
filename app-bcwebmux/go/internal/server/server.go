@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"sort"
 	"strconv"
 	"strings"
@@ -23,20 +25,26 @@ import (
 )
 
 type Server struct {
-	engine    native.Engine
-	assets    *assetServer
-	listeners []net.Listener
-	udps      []net.PacketConn
-	h3s       []*http3.Server
-	origins   map[string]bool
-	listener  net.Listener
-	http      *http.Server
-	h3        *http3.Server
-	udp       net.PacketConn
-	origin    string
-	tls       bool
-	logger    *slog.Logger
-	nextConn  atomic.Uint64
+	engine     native.Engine
+	assets     *assetServer
+	listeners  []net.Listener
+	udps       []net.PacketConn
+	h3s        []*http3.Server
+	origins    map[string]bool
+	authScopes map[string]authScope
+	listener   net.Listener
+	http       *http.Server
+	h3         *http3.Server
+	udp        net.PacketConn
+	origin     string
+	tls        bool
+	logger     *slog.Logger
+	nextConn   atomic.Uint64
+	// auth is nil when authentication is disabled by configuration.
+	auth *authManager
+	// tlsLeaf is the served certificate, used to report origins it cannot
+	// cover. It is nil when TLS is terminated elsewhere.
+	tlsLeaf *x509.Certificate
 
 	mu           sync.Mutex
 	closing      bool
@@ -139,6 +147,11 @@ func New(cfg Config) (*Server, error) {
 		origin = OriginFor(cfg.Host, port, tlsEnabled)
 	}
 
+	auth, err := newAuthManagerFor(cfg, origins)
+	if err != nil {
+		return nil, err
+	}
+
 	httpServer := &http.Server{
 		Handler:           nil, // filled below after Server exists
 		ReadTimeout:       15 * time.Second,
@@ -153,6 +166,7 @@ func New(cfg Config) (*Server, error) {
 		listeners: listeners, udps: udps, origins: make(map[string]bool),
 		logger: cfg.Logger,
 		ws:     make(map[*socketConn]struct{}), shutdownDone: make(chan struct{}),
+		auth: auth, authScopes: newAuthScopes(origins),
 	}
 	for _, origin := range origins {
 		result.origins[origin] = true
@@ -163,6 +177,12 @@ func New(cfg Config) (*Server, error) {
 		if err != nil {
 			_ = listener.Close()
 			return nil, fmt.Errorf("load TLS certificate: %w", err)
+		}
+		// The leaf is kept for origin checks: an origin the certificate does
+		// not cover is a certificate error in the browser before it is an
+		// authentication problem.
+		if parsed, err := x509.ParseCertificate(cert.Certificate[0]); err == nil {
+			result.tlsLeaf = parsed
 		}
 		httpServer.TLSConfig = &tls.Config{
 			MinVersion:   tls.VersionTLS12,
@@ -188,6 +208,89 @@ func New(cfg Config) (*Server, error) {
 
 // Origin is the exact origin accepted by mutations and WebSocket upgrades.
 func (s *Server) Origin() string { return s.origin }
+
+// AuthStatus describes the authentication state for the startup log.
+func (s *Server) AuthStatus() string {
+	switch {
+	case s.auth == nil:
+		return "disabled"
+	}
+	totp, keys := s.auth.factors()
+	if !totp && keys == 0 {
+		return "open: no factor is enrolled"
+	}
+	factors := make([]string, 0, 2)
+	if totp {
+		factors = append(factors, "authenticator app")
+	}
+	if keys > 0 {
+		factors = append(factors, fmt.Sprintf("%d security key(s)", keys))
+	}
+	if totp {
+		// The authenticator app signs in at every address, so a per-origin
+		// count would understate what is protected.
+		return fmt.Sprintf("enrolled: %s, covering every origin", strings.Join(factors, " and "))
+	}
+	covered := 0
+	for _, scope := range s.authScopes {
+		if count, _ := s.auth.credentialCount(scope.rpID); count > 0 {
+			covered++
+		}
+	}
+	return fmt.Sprintf("enrolled: %s covering %d of %d origin(s)", strings.Join(factors, " and "), covered, len(s.authScopes))
+}
+
+// AuthWarnings lists origins that cannot take part in WebAuthn ceremonies,
+// which makes them impossible to sign in at while any credential is enrolled.
+func (s *Server) AuthWarnings() []string {
+	if s.auth == nil {
+		return nil
+	}
+	totp, keys := s.auth.factors()
+	if !totp && keys == 0 {
+		return nil
+	}
+	warnings := make([]string, 0)
+	for _, origin := range s.Origins() {
+		if keys == 0 {
+			break
+		}
+		// These only affect the security key path: an enrolled authenticator
+		// app signs in at every address the server answers on.
+		if scope := scopeForOrigin(origin); scope.problem != "" {
+			warnings = append(warnings, fmt.Sprintf("%s: %s (the authenticator app still works there)", origin, scope.problem))
+		} else if scoped, _ := s.auth.credentialCount(scope.rpID); scoped == 0 {
+			warnings = append(warnings, fmt.Sprintf("%s: no security key enrolled for this origin", origin))
+		}
+	}
+	return warnings
+}
+
+// TLSWarnings names origins the served certificate cannot cover. A browser
+// reaching one of those shows a certificate error, and WebAuthn on such a page
+// fails with a security error instead of a key prompt, which reads as an
+// authentication failure rather than the certificate problem it is.
+func (s *Server) TLSWarnings() []string {
+	if s.tlsLeaf == nil {
+		return nil
+	}
+	warnings := make([]string, 0)
+	for _, origin := range s.Origins() {
+		parsed, err := url.Parse(origin)
+		if err != nil || parsed.Hostname() == "" {
+			continue
+		}
+		// An address that cannot hold a key at all is covered by the origin
+		// warnings above; a certificate error there costs nothing extra.
+		if scope := scopeForOrigin(origin); scope.problem != "" {
+			continue
+		}
+		if err := s.tlsLeaf.VerifyHostname(parsed.Hostname()); err != nil {
+			warnings = append(warnings, fmt.Sprintf("%s: tls-cert does not cover %s, so security keys cannot be enrolled or used there (the authenticator app still works)", origin, parsed.Hostname()))
+		}
+	}
+	return warnings
+}
 
 // Addr returns the bound address. It is useful when Port was zero.
 func (s *Server) Addr() net.Addr { return s.listener.Addr() }
@@ -305,6 +408,12 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	s.requests.Add(1)
 	s.mu.Unlock()
 	defer s.requests.Done()
+	if s.serveAuthSurface(w, r) {
+		return
+	}
+	if !s.requireSession(w, r) {
+		return
+	}
 	if r.URL.Path == "/ws" {
 		s.serveWebSocket(w, r)
 		return

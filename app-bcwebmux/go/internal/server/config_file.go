@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/BurntSushi/toml"
 )
@@ -40,20 +41,23 @@ func loadConfig(cfg *Config, explicit string) error {
 			return fmt.Errorf("config %s: %w", path, err)
 		}
 		var file struct {
-			Host          *string  `toml:"host"`
-			Listen        []string `toml:"listen"`
-			Port          *int     `toml:"port"`
-			WebRoot       *string  `toml:"web-root"`
-			Shell         *string  `toml:"shell"`
-			Term          *string  `toml:"term"`
-			KittyGraphics *bool    `toml:"kitty-graphics"`
-			Origin        *string  `toml:"origin"`
-			Origins       []string `toml:"origins"`
-			MaxSessions   *uint64  `toml:"max-sessions"`
-			TLSCert       *string  `toml:"tls-cert"`
-			TLSKey        *string  `toml:"tls-key"`
-			HTTP3         *bool    `toml:"http3"`
-			Worker        *string  `toml:"worker"`
+			Host           *string  `toml:"host"`
+			Listen         []string `toml:"listen"`
+			Port           *int     `toml:"port"`
+			WebRoot        *string  `toml:"web-root"`
+			Shell          *string  `toml:"shell"`
+			Term           *string  `toml:"term"`
+			KittyGraphics  *bool    `toml:"kitty-graphics"`
+			Origin         *string  `toml:"origin"`
+			Origins        []string `toml:"origins"`
+			MaxSessions    *uint64  `toml:"max-sessions"`
+			TLSCert        *string  `toml:"tls-cert"`
+			TLSKey         *string  `toml:"tls-key"`
+			HTTP3          *bool    `toml:"http3"`
+			Worker         *string  `toml:"worker"`
+			Auth           *bool    `toml:"auth"`
+			AuthFile       *string  `toml:"auth-file"`
+			AuthSessionTTL *string  `toml:"auth-session-ttl"`
 		}
 		meta, err := toml.Decode(string(data), &file)
 		if err != nil {
@@ -107,6 +111,22 @@ func loadConfig(cfg *Config, explicit string) error {
 		}
 		if file.Worker != nil {
 			cfg.Worker = *file.Worker
+		}
+		if file.Auth != nil {
+			cfg.AuthEnabled = *file.Auth
+		}
+		if file.AuthFile != nil {
+			if *file.AuthFile == "" {
+				return fmt.Errorf("config %s: auth-file must not be empty", path)
+			}
+			cfg.AuthFile = *file.AuthFile
+		}
+		if file.AuthSessionTTL != nil {
+			ttl, err := time.ParseDuration(*file.AuthSessionTTL)
+			if err != nil || ttl < 0 {
+				return fmt.Errorf("config %s: invalid auth-session-ttl %q", path, *file.AuthSessionTTL)
+			}
+			cfg.AuthSessionTTL = ttl
 		}
 		return nil
 	}

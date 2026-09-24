@@ -17,7 +17,7 @@ const debugPort = await freePort();
 const base = `https://127.0.0.1:${serverPort}`;
 const tls = await localTls();
 const profile = await mkdtemp(path.join(os.tmpdir(), "bcwebmux-session-browser-"));
-let server = spawn(serverPath, ["--config", "/dev/null", "--host", "127.0.0.1", "--tls-cert", tls.cert, "--tls-key", tls.key, "--web-root", webRoot, "--port", String(serverPort), "--origin", base], {
+let server = spawn(serverPath, ["--config", "/dev/null", "--auth=false", "--host", "127.0.0.1", "--tls-cert", tls.cert, "--tls-key", tls.key, "--web-root", webRoot, "--port", String(serverPort), "--origin", base], {
   stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, GODEBUG: "http2server=0" },
 });
 let serverLog = "";
@@ -224,7 +224,7 @@ try {
   assert.equal(restored.state.replyBytes, 0);
   const oldInstance = (await (await fetch(`${base}/api/server`)).json()).serverInstance;
   await terminateProcess(server);
-  server = spawn(serverPath, ["--config", "/dev/null", "--host", "127.0.0.1", "--tls-cert", tls.cert, "--tls-key", tls.key, "--web-root", webRoot, "--port", String(serverPort), "--origin", base], {
+  server = spawn(serverPath, ["--config", "/dev/null", "--auth=false", "--host", "127.0.0.1", "--tls-cert", tls.cert, "--tls-key", tls.key, "--web-root", webRoot, "--port", String(serverPort), "--origin", base], {
     stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, GODEBUG: "http2server=0" },
   });
   server.stdout.on("data", data => { serverLog += data; });

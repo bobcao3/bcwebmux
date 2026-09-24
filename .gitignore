@@ -5,5 +5,6 @@
 /app-bcwebmux/.zig-cache/
 /app-bcwebmux/zig-out/
 /app-bcwebmux/zig-pkg/
+/app-bcwebmux/go/vendor/
 /app-bcwebmux/web/fonts/*.woff2
 /wgpuTerminal/dist/

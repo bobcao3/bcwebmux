@@ -5,6 +5,9 @@ repository-root `docs/` directory.
 
 ## Topics
 
+- [FIDO2 authentication](authentication.md): authenticator-app enrollment from
+  the CLI, browser login and per-device security key management, session and
+  reset semantics.
 - [Connection lifecycle](connection-lifecycle.md): connection ownership,
   liveness, recovery, backpressure, and replay contracts.
 - [Glyph cache design](glyph-cache-design.md): cell-sized glyph slots, shared

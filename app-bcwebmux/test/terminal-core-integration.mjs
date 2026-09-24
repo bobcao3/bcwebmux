@@ -18,7 +18,7 @@ assert.ok(backend === "webgl2" || backend === "webgpu", "RENDER_BACKEND must be 
 const serverPort = await freePort();
 const debugPort = await freePort();
 const profile = await mkdtemp(path.join(os.tmpdir(), "bcwebmux-terminal-core-integration-"));
-const server = spawn(serverPath, ["--config", "/dev/null", "--web-root", webRoot, "--port", String(serverPort)], {
+const server = spawn(serverPath, ["--config", "/dev/null", "--auth=false", "--web-root", webRoot, "--port", String(serverPort)], {
   stdio: ["ignore", "pipe", "pipe"],
 });
 let serverLog = "";

@@ -12,7 +12,7 @@ if (!serverPath) throw new Error("usage: node test/session-api-integration.mjs S
 const port = await freePort();
 const tls = await localTls();
 const base = `https://127.0.0.1:${port}`;
-const server = spawn(serverPath, ["--config", "/dev/null", "--tls-cert", tls.cert, "--tls-key", tls.key,
+const server = spawn(serverPath, ["--config", "/dev/null", "--auth=false", "--tls-cert", tls.cert, "--tls-key", tls.key,
   "--port", String(port), "--origin", base, "--max-sessions", "2"], {
   stdio: ["ignore", "pipe", "pipe"],
 });
@@ -193,7 +193,7 @@ async function verifyNaturalExit() {
   const tls = await localTls();
   const localBase = `https://127.0.0.1:${port}`;
   const secondServer = spawn(serverPath, [
-    "--config", "/dev/null",
+    "--config", "/dev/null", "--auth=false",
     "--tls-cert", tls.cert, "--tls-key", tls.key,
     "--port", String(port),
     "--origin", localBase,

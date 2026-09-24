@@ -26,8 +26,8 @@ pub fn main(init: std.process.Init) !void {
     for ([_][2][]const u8{
         .{ "GOROOT", goroot },       .{ "GOOS", "linux" },      .{ "GOARCH", arch },
         .{ "GOAMD64", "v1" },        .{ "GOARM64", "v8.0" },    .{ "GOENV", "off" },
-        .{ "GOTOOLCHAIN", "local" }, .{ "GOWORK", "off" },      .{ "GOPROXY", "off" },
-        .{ "GOSUMDB", "off" },       .{ "GOVCS", "*:off" },     .{ "CGO_ENABLED", "1" },
+        .{ "GOTOOLCHAIN", "local" }, .{ "GOWORK", "off" },      .{ "GOPROXY", "https://proxy.golang.org" },
+        .{ "GOSUMDB", "sum.golang.org" }, .{ "GOVCS", "*:off" }, .{ "CGO_ENABLED", "1" },
         .{ "GOFLAGS", "" },          .{ "GOTELEMETRY", "off" },
     }) |entry| try env.put(entry[0], entry[1]);
     try env.put("CC", try quote(arena, cc));
@@ -40,16 +40,12 @@ pub fn main(init: std.process.Init) !void {
     }
 
     if (std.mem.eql(u8, args[8], "deps")) {
-        try env.put("GOPROXY", "https://proxy.golang.org");
-        try env.put("GOSUMDB", "sum.golang.org");
         const go = try std.fs.path.join(arena, &.{ goroot, "bin", "go" });
-        for ([_][]const u8{ "tidy", "vendor" }) |command| {
-            var child = try std.process.spawn(init.io, .{ .argv = &.{ go, "mod", command }, .environ_map = &env });
-            const term = try child.wait(init.io);
-            switch (term) {
-                .exited => |code| if (code != 0) return error.DependencyMaintenanceFailed,
-                else => return error.DependencyMaintenanceFailed,
-            }
+        var child = try std.process.spawn(init.io, .{ .argv = &.{ go, "mod", "tidy" }, .environ_map = &env });
+        const term = try child.wait(init.io);
+        switch (term) {
+            .exited => |code| if (code != 0) return error.DependencyMaintenanceFailed,
+            else => return error.DependencyMaintenanceFailed,
         }
         return;
     }

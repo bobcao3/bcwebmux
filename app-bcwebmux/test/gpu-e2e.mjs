@@ -17,7 +17,7 @@ const requestedBackend = process.env.RENDER_BACKEND === "webgl2" ? "webgl2" : "w
 const backendQuery = `&backend=${requestedBackend}`;
 const pageQuery = `?gpu-test=1${rendererQuery}${backendQuery}`;
 const profile = await mkdtemp(path.join(os.tmpdir(), "bcwebmux-gpu-e2e-"));
-const server = spawn(serverPath, ["--config", "/dev/null", "--web-root", webRoot, "--port", String(serverPort)], {
+const server = spawn(serverPath, ["--config", "/dev/null", "--auth=false", "--web-root", webRoot, "--port", String(serverPort)], {
   stdio: ["ignore", "pipe", "pipe"],
 });
 let serverLog = "";
@@ -89,7 +89,7 @@ try {
 
   const bundledPort = await freePort();
   let bundledLog = "";
-  bundledServer = spawn(serverPath, ["--config", "/dev/null", "--port", String(bundledPort)], {
+  bundledServer = spawn(serverPath, ["--config", "/dev/null", "--auth=false", "--port", String(bundledPort)], {
     stdio: ["ignore", "pipe", "pipe"],
   });
   bundledServer.stdout.on("data", data => { bundledLog += data; });
