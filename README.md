@@ -47,4 +47,5 @@ dependency caches (`zig-pkg/`, `node_modules/`), or vendored Go dependencies.
 
 ## License
 
-This project is licensed under the [MIT License](LICENSE).
+First-party code is licensed under the [MIT License](LICENSE). See
+[`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) for third-party components.

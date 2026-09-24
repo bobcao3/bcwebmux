@@ -121,6 +121,10 @@ pub fn build(b: *std.Build) void {
     }
     const font_license_install = b.addInstallFile(b.path("web/fonts/OFL.txt"), "wgpu-terminal/fonts/OFL.txt");
     terminal_wasm_step.dependOn(&font_license_install.step);
+    // The WASM terminal embeds Ghostty, so its notices must travel with the package.
+    const notices_install = b.addInstallFile(b.path("../THIRD_PARTY_NOTICES.md"), "wgpu-terminal/THIRD_PARTY_NOTICES.md");
+    terminal_wasm_step.dependOn(&notices_install.step);
+    _ = web_assets.addCopyFile(b.path("../THIRD_PARTY_NOTICES.md"), "THIRD_PARTY_NOTICES.md");
     _ = web_assets.addCopyFile(
         b.path("../node_modules/@fontsource/noto-emoji/files/noto-emoji-emoji-400-normal.woff2"),
         "fonts/NotoEmoji-Regular.woff2",
