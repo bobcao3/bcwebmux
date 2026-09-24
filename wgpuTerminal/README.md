@@ -5,6 +5,7 @@ Embeddable GPU terminal frontend using WebGPU with a WebGL2 fallback, used by bc
 ## Build and consume
 
 The package is currently a private npm workspace, not a published npm install.
+For a single-file asciinema playback example, see [`../example-terminal/asciinema_playback.html`](../example-terminal/asciinema_playback.html).
 To build and pack it from this checkout (Zig 0.16.0 and Node/npm required):
 
 ```sh
@@ -14,7 +15,7 @@ npm pack --workspace=@bcwebmux/wgpu-terminal
 ```
 
 The `prepack` script builds only the `terminal-wasm` target through
-`bcwebmux/build.zig` and copies WASM/fonts into `wgpuTerminal/dist/`; it does not
+`app-bcwebmux/build.zig` and copies WASM/fonts into `wgpuTerminal/dist/`; it does not
 build the Go server. Install the resulting tarball in your application, or use
 the workspace directly after running `node wgpuTerminal/scripts/prepare-wasm.mjs`.
 
@@ -33,7 +34,7 @@ worker to embed the terminal. You still need `common/terminal` and the current
 build files **when building its WASM from source**; consumers of the packed
 assets do not need Zig or the repository at runtime.
 
-For a WASM-only build, run `zig build terminal-wasm` from `bcwebmux/`. Assets are emitted under `bcwebmux/zig-out/wgpu-terminal/`; the preparation script copies them into `wgpuTerminal/dist/`. These paths are relative to the repository root.
+For a WASM-only build, run `zig build terminal-wasm` from `app-bcwebmux/`. Assets are emitted under `app-bcwebmux/zig-out/wgpu-terminal/`; the preparation script copies them into `wgpuTerminal/dist/`. These paths are relative to the repository root.
 
 ## Integration
 
@@ -152,11 +153,11 @@ For server-authoritative session transports, set `canonicalGeometry: true`, send
 - [src/](src/): public API, WASM hosting, browser input, selection, scrolling, and GPU rendering.
 - [index.d.ts](index.d.ts): public API types.
 - [../common/terminal/](../common/terminal/): low-level WASM engine; see the [glyph-cache design](../docs/glyph-cache-design.md).
-- [../bcwebmux/test/](../bcwebmux/test/): browser and contract tests shared with the application. See the [application README](../bcwebmux/README.md#develop) for test commands.
+- [../app-bcwebmux/test/](../app-bcwebmux/test/): browser and contract tests shared with the application. See the [application README](../app-bcwebmux/README.md#develop) for test commands.
 
 Rebuild WASM assets after changing the low-level engine. See the [repository overview](../README.md) for component boundaries.
 Run JavaScript contracts directly with Node, outside `zig build`; see the
-[application development guide](../bcwebmux/README.md#develop). The physical
+[application development guide](../app-bcwebmux/README.md#develop). The physical
 terminal-core browser test also accepts
 `RENDER_RECOVERY=1` with `RENDER_BACKEND=webgpu` or `webgl2` to force device/context
 loss and verify recovery before running the normal core/atlas/capture checks.

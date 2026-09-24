@@ -48,7 +48,7 @@ changing terminal state.
 
 ## Build dependency
 
-`bcwebmux/build.zig.zon` uses the adjacent **locally edited** `~/ghostty`
+`app-bcwebmux/build.zig.zon` uses the adjacent **locally edited** `~/ghostty`
 checkout. It is neither a submodule nor a published fork. The edits enable
 freestanding Kitty graphics, exclude OS-backed image loaders on WASM, and keep
 Ghostty's APC dispatch available. A fresh checkout needs that source tree and
@@ -60,7 +60,7 @@ omits image/placement registries, which is why `KGST` exists.
 From this repository root:
 
 ```sh
-cd bcwebmux
+cd app-bcwebmux
 zig build terminal-wasm install test gotest --summary all
 node test/render-frame-contract.mjs
 node test/session-api-integration.mjs zig-out/bin/bcwebmux-server
@@ -78,7 +78,7 @@ compares old-ID operations and subsequent text after checkpoint restore. The
 desktop/mobile visual suite also compares a Kitty RGBA image against committed
 `kitty-graphics` goldens on both backends, using its existing full-viewport
 capture and diff framework. Browse the resulting PNGs in
-`bcwebmux/zig-out/screenshots/index.html`. Browser tests require
+`app-bcwebmux/zig-out/screenshots/index.html`. Browser tests require
 Chromium and OpenSSL for their temporary local certificate. An intermittent
 Go runtime/cgo crash was observed during some reconnect runs and has not been
 isolated; passing reruns do not establish that the flake is resolved.

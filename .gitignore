@@ -2,8 +2,8 @@
 /zig-out/
 /zig-pkg/
 /node_modules/
-/bcwebmux/.zig-cache/
-/bcwebmux/zig-out/
-/bcwebmux/zig-pkg/
-/bcwebmux/web/fonts/*.woff2
+/app-bcwebmux/.zig-cache/
+/app-bcwebmux/zig-out/
+/app-bcwebmux/zig-pkg/
+/app-bcwebmux/web/fonts/*.woff2
 /wgpuTerminal/dist/

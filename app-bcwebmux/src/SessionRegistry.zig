@@ -159,6 +159,7 @@ pub fn create(
         options.name,
         options.geometry,
     ) catch |err| {
+        std.log.err("session worker start failed: {t}; executable: {s}", .{ err, self.executable });
         self.releaseCreatingReservation();
         return err;
     };

@@ -346,7 +346,10 @@ fn respondRegistryError(request: anytype, err: anyerror) !void {
         error.InvalidSessionName => respondError(request, .unprocessable_entity, "name", "invalid session name"),
         error.InvalidGeometry => respondError(request, .unprocessable_entity, "geometry", "invalid terminal geometry"),
         error.InvalidSessionState => respondError(request, .conflict, "state", "operation is invalid for session state"),
-        else => respondError(request, .internal_server_error, "internal", "session operation failed"),
+        else => {
+            std.log.err("session API internal error: {t}", .{err});
+            return respondError(request, .internal_server_error, "internal", "session operation failed");
+        },
     };
 }
 

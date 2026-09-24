@@ -106,9 +106,17 @@ export class SessionApi {
       catch { throw new SessionApiError("session API returned invalid JSON", { status: response.status, code: "invalid_response" }); }
     }
     if (!response.ok) {
-      throw new SessionApiError(value?.error || `session API request failed (${response.status})`, {
+      const message = typeof value?.error === "string"
+        ? value.error
+        : typeof value?.error?.message === "string"
+          ? value.error.message
+          : `session API request failed (${response.status})`;
+      const code = typeof value?.error?.code === "string"
+        ? value.error.code
+        : value?.code || "request_failed";
+      throw new SessionApiError(message, {
         status: response.status,
-        code: value?.code || "request_failed",
+        code,
         details: value,
       });
     }

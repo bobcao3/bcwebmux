@@ -16,7 +16,7 @@ repository-root `docs/` directory.
 ## Component guides
 
 - [Repository overview](../README.md)
-- [Application setup, configuration, and development](../bcwebmux/README.md)
+- [Application setup, configuration, and development](../app-bcwebmux/README.md)
 - [Terminal package build, embedding, and API usage](../wgpuTerminal/README.md)
 
 ## Storage conventions

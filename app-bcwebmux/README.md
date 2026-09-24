@@ -15,14 +15,14 @@ Prerequisites: Zig 0.16.0, Node/npm, GNU tar, Linux, a local `~/ghostty`
 checkout of `b32f20f` with local WASM portability edits described in the
 [graphics plan](../docs/kitty-graphics.md), and a modern Chromium browser with
 WebGPU or WebGL2. `zig build` provisions a pinned Go toolchain itself and defaults
-to musl; no system Go or C toolchain is required. `bcwebmux/build.zig.zon`
-resolves `../../ghostty` relative to `bcwebmux/`, so this setup is currently
+to musl; no system Go or C toolchain is required. `app-bcwebmux/build.zig.zon`
+resolves `../../ghostty` relative to `app-bcwebmux/`, so this setup is currently
 machine-local rather than reproducible from this repository alone.
 
 ```sh
 # From the repository root
 npm install
-cd bcwebmux
+cd app-bcwebmux
 zig build -Doptimize=ReleaseSmall
 ./zig-out/bin/bcwebmux-server
 ```
@@ -41,7 +41,7 @@ the terminal's directory. Existing sessions are unaffected.
 `--config FILE` selects a TOML file explicitly (missing or unreadable files are fatal).
 Otherwise the server reads the **first existing** file, without merging:
 
-1. `$XDG_CONFIG_HOME/bcwebmux/config.toml`, defaulting to `$HOME/.config/bcwebmux/config.toml`.
+1. `$XDG_CONFIG_HOME/app-bcwebmux/config.toml`, defaulting to `$HOME/.config/bcwebmux/config.toml`.
    For compatibility, the nonstandard `$XDG_HOME` is used only when `XDG_CONFIG_HOME` is unset.
 2. `$HOME/.bcwebmux.toml`.
 
@@ -107,7 +107,7 @@ engine and assets. The startup log lists every bound address and accepted origin
 
 ## Develop
 
-From `bcwebmux/`:
+From `app-bcwebmux/`:
 
 ```sh
 zig build
