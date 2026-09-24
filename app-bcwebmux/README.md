@@ -91,7 +91,7 @@ origin allowlist is unchanged, and IP aliases are not auto-trusted.
 For example:
 
 ```toml
-origins = ["https://bobcao3arch.local:3443"]
+origins = ["https://terminal.example.ts.net:3443"]
 port = 3443
 # Configure tls-cert and tls-key as shown above.
 ```
