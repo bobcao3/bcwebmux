@@ -7,7 +7,10 @@
     .fingerprint = 0xd7f1f8d55ccd9213,
     .minimum_zig_version = "0.16.0",
     .dependencies = .{
-        .ghostty = .{ .path = "../../ghostty" },
+        .ghostty = .{
+            .url = "https://github.com/bobcao3/ghostty/archive/a21f94b6a54c869989d3d7f4b49954e804451981.tar.gz",
+            .hash = "ghostty-1.3.2-dev-5UdBC7AccwUlv8vPxFEbTljZE1TNYt-1IksQfowObTVf",
+        },
         .kb = .{
             .url = "https://github.com/JimmyLefevre/kb/archive/b07373d.tar.gz",
             .hash = "N-V-__8AAIHtGgAmKB0bXFdp25Ts4C9jGTH6NvuEJ9omP9sa",

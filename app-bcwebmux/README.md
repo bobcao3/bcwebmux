@@ -11,13 +11,14 @@ keep the replicas synchronized.
 
 ## Get started
 
-Prerequisites: Zig 0.16.0, Node/npm, GNU tar, Linux, a local `~/ghostty`
-checkout of `b32f20f` with local WASM portability edits described in the
-[graphics plan](../docs/kitty-graphics.md), and a modern Chromium browser with
-WebGPU or WebGL2. `zig build` provisions a pinned Go toolchain itself and defaults
-to musl; no system Go or C toolchain is required. `app-bcwebmux/build.zig.zon`
-resolves `../../ghostty` relative to `app-bcwebmux/`, so this setup is currently
-machine-local rather than reproducible from this repository alone.
+Prerequisites: Zig 0.16.0, Node/npm, GNU tar, Linux, and a modern Chromium
+browser with WebGPU or WebGL2. Ghostty is a pinned dependency: `build.zig.zon`
+fetches the `bobcao3/ghostty` fork branch `bcwebmux/wasm-kitty-graphics`
+(commit `a21f94b`), carrying the WASM portability edits described in the
+[graphics plan](../docs/kitty-graphics.md). No local checkout is needed, and the
+build is reproducible from this repository alone. `zig build` provisions a
+pinned Go toolchain itself and defaults to musl; no system Go or C toolchain is
+required.
 
 ```sh
 # From the repository root

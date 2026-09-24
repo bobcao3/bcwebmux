@@ -48,12 +48,17 @@ changing terminal state.
 
 ## Build dependency
 
-`app-bcwebmux/build.zig.zon` uses the adjacent **locally edited** `~/ghostty`
-checkout. It is neither a submodule nor a published fork. The edits enable
-freestanding Kitty graphics, exclude OS-backed image loaders on WASM, and keep
-Ghostty's APC dispatch available. A fresh checkout needs that source tree and
-its local edits; the build is not portable on its own. Upstream's VT snapshot
-omits image/placement registries, which is why `KGST` exists.
+`app-bcwebmux/build.zig.zon` fetches the `bobcao3/ghostty` fork's
+`bcwebmux/wasm-kitty-graphics` branch at commit `a21f94b` by URL, with a
+verified hash. No local checkout or submodule is needed. Four patches enable
+freestanding Kitty graphics, exclude OS-backed image loaders on WASM, expose
+Ghostty's APC dispatch through a stream-handler hook, and export
+`device_attributes`. Upstream's VT snapshot omits image/placement registries,
+which is why `KGST` exists.
+
+To bump the pin, rebase `bcwebmux/wasm-kitty-graphics` in the `bobcao3/ghostty`
+fork onto upstream `main` and push it. Then update `.url` to the new commit and
+`.hash` (printed by `zig fetch <url>`) in `app-bcwebmux/build.zig.zon`.
 
 ## Verification
 
