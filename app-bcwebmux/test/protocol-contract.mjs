@@ -73,14 +73,10 @@ assert.equal("encodeResize" in Protocol, false);
 const sessionId = Uint8Array.from({ length: SESSION_ID_LENGTH }, (_, index) => index);
 const payload = Uint8Array.of(0xaa, 0xbb);
 const golden = Uint8Array.from([
-  0x42, 0x43, 0x57, 0x53, 0x01, 0x00, 0x40, 0x00,
-  0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-  0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-  0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-  0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-  0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
-  0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f,
+  0x42, 0x43, 0x57, 0x53, 0x01, 0x00, 0x40, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+  0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+  0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+  0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f,
   0xaa, 0xbb,
 ]);
 const goldenFrame = {
@@ -112,7 +108,10 @@ reusable[PAYLOAD_OFFSET] = 0xcc;
 assert.equal(decoded.payload[0], 0xcc);
 
 const frameTypes = Object.values(FrameType);
-assert.deepEqual(frameTypes, Array.from({ length: 24 }, (_, index) => index + 1));
+assert.deepEqual(
+  frameTypes,
+  Array.from({ length: 24 }, (_, index) => index + 1),
+);
 for (const type of frameTypes) {
   const encoded = encodeFrame({ type, connectionSequence: 1n });
   assert.equal(decodeFrame(encoded).type, type);
@@ -120,36 +119,72 @@ for (const type of frameTypes) {
 
 const compressedTypes = [FrameType.CHECKPOINT_CHUNK, FrameType.EVENT_BATCH];
 for (const type of compressedTypes) {
-  assert.equal(decodeFrame(encodeFrame({ type, flags: COMPRESSED_FLAG, connectionSequence: 1n })).flags, COMPRESSED_FLAG);
+  assert.equal(
+    decodeFrame(encodeFrame({ type, flags: COMPRESSED_FLAG, connectionSequence: 1n })).flags,
+    COMPRESSED_FLAG,
+  );
 }
-assert.throws(() => encodeFrame({ type: FrameType.HELLO, flags: COMPRESSED_FLAG, connectionSequence: 1n }), RangeError);
-assert.throws(() => encodeFrame({ type: FrameType.EVENT_BATCH, flags: 2, connectionSequence: 1n }), RangeError);
+assert.throws(
+  () => encodeFrame({ type: FrameType.HELLO, flags: COMPRESSED_FLAG, connectionSequence: 1n }),
+  RangeError,
+);
+assert.throws(
+  () => encodeFrame({ type: FrameType.EVENT_BATCH, flags: 2, connectionSequence: 1n }),
+  RangeError,
+);
 
 for (let length = 0; length < HEADER_LENGTH; length += 1) {
-  assert.throws(() => decodeFrame(golden.subarray(0, length)), RangeError, `truncation at ${length}`);
+  assert.throws(
+    () => decodeFrame(golden.subarray(0, length)),
+    RangeError,
+    `truncation at ${length}`,
+  );
 }
 function malformed(mutator) {
   const frame = new Uint8Array(golden);
   mutator(frame);
   assert.throws(() => decodeFrame(frame), RangeError);
 }
-malformed((frame) => { frame[MAGIC_OFFSET] ^= 1; });
-malformed((frame) => { frame[TYPE_OFFSET] = 0xff; });
-malformed((frame) => { frame[FLAGS_OFFSET] = 2; });
-malformed((frame) => { writeUint16LE(frame, HEADER_LENGTH_OFFSET, HEADER_LENGTH - 1); });
-malformed((frame) => { writeUint32LE(frame, RESERVED_OFFSET, 1); });
-malformed((frame) => { writeUint32LE(frame, PAYLOAD_LENGTH_OFFSET, 1); });
-malformed((frame) => { writeUint64LE(frame, CONNECTION_SEQUENCE_OFFSET, 0n); });
+malformed((frame) => {
+  frame[MAGIC_OFFSET] ^= 1;
+});
+malformed((frame) => {
+  frame[TYPE_OFFSET] = 0xff;
+});
+malformed((frame) => {
+  frame[FLAGS_OFFSET] = 2;
+});
+malformed((frame) => {
+  writeUint16LE(frame, HEADER_LENGTH_OFFSET, HEADER_LENGTH - 1);
+});
+malformed((frame) => {
+  writeUint32LE(frame, RESERVED_OFFSET, 1);
+});
+malformed((frame) => {
+  writeUint32LE(frame, PAYLOAD_LENGTH_OFFSET, 1);
+});
+malformed((frame) => {
+  writeUint64LE(frame, CONNECTION_SEQUENCE_OFFSET, 0n);
+});
 assert.throws(() => encodeFrame({ ...goldenFrame, connectionSequence: 0n }), RangeError);
 assert.throws(() => encodeFrame({ ...goldenFrame, headerLength: HEADER_LENGTH - 1 }), RangeError);
 assert.throws(() => encodeFrame(goldenFrame, new Uint8Array(HEADER_LENGTH)), RangeError);
 
 const maxPayload = new Uint8Array(MAX_PAYLOAD_LENGTH);
-const maxFrame = encodeFrame({ type: FrameType.INPUT, connectionSequence: 1n, payload: maxPayload });
+const maxFrame = encodeFrame({
+  type: FrameType.INPUT,
+  connectionSequence: 1n,
+  payload: maxPayload,
+});
 assert.equal(maxFrame.byteLength, MAX_FRAME_LENGTH);
 assert.equal(decodeFrame(maxFrame).payloadLength, MAX_PAYLOAD_LENGTH);
 assert.throws(
-  () => encodeFrame({ type: FrameType.INPUT, connectionSequence: 1n, payload: new Uint8Array(MAX_PAYLOAD_LENGTH + 1) }),
+  () =>
+    encodeFrame({
+      type: FrameType.INPUT,
+      connectionSequence: 1n,
+      payload: new Uint8Array(MAX_PAYLOAD_LENGTH + 1),
+    }),
   RangeError,
 );
 const overMaxHeader = encodeFrame({ type: FrameType.HELLO, connectionSequence: 1n });
@@ -162,7 +197,10 @@ assert.throws(() => asUint64("value", MAX_UINT64 + 1n), RangeError);
 assert.throws(() => asUint64("value", -1n), RangeError);
 assert.throws(() => asUint64("value", Number.MAX_SAFE_INTEGER + 1), RangeError);
 assert.throws(() => asUint64("value", 1.5), RangeError);
-assert.throws(() => encodeFrame({ type: FrameType.PING, connectionSequence: MAX_UINT64 + 1n }), RangeError);
+assert.throws(
+  () => encodeFrame({ type: FrameType.PING, connectionSequence: MAX_UINT64 + 1n }),
+  RangeError,
+);
 
 const integers = new Uint8Array(14);
 writeUint16LE(integers, 0, 0x1234);

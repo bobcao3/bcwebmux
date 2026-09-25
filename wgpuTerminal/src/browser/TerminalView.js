@@ -14,11 +14,24 @@ export const TERMINAL_VIEW_ROLES = Object.freeze({
   scrollbarThumb: "scrollbar-thumb",
 });
 
-const ELEMENT_NAMES = Object.freeze(["viewport", "surface", "textView", "input", "screen", "composition", "scrollbar", "scrollbarThumb"]);
+const ELEMENT_NAMES = Object.freeze([
+  "viewport",
+  "surface",
+  "textView",
+  "input",
+  "screen",
+  "composition",
+  "scrollbar",
+  "scrollbarThumb",
+]);
 const CHILD_NAMES = Object.freeze(["surface", "input", "screen", "composition", "scrollbar"]);
 function isNode(value, tagName = null) {
-  return value !== null && typeof value === "object" && value.nodeType === 1 &&
-    (!tagName || String(value.tagName).toLowerCase() === tagName);
+  return (
+    value !== null &&
+    typeof value === "object" &&
+    value.nodeType === 1 &&
+    (!tagName || String(value.tagName).toLowerCase() === tagName)
+  );
 }
 
 function assertNode(value, name, tagName) {
@@ -30,13 +43,25 @@ function assertElements(elements) {
   if (!elements || typeof elements !== "object" || Array.isArray(elements)) {
     throw new TypeError("terminal elements are required");
   }
-  const tags = { viewport: "section", surface: "div", textView: "div",
-    input: "textarea", screen: "canvas", composition: "div", scrollbar: "div", scrollbarThumb: "div" };
+  const tags = {
+    viewport: "section",
+    surface: "div",
+    textView: "div",
+    input: "textarea",
+    screen: "canvas",
+    composition: "div",
+    scrollbar: "div",
+    scrollbarThumb: "div",
+  };
   for (const name of ELEMENT_NAMES) assertNode(elements[name], name, tags[name]);
   const { viewport, surface, textView, scrollbar, scrollbarThumb } = elements;
-  if (!CHILD_NAMES.every((name) => Array.from(viewport.children).includes(elements[name])) ||
-      surface.children.length !== 1 || surface.children[0] !== textView ||
-      scrollbar.children.length !== 1 || scrollbar.children[0] !== scrollbarThumb) {
+  if (
+    !CHILD_NAMES.every((name) => Array.from(viewport.children).includes(elements[name])) ||
+    surface.children.length !== 1 ||
+    surface.children[0] !== textView ||
+    scrollbar.children.length !== 1 ||
+    scrollbar.children[0] !== scrollbarThumb
+  ) {
     throw new Error("terminal elements have an invalid structure");
   }
   return elements;
@@ -44,7 +69,8 @@ function assertElements(elements) {
 
 function documentFor(parent, supplied) {
   const doc = supplied || parent?.ownerDocument || globalThis.document;
-  if (!doc || typeof doc.createElement !== "function") throw new TypeError("terminal document is required");
+  if (!doc || typeof doc.createElement !== "function")
+    throw new TypeError("terminal document is required");
   return doc;
 }
 
@@ -56,10 +82,12 @@ function mark(element, roleName, viewport = false) {
 
 export class TerminalView {
   constructor(options = {}) {
-    if (!options || typeof options !== "object") throw new TypeError("terminal options are required");
+    if (!options || typeof options !== "object")
+      throw new TypeError("terminal options are required");
     const hasElements = options.elements !== undefined;
     const hasParent = options.parent !== undefined;
-    if (hasElements === hasParent) throw new TypeError("exactly one of terminal elements or parent is required");
+    if (hasElements === hasParent)
+      throw new TypeError("exactly one of terminal elements or parent is required");
     this.disposed = false;
     this.generated = false;
 
@@ -69,7 +97,8 @@ export class TerminalView {
       const parent = assertNode(options.parent, "parent");
       const doc = documentFor(parent, options.document);
       this.generated = true;
-      const create = (tag, name) => mark(doc.createElement(tag), TERMINAL_VIEW_ROLES[name], name === "viewport");
+      const create = (tag, name) =>
+        mark(doc.createElement(tag), TERMINAL_VIEW_ROLES[name], name === "viewport");
       this.viewport = create("section", "viewport");
       this.viewport.setAttribute("role", "application");
       this.viewport.setAttribute("aria-label", "Terminal");
@@ -103,11 +132,14 @@ export class TerminalView {
       this.scrollbar.append(this.scrollbarThumb);
       this.viewport.append(this.surface, this.input, this.screen, this.composition, this.scrollbar);
       parent.append(this.viewport);
-      this.elements = Object.freeze(Object.fromEntries(ELEMENT_NAMES.map((name) => [name, this[name]])));
+      this.elements = Object.freeze(
+        Object.fromEntries(ELEMENT_NAMES.map((name) => [name, this[name]])),
+      );
     }
     for (const name of ELEMENT_NAMES) this[name] = this.elements[name];
     if (!this.generated) {
-      for (const name of ELEMENT_NAMES) mark(this[name], TERMINAL_VIEW_ROLES[name], name === "viewport");
+      for (const name of ELEMENT_NAMES)
+        mark(this[name], TERMINAL_VIEW_ROLES[name], name === "viewport");
     }
   }
 

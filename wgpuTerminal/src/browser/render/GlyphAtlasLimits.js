@@ -6,7 +6,8 @@ export const GLYPH_SLOT_PROTOCOL_LIMIT = 0xfffffffe;
 export const TERMINAL_CELL_PROTOCOL_LIMIT = 0xffff;
 
 function positiveInteger(value, label) {
-  if (!Number.isSafeInteger(value) || value <= 0) throw new TypeError(`${label} must be a positive integer`);
+  if (!Number.isSafeInteger(value) || value <= 0)
+    throw new TypeError(`${label} must be a positive integer`);
   return value;
 }
 
@@ -33,7 +34,10 @@ export class GlyphAtlasCapacityError extends RangeError {
 }
 
 export function computeGlyphAtlasLimits(options) {
-  const maxTextureDimension = positiveInteger(options.maxTextureDimension, "maximum texture dimension");
+  const maxTextureDimension = positiveInteger(
+    options.maxTextureDimension,
+    "maximum texture dimension",
+  );
   const cellWidth = positiveInteger(options.cellWidth, "glyph cell width");
   const cellHeight = positiveInteger(options.cellHeight, "glyph cell height");
   const protocolSlotLimit = positiveInteger(
@@ -103,7 +107,10 @@ export function planGlyphAtlasGeometry(limits, requestedSlots, options = {}) {
   }
   const preferredColumns = Math.min(
     limits.maximumColumns,
-    positiveInteger(options.preferredColumns ?? Math.min(requiredSlots, limits.maximumColumns), "preferred atlas columns"),
+    positiveInteger(
+      options.preferredColumns ?? Math.min(requiredSlots, limits.maximumColumns),
+      "preferred atlas columns",
+    ),
   );
   const preferred = geometryForColumns(limits, requiredSlots, preferredColumns);
   if (preferred) return Object.freeze(preferred);

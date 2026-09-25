@@ -36,7 +36,8 @@ export function initializeGlyphAtlasDialog(readAtlas) {
       canvas.hidden = false;
       status.textContent = `${width} × ${height} px · ${columns} × ${rows} slots · ${tileWidth} × ${tileHeight} px/cell · R8`;
     } catch (error) {
-      if (request === generation && dialog.open) status.textContent = error.message || "Glyph texture readback failed";
+      if (request === generation && dialog.open)
+        status.textContent = error.message || "Glyph texture readback failed";
     } finally {
       pending = false;
       open.disabled = refresh.disabled = false;
@@ -47,19 +48,29 @@ export function initializeGlyphAtlasDialog(readAtlas) {
     dialog.showModal();
     void capture();
   });
-  refresh.addEventListener("click", () => { void capture(); });
+  refresh.addEventListener("click", () => {
+    void capture();
+  });
   close.addEventListener("click", () => dialog.close());
-  dialog.addEventListener("keydown", event => {
+  dialog.addEventListener("keydown", (event) => {
     if (event.key !== "Escape") return;
     event.preventDefault();
     event.stopPropagation();
     dialog.close();
   });
-  actualSize.addEventListener("change", () => canvas.classList.toggle("actual-size", actualSize.checked));
-  dialog.addEventListener("click", event => {
+  actualSize.addEventListener("change", () =>
+    canvas.classList.toggle("actual-size", actualSize.checked),
+  );
+  dialog.addEventListener("click", (event) => {
     const rect = dialog.getBoundingClientRect();
-    if (event.target === dialog && (event.clientX < rect.left || event.clientX > rect.right ||
-        event.clientY < rect.top || event.clientY > rect.bottom)) dialog.close();
+    if (
+      event.target === dialog &&
+      (event.clientX < rect.left ||
+        event.clientX > rect.right ||
+        event.clientY < rect.top ||
+        event.clientY > rect.bottom)
+    )
+      dialog.close();
   });
   dialog.addEventListener("close", () => {
     if (dialog.open) return;
@@ -69,5 +80,7 @@ export function initializeGlyphAtlasDialog(readAtlas) {
     status.textContent = "";
     if (settings.open) open.focus({ preventScroll: true });
   });
-  settings.addEventListener("close", () => { if (!settings.open) dialog.close(); });
+  settings.addEventListener("close", () => {
+    if (!settings.open) dialog.close();
+  });
 }

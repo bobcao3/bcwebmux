@@ -6,7 +6,12 @@
 // the origin and the enrolled keys allow it.
 
 import {
-  describeError, requestJSON, requestOptions, serializeCredential, supported, unsupportedReason,
+  describeError,
+  requestJSON,
+  requestOptions,
+  serializeCredential,
+  supported,
+  unsupportedReason,
 } from "/webauthn.js";
 
 const form = document.querySelector("#auth-code-form");
@@ -36,7 +41,7 @@ function setEnabled(enabled) {
 }
 
 function unwrap(promise) {
-  return promise.catch(error => {
+  return promise.catch((error) => {
     report(describeError(error), "error");
   });
 }
@@ -98,9 +103,14 @@ async function signInWithKey() {
   try {
     report("Follow the browser prompt to use your security key…");
     const assertion = await requestJSON("/auth/login/begin", { method: "POST", body: {} });
-    const credential = await navigator.credentials.get({ publicKey: requestOptions(assertion.publicKey) });
+    const credential = await navigator.credentials.get({
+      publicKey: requestOptions(assertion.publicKey),
+    });
     if (!credential) throw new Error("the browser returned no credential");
-    await requestJSON("/auth/login/finish", { method: "POST", body: serializeCredential(credential) });
+    await requestJSON("/auth/login/finish", {
+      method: "POST",
+      body: serializeCredential(credential),
+    });
     report("Signed in. Opening the terminal…", "ok");
     location.replace("/");
   } catch (error) {
@@ -145,7 +155,12 @@ async function initialize() {
   } else {
     form.hidden = true;
     intro.textContent = "No factor can sign in at this address.";
-    report(session.reason || unsupportedReason() || "no authenticator app or usable security key is enrolled", "error");
+    report(
+      session.reason ||
+        unsupportedReason() ||
+        "no authenticator app or usable security key is enrolled",
+      "error",
+    );
     return;
   }
   if (session.totp) {
@@ -158,7 +173,7 @@ async function initialize() {
   ready = true;
 }
 
-form.addEventListener("submit", event => {
+form.addEventListener("submit", (event) => {
   event.preventDefault();
   unwrap(verify());
 });
@@ -166,7 +181,7 @@ keyButton.addEventListener("click", () => unwrap(signInWithKey()));
 codeInput.addEventListener("input", () => {
   codeInput.value = codeInput.value.replace(/[^0-9]/g, "").slice(0, 8);
 });
-codeInput.addEventListener("keydown", event => {
+codeInput.addEventListener("keydown", (event) => {
   if (event.key === "Enter") {
     event.preventDefault();
     unwrap(verify());

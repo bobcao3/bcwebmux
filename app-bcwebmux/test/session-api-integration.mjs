@@ -12,22 +12,47 @@ if (!serverPath) throw new Error("usage: node test/session-api-integration.mjs S
 const port = await freePort();
 const tls = await localTls();
 const base = `https://127.0.0.1:${port}`;
-const server = spawn(serverPath, ["--config", "/dev/null", "--auth=false", "--tls-cert", tls.cert, "--tls-key", tls.key,
-  "--port", String(port), "--origin", base, "--max-sessions", "2"], {
-  stdio: ["ignore", "pipe", "pipe"],
-});
+const server = spawn(
+  serverPath,
+  [
+    "--config",
+    "/dev/null",
+    "--auth=false",
+    "--tls-cert",
+    tls.cert,
+    "--tls-key",
+    tls.key,
+    "--port",
+    String(port),
+    "--origin",
+    base,
+    "--max-sessions",
+    "2",
+  ],
+  {
+    stdio: ["ignore", "pipe", "pipe"],
+  },
+);
 let logs = "";
-server.stdout.on("data", chunk => { logs += chunk; });
-server.stderr.on("data", chunk => { logs += chunk; });
+server.stdout.on("data", (chunk) => {
+  logs += chunk;
+});
+server.stderr.on("data", (chunk) => {
+  logs += chunk;
+});
 
 try {
-  await waitFor(async () => {
-    try {
-      return (await fetch(`${base}/api/server`)).ok;
-    } catch {
-      return false;
-    }
-  }, 5000, () => `server failed to start\n${logs}`);
+  await waitFor(
+    async () => {
+      try {
+        return (await fetch(`${base}/api/server`)).ok;
+      } catch {
+        return false;
+      }
+    },
+    5000,
+    () => `server failed to start\n${logs}`,
+  );
 
   const infoResponse = await fetch(`${base}/api/server`);
   assertSecurity(infoResponse);
@@ -42,7 +67,11 @@ try {
   assert.equal(info.limits.maxLiveSessions, 2);
   assert.equal(info.limits.scrollbackBytes, 8 * 1024 * 1024);
 
-  const forbidden = await createSession("forbidden", { profile: "shell" }, "http://example.invalid");
+  const forbidden = await createSession(
+    "forbidden",
+    { profile: "shell" },
+    "http://example.invalid",
+  );
   assert.equal(forbidden.status, 403);
   assertSecurity(forbidden);
 
@@ -76,14 +105,17 @@ try {
   assert.equal(first.state, "running");
   assert.equal(first.geometry.cols, 90);
   assert.equal(createdResponse.headers.get("location"), `/api/sessions/${first.id}`);
-  const firstOutput = await waitForSession(first.id, session => session.outputOffset > 0);
+  const firstOutput = await waitForSession(first.id, (session) => session.outputOffset > 0);
   assert.equal(firstOutput.generation, first.generation);
 
   const replayResponse = await createSession("create-first", createBody);
   assert.equal(replayResponse.status, 201);
   assert.equal(replayResponse.headers.get("idempotency-replayed"), "true");
   assert.equal((await replayResponse.json()).id, first.id);
-  const conflictReplay = await createSession("create-first", { profile: "shell", name: "Different" });
+  const conflictReplay = await createSession("create-first", {
+    profile: "shell",
+    name: "Different",
+  });
   assert.equal(conflictReplay.status, 409);
 
   const listResponse = await fetch(`${base}/api/sessions`);
@@ -104,8 +136,11 @@ try {
     createSession("create-second", { profile: "shell", name: "Second" }),
     createSession("create-third", { profile: "shell", name: "Third" }),
   ]);
-  assert.deepEqual(responses.map(response => response.status).sort((a, b) => a - b), [201, 429]);
-  const secondResponse = responses.find(response => response.status === 201);
+  assert.deepEqual(
+    responses.map((response) => response.status).sort((a, b) => a - b),
+    [201, 429],
+  );
+  const secondResponse = responses.find((response) => response.status === 201);
   const second = await secondResponse.json();
 
   const deleteRunning = await fetch(`${base}/api/sessions/${first.id}`, {
@@ -123,7 +158,7 @@ try {
   assert.equal(terminateReplay.status, 202);
   assert.equal(terminateReplay.headers.get("idempotency-replayed"), "true");
 
-  const exited = await waitForSession(first.id, session => session.state === "exited");
+  const exited = await waitForSession(first.id, (session) => session.state === "exited");
   assert.equal(exited.generation, first.generation);
   assert.ok(exited.revision > first.revision);
   assert.ok(exited.eventSeq > 0);
@@ -140,13 +175,19 @@ try {
   assertSecurity(deleted, false);
   assert.equal((await fetch(`${base}/api/sessions/${first.id}`)).status, 404);
 
-  const replacementResponse = await createSession("create-replacement", { profile: "shell", name: "Replacement" });
+  const replacementResponse = await createSession("create-replacement", {
+    profile: "shell",
+    name: "Replacement",
+  });
   assert.equal(replacementResponse.status, 201);
   const replacement = await replacementResponse.json();
 
-  for (const [session, key] of [[second, "terminate-second"], [replacement, "terminate-replacement"]]) {
+  for (const [session, key] of [
+    [second, "terminate-second"],
+    [replacement, "terminate-replacement"],
+  ]) {
     assert.equal((await terminate(session.id, key)).status, 202);
-    await waitForSession(session.id, value => value.state === "exited");
+    await waitForSession(session.id, (value) => value.state === "exited");
     const response = await fetch(`${base}/api/sessions/${session.id}`, {
       method: "DELETE",
       headers: mutationHeaders(`delete-${session.id}`),
@@ -192,24 +233,40 @@ async function verifyNaturalExit() {
   const port = await freePort();
   const tls = await localTls();
   const localBase = `https://127.0.0.1:${port}`;
-  const secondServer = spawn(serverPath, [
-    "--config", "/dev/null", "--auth=false",
-    "--tls-cert", tls.cert, "--tls-key", tls.key,
-    "--port", String(port),
-    "--origin", localBase,
-    "--shell", "/bin/true",
-  ], {
-    stdio: ["ignore", "pipe", "pipe"],
-  });
+  const secondServer = spawn(
+    serverPath,
+    [
+      "--config",
+      "/dev/null",
+      "--auth=false",
+      "--tls-cert",
+      tls.cert,
+      "--tls-key",
+      tls.key,
+      "--port",
+      String(port),
+      "--origin",
+      localBase,
+      "--shell",
+      "/bin/true",
+    ],
+    {
+      stdio: ["ignore", "pipe", "pipe"],
+    },
+  );
 
   try {
-    await waitFor(async () => {
-      try {
-        return (await fetch(`${localBase}/api/server`)).ok;
-      } catch {
-        return false;
-      }
-    }, 5000, () => "natural-exit server failed to start");
+    await waitFor(
+      async () => {
+        try {
+          return (await fetch(`${localBase}/api/server`)).ok;
+        } catch {
+          return false;
+        }
+      },
+      5000,
+      () => "natural-exit server failed to start",
+    );
 
     const createResponse = await fetch(`${localBase}/api/sessions`, {
       method: "POST",
@@ -224,12 +281,16 @@ async function verifyNaturalExit() {
     const session = await createResponse.json();
 
     let exited;
-    await waitFor(async () => {
-      const response = await fetch(`${localBase}/api/sessions/${session.id}`);
-      if (!response.ok) return false;
-      exited = await response.json();
-      return exited.state === "exited";
-    }, 5000, () => "natural-exit session did not exit");
+    await waitFor(
+      async () => {
+        const response = await fetch(`${localBase}/api/sessions/${session.id}`);
+        if (!response.ok) return false;
+        exited = await response.json();
+        return exited.state === "exited";
+      },
+      5000,
+      () => "natural-exit session did not exit",
+    );
     assert.ok(exited.eventSeq > 0);
     assert.ok(exited.checkpointBytes > 0);
     assert.equal(typeof exited.exitStatus, "number");
@@ -257,12 +318,16 @@ function terminate(id, key) {
 
 async function waitForSession(id, predicate) {
   let latest;
-  await waitFor(async () => {
-    const response = await fetch(`${base}/api/sessions/${id}`);
-    if (!response.ok) return false;
-    latest = await response.json();
-    return predicate(latest);
-  }, 5000, () => `session did not reach expected state: ${JSON.stringify(latest)}\n${logs}`);
+  await waitFor(
+    async () => {
+      const response = await fetch(`${base}/api/sessions/${id}`);
+      if (!response.ok) return false;
+      latest = await response.json();
+      return predicate(latest);
+    },
+    5000,
+    () => `session did not reach expected state: ${JSON.stringify(latest)}\n${logs}`,
+  );
   return latest;
 }
 

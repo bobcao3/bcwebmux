@@ -1,0 +1,7 @@
+node_modules/
+zig-out/
+zig-pkg/
+.zig-cache/
+app-bcwebmux/go/vendor/
+wgpuTerminal/dist/
+package-lock.json

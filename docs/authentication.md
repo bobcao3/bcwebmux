@@ -20,9 +20,9 @@ The service runs shells, so anything that can obtain a browser session is
 already a shell on the host. Enrolling a factor raises that step from "reach the
 port" to "hold the shared secret" or "hold the key".
 
-- **In scope:** an unauthenticated attacker who can reach the listener, a
-  stolen session cookie, a replayed or guessed code, cross-origin abuse of the
-  sign-in endpoints, and lockout as a denial of service.
+- **In scope:** an unauthenticated attacker who can reach the listener, a stolen
+  session cookie, a replayed or guessed code, cross-origin abuse of the sign-in
+  endpoints, and lockout as a denial of service.
 - **Out of scope by design:** host access. Anyone who can read or write the
   state file can reset authentication, exactly like anyone who can edit
   `authorized_keys` can change who may log in.
@@ -46,8 +46,8 @@ and the service can keep running:
    scannable QR code and as text.
 2. The command asks for the code the app now shows.
 3. Only a matching code is stored. A mistyped secret, a wrong scan, or a
-   terminal that mangled the QR therefore cannot lock anyone out, and a run
-   that is interrupted changes nothing.
+   terminal that mangled the QR therefore cannot lock anyone out, and a run that
+   is interrupted changes nothing.
 
 The stored factor is SHA-1, six digits, 30-second steps, which is what every
 authenticator app assumes by default.
@@ -97,8 +97,8 @@ CLI never enrolls one.
   and `pixel · fingerprint` are two entries, and either signs in on its own.
 - Enrolling and removing are the only operations, and both require a fresh
   factor first: an assertion from a key that is already enrolled, or a current
-  code from the authenticator app. A stolen session cookie alone can do
-  neither, and the arming lasts five minutes.
+  code from the authenticator app. A stolen session cookie alone can do neither,
+  and the arming lasts five minutes.
 - The code path is what makes the first key possible: a session that signed in
   with the app holds no key of its own to assert.
 
@@ -108,8 +108,8 @@ Registration and step-up both require user verification (PIN or biometric), so
 the credential is bound to whoever can unlock that device.
 
 The authenticator app itself stays a host operation: it is enrolled with
-`bcwebmux-server auth totp`, and `bcwebmux-server auth list` /
-`auth remove` remain the recovery path from a shell.
+`bcwebmux-server auth totp`, and `bcwebmux-server auth list` / `auth remove`
+remain the recovery path from a shell.
 
 ### Why keys are origin-bound
 
@@ -122,10 +122,10 @@ skipped by that mechanism.
 
 So:
 
-| Address | Authenticator app | Security key |
-| --- | --- | --- |
-| `https://terminal.example.ts.net:8443` | works | works, enrolled for that host |
-| `https://192.168.1.20:8443` | works | impossible: no relying party ID exists |
+| Address                                | Authenticator app | Security key                           |
+| -------------------------------------- | ----------------- | -------------------------------------- |
+| `https://terminal.example.ts.net:8443` | works             | works, enrolled for that host          |
+| `https://192.168.1.20:8443`            | works             | impossible: no relying party ID exists |
 
 A ceremony needs a secure context, which is HTTPS or plain http on `localhost`,
 and a hostname that can be a relying party ID. Usable origins are listed at
@@ -136,31 +136,31 @@ startup, and an origin that cannot host a ceremony is reported with the reason.
 
 Both factors issue the same session cookie:
 
-| Property | Value |
-| --- | --- |
-| Name | `bcwebmux_session` |
-| Content | base64url payload + HMAC-SHA256 signature |
-| Payload | version, factor, relying party and credential (keys only), issued-at, expires-at |
-| Flags | `HttpOnly`, `SameSite=Strict`, `Path=/`, `Secure` for `https` origins |
-| Lifetime | `--auth-session-ttl`, default 168h, re-issued after half its lifetime |
+| Property | Value                                                                            |
+| -------- | -------------------------------------------------------------------------------- |
+| Name     | `bcwebmux_session`                                                               |
+| Content  | base64url payload + HMAC-SHA256 signature                                        |
+| Payload  | version, factor, relying party and credential (keys only), issued-at, expires-at |
+| Flags    | `HttpOnly`, `SameSite=Strict`, `Path=/`, `Secure` for `https` origins            |
+| Lifetime | `--auth-session-ttl`, default 168h, re-issued after half its lifetime            |
 
 The signing key is a random 32-byte value in the state file. A session is
 re-validated on every request: the signature, the expiry, and the presence of
 the factor it was issued to must all hold, and sessions outlive a service
-restart because that key is on disk. An authenticator-app session works
-at every address the server answers on, because the browser scopes each cookie
-to the host that issued it; a key session is additionally bound to the relying
-party it was issued for.
+restart because that key is on disk. An authenticator-app session works at every
+address the server answers on, because the browser scopes each cookie to the
+host that issued it; a key session is additionally bound to the relying party it
+was issued for.
 
 ## Guards and endpoints
 
 With at least one factor enrolled, every origin requires a session:
 
-| Request | Unauthenticated result |
-| --- | --- |
-| `/api/...` | `401` JSON with code `unauthenticated` |
-| `/ws` | `401` before the upgrade |
-| Any other path | `302` to `/login` |
+| Request        | Unauthenticated result                 |
+| -------------- | -------------------------------------- |
+| `/api/...`     | `401` JSON with code `unauthenticated` |
+| `/ws`          | `401` before the upgrade               |
+| Any other path | `302` to `/login`                      |
 
 The only responses served without a session are the login page and its assets,
 plus the `/auth/*` endpoints themselves. Application HTML and assets are never
@@ -189,10 +189,10 @@ serving unauthenticated.
 
 - **Sessions are bearer tokens.** A browser that is already signed in stays
   signed in for up to the session lifetime without a new code.
-- **Attestation is not verified.** The server requests `attestation: "none"`,
-  so it cannot enforce a policy such as "hardware keys only".
-- **The authenticator secret is a single factor.** Anyone who can read the
-  state file, or the QR code during enrollment, can generate codes. Nothing else
-  in the file is secret in the same way: public keys cannot sign.
+- **Attestation is not verified.** The server requests `attestation: "none"`, so
+  it cannot enforce a policy such as "hardware keys only".
+- **The authenticator secret is a single factor.** Anyone who can read the state
+  file, or the QR code during enrollment, can generate codes. Nothing else in
+  the file is secret in the same way: public keys cannot sign.
 - **No account recovery.** Losing the app and every key means losing browser
   access until someone with host access enrolls a factor again.

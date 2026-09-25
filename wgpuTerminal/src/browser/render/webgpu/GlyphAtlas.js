@@ -19,8 +19,14 @@ export class GlyphAtlas {
 
   prepareLayout(geometry, cellWidth, cellHeight, fontSize, reset) {
     validateAtlasGeometry(geometry);
-    if (!Number.isFinite(cellWidth) || !Number.isFinite(cellHeight) || !Number.isFinite(fontSize) ||
-        cellWidth <= 0 || cellHeight <= 0 || fontSize <= 0) {
+    if (
+      !Number.isFinite(cellWidth) ||
+      !Number.isFinite(cellHeight) ||
+      !Number.isFinite(fontSize) ||
+      cellWidth <= 0 ||
+      cellHeight <= 0 ||
+      fontSize <= 0
+    ) {
       throw new Error("invalid physical cell metrics");
     }
     const tileWidth = Math.round(cellWidth);
@@ -39,19 +45,24 @@ export class GlyphAtlas {
       tileHeight,
       fontSize: roundedFontSize,
       texture,
-      preserve: !reset && geometry.columns === this.columns && tileWidth === this.tileWidth &&
+      preserve:
+        !reset &&
+        geometry.columns === this.columns &&
+        tileWidth === this.tileWidth &&
         tileHeight === this.tileHeight,
     };
   }
 
   commitLayout(candidate) {
-    if (this.pendingTextureCopies.length !== 0) throw new Error("glyph atlas texture copies pending");
+    if (this.pendingTextureCopies.length !== 0)
+      throw new Error("glyph atlas texture copies pending");
     const oldTexture = this.texture;
     const oldRows = this.rows;
     const oldColumns = this.columns;
     const oldTileWidth = this.tileWidth;
     const oldTileHeight = this.tileHeight;
-    const preservingGrowth = candidate.preserve && candidate.rows > oldRows && this.nextSlot > 0 && oldTexture;
+    const preservingGrowth =
+      candidate.preserve && candidate.rows > oldRows && this.nextSlot > 0 && oldTexture;
     this.columns = candidate.columns;
     this.rows = candidate.rows;
     this.tileWidth = candidate.tileWidth;
@@ -78,7 +89,8 @@ export class GlyphAtlas {
   }
 
   async readPixels() {
-    if (!this.texture || this.pendingTextureCopies.length) throw new Error("Glyph texture is not ready; retry after rendering");
+    if (!this.texture || this.pendingTextureCopies.length)
+      throw new Error("Glyph texture is not ready; retry after rendering");
     const layout = glyphAtlasSnapshotLayout(this);
     const { width, height } = layout;
     const bytesPerRow = Math.ceil(width / 256) * 256;
@@ -88,12 +100,17 @@ export class GlyphAtlas {
     });
     try {
       const encoder = this.device.createCommandEncoder();
-      encoder.copyTextureToBuffer({ texture: this.texture }, { buffer, bytesPerRow, rowsPerImage: height }, [width, height, 1]);
+      encoder.copyTextureToBuffer(
+        { texture: this.texture },
+        { buffer, bytesPerRow, rowsPerImage: height },
+        [width, height, 1],
+      );
       this.device.queue.submit([encoder.finish()]);
       await buffer.mapAsync(GPUMapMode.READ);
       const source = new Uint8Array(buffer.getMappedRange());
       const data = new Uint8Array(width * height);
-      for (let y = 0; y < height; y++) data.set(source.subarray(y * bytesPerRow, y * bytesPerRow + width), y * width);
+      for (let y = 0; y < height; y++)
+        data.set(source.subarray(y * bytesPerRow, y * bytesPerRow + width), y * width);
       buffer.unmap();
       return { ...layout, data };
     } finally {

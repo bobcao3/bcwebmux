@@ -8,8 +8,8 @@ const ROW_WRAP = 1;
 const COARSE_SELECTION_HIT_SLOP = 22;
 const decoder = new TextDecoder("utf-8", { fatal: true });
 const GHOSTTY_WORD_BOUNDARIES = new Set([
-  0x00, 0x20, 0x09, 0x22, 0x27, 0x2502, 0x60, 0x7c, 0x3a, 0x3b, 0x2c,
-  0x5b, 0x5d, 0x7b, 0x7d, 0x28, 0x29, 0x3c, 0x3e, 0x24,
+  0x00, 0x20, 0x09, 0x22, 0x27, 0x2502, 0x60, 0x7c, 0x3a, 0x3b, 0x2c, 0x5b, 0x5d, 0x7b, 0x7d, 0x28,
+  0x29, 0x3c, 0x3e, 0x24,
 ]);
 
 export class TerminalTextView {
@@ -26,7 +26,6 @@ export class TerminalTextView {
     this.selectionQueued = false;
     this.handleSelectionChange = this.queueSelectionSync.bind(this);
     this.handleCopy = this.copy.bind(this);
-
   }
 
   setEnabled(enabled) {
@@ -68,10 +67,12 @@ export class TerminalTextView {
       const hashLow = rowData.getUint32(rowOffset + 24, true);
       const hashHigh = rowData.getUint32(rowOffset + 28, true);
       let row = this.element.children[y];
-      if (!row ||
-          row._terminalSerialLow !== serialLow ||
-          row._terminalSerialHigh !== serialHigh ||
-          row._terminalPageY !== pageY) {
+      if (
+        !row ||
+        row._terminalSerialLow !== serialLow ||
+        row._terminalSerialHigh !== serialHigh ||
+        row._terminalPageY !== pageY
+      ) {
         const key = `${serialHigh}:${serialLow}:${pageY}`;
         row = this.rowsByKey.get(key);
         if (!row) {
@@ -189,12 +190,19 @@ export class TerminalTextView {
       const cellWidth = Number.parseFloat(style.getPropertyValue("--cell-width"));
       const cellHeight = Number.parseFloat(style.getPropertyValue("--cell-height"));
       const viewRect = this.element.getBoundingClientRect();
-      if (Number.isFinite(cellWidth) && cellWidth > 0 &&
-          Number.isFinite(cellHeight) && cellHeight > 0) {
+      if (
+        Number.isFinite(cellWidth) &&
+        cellWidth > 0 &&
+        Number.isFinite(cellHeight) &&
+        cellHeight > 0
+      ) {
         let nearestDistance = Infinity;
         for (const candidateRow of this.element.children) {
-          if (!candidateRow.classList.contains("text-row") ||
-              candidateRow.parentElement !== this.element) continue;
+          if (
+            !candidateRow.classList.contains("text-row") ||
+            candidateRow.parentElement !== this.element
+          )
+            continue;
           const rowIndex = Number(candidateRow.dataset.row);
           if (!Number.isInteger(rowIndex)) continue;
           const top = viewRect.top + rowIndex * cellHeight;
@@ -202,8 +210,11 @@ export class TerminalTextView {
           const dy = clientY < top ? top - clientY : clientY > bottom ? clientY - bottom : 0;
           if (dy > COARSE_SELECTION_HIT_SLOP) continue;
           for (const candidateCell of candidateRow.children) {
-            if (!candidateCell.classList.contains("text-cell") ||
-                candidateCell._terminalCellText !== true) continue;
+            if (
+              !candidateCell.classList.contains("text-cell") ||
+              candidateCell._terminalCellText !== true
+            )
+              continue;
             const start = Number(candidateCell.dataset.start);
             const end = Number(candidateCell.dataset.end);
             if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) continue;
@@ -240,14 +251,18 @@ export class TerminalTextView {
     const boundary = isBoundary(cell);
     let firstIndex = cellIndex;
     let lastIndex = cellIndex;
-    while (firstIndex > 0 &&
-           row.children[firstIndex - 1]._terminalCellText === true &&
-           isBoundary(row.children[firstIndex - 1]) === boundary) {
+    while (
+      firstIndex > 0 &&
+      row.children[firstIndex - 1]._terminalCellText === true &&
+      isBoundary(row.children[firstIndex - 1]) === boundary
+    ) {
       firstIndex -= 1;
     }
-    while (lastIndex + 1 < row.children.length &&
-           row.children[lastIndex + 1]._terminalCellText === true &&
-           isBoundary(row.children[lastIndex + 1]) === boundary) {
+    while (
+      lastIndex + 1 < row.children.length &&
+      row.children[lastIndex + 1]._terminalCellText === true &&
+      isBoundary(row.children[lastIndex + 1]) === boundary
+    ) {
       lastIndex += 1;
     }
     const firstText = row.children[firstIndex].firstChild;
@@ -277,7 +292,12 @@ export class TerminalTextView {
     if (!this.enabled) return;
     const selection = document.getSelection();
     const range = selection?.rangeCount === 1 ? selection.getRangeAt(0) : null;
-    if (!range || selection.isCollapsed || !this.contains(range.startContainer) || !this.contains(range.endContainer)) {
+    if (
+      !range ||
+      selection.isCollapsed ||
+      !this.contains(range.startContainer) ||
+      !this.contains(range.endContainer)
+    ) {
       if (this.owned) {
         this.owned = false;
         this.callbacks.clearSelection();
@@ -346,7 +366,8 @@ export class TerminalTextView {
   clearBrowserSelection(clearTerminal = true) {
     const selection = document.getSelection();
     const range = selection?.rangeCount === 1 ? selection.getRangeAt(0) : null;
-    const containsRange = range && this.contains(range.startContainer) && this.contains(range.endContainer);
+    const containsRange =
+      range && this.contains(range.startContainer) && this.contains(range.endContainer);
     this.owned = false;
     if (containsRange) selection.removeAllRanges();
     if (clearTerminal) this.callbacks.clearSelection();

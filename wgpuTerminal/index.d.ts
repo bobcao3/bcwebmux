@@ -255,7 +255,10 @@ export declare class TerminalCore implements IDisposable {
   setRenderer(renderer: TerminalRenderer): Promise<TerminalRenderer>;
   setRenderMetrics(layout: { cellWidth: number; cellHeight: number; fontSize: number }): number;
   setGlyphPartition(partition: GlyphPartition, atlasColumns: number): number;
-  consumeFrame(consumer: (packet: FramePacket) => void | boolean, expectations: FrameExpectations): 0 | 1;
+  consumeFrame(
+    consumer: (packet: FramePacket) => void | boolean,
+    expectations: FrameExpectations,
+  ): 0 | 1;
   invalidateFrame(): void;
   invalidateTextView(): void;
   setTextViewEnabled(enabled: boolean): number;
@@ -263,12 +266,24 @@ export declare class TerminalCore implements IDisposable {
   scrollRow(row: number): number;
   scrollDelta(rows: number): number;
   scrollInput(rows: number, mods: number, x: number, y: number): number;
-  mouse(action: number, button: number, mods: number, x: number, y: number, pressed: number): number;
+  mouse(
+    action: number,
+    button: number,
+    mods: number,
+    x: number,
+    y: number,
+    pressed: number,
+  ): number;
   selection(action: number, x: number, y: number): number;
   selectWord(x: number, y: number): number;
   focus(focused: boolean): number;
   hyperlinkAt(x: number, y: number): string | null;
-  resizeCanonical(options: { cols: number; rows: number; cellWidthPx?: number; cellHeightPx?: number }): number;
+  resizeCanonical(options: {
+    cols: number;
+    rows: number;
+    cellWidthPx?: number;
+    cellHeightPx?: number;
+  }): number;
   setReplayMode(enabled: boolean): number;
   getSelection(): string | null;
   clearSelection(): boolean;
@@ -301,7 +316,9 @@ export declare class Terminal implements IDisposable {
   onTitleChange(listener: (title: string) => void): IDisposable;
   onBell(listener: () => void): IDisposable;
   onNotification(listener: (notification: { title: string; body: string }) => void): IDisposable;
-  onLinkActivate(listener: (link: { uri: string; event: PointerEvent | MouseEvent }) => void): IDisposable;
+  onLinkActivate(
+    listener: (link: { uri: string; event: PointerEvent | MouseEvent }) => void,
+  ): IDisposable;
   onError(listener: (error: unknown) => void): IDisposable;
 
   loadAddon(addon: TerminalAddon): void;
@@ -335,8 +352,14 @@ export declare class Terminal implements IDisposable {
   readPixels(): Promise<{ width: number; height: number; format: string; data: Uint8Array }>;
   /** On-demand shared atlas snapshot (top-first R8), limited to 16 Mi pixels. */
   readGlyphAtlas(): Promise<{
-    width: number; height: number; columns: number; rows: number;
-    tileWidth: number; tileHeight: number; format: "r8unorm"; data: Uint8Array;
+    width: number;
+    height: number;
+    columns: number;
+    rows: number;
+    tileWidth: number;
+    tileHeight: number;
+    format: "r8unorm";
+    data: Uint8Array;
   }>;
   clearPendingLatency(): void;
   dispose(): void;

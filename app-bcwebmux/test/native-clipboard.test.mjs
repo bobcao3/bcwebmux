@@ -14,12 +14,21 @@ function setup(selectedText = "selected terminal text") {
       target.addEventListener(type, listener);
     },
     getSelectedText: () => selectedText,
-    clearActiveSelection: () => { selectionCleared = true; },
+    clearActiveSelection: () => {
+      selectionCleared = true;
+    },
     sendText: (text, paste) => pasted.push({ text, paste }),
-    clear: () => { inputCleared = true; },
+    clear: () => {
+      inputCleared = true;
+    },
   });
   controller._installListeners();
-  return { input, pasted, selectionCleared: () => selectionCleared, inputCleared: () => inputCleared };
+  return {
+    input,
+    pasted,
+    selectionCleared: () => selectionCleared,
+    inputCleared: () => inputCleared,
+  };
 }
 
 function clipboardEvent(type, text = "") {

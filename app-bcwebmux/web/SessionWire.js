@@ -1,21 +1,22 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Cheng Cao
 
-import {
-  readUint16LE,
-  readUint32LE,
-  readUint64LE,
-  writeUint16LE,
-} from "./protocol.js";
+import { readUint16LE, readUint32LE, readUint64LE, writeUint16LE } from "./protocol.js";
 
-export const ABI_DIGEST = hexBytes("9f9159876f7ba9efca0a0410aa307cb533a5a3aef86072427eaf208591b50ae6");
+export const ABI_DIGEST = hexBytes(
+  "9f9159876f7ba9efca0a0410aa307cb533a5a3aef86072427eaf208591b50ae6",
+);
 
 export function createEmitter() {
   const listeners = new Set();
   return {
     emit(...args) {
       for (const listener of [...listeners]) {
-        try { listener(...args); } catch (error) { console.error("session transport listener failed", error); }
+        try {
+          listener(...args);
+        } catch (error) {
+          console.error("session transport listener failed", error);
+        }
       }
     },
     event(listener) {
@@ -23,7 +24,9 @@ export function createEmitter() {
       listeners.add(listener);
       return { dispose: () => listeners.delete(listener) };
     },
-    clear() { listeners.clear(); },
+    clear() {
+      listeners.clear();
+    },
   };
 }
 
@@ -54,7 +57,7 @@ export function uuidBytes(value) {
 }
 
 export function bytesUuid(bytes) {
-  const text = Array.from(bytes, byte => byte.toString(16).padStart(2, "0")).join("");
+  const text = Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
   return `${text.slice(0, 8)}-${text.slice(8, 12)}-${text.slice(12, 16)}-${text.slice(16, 20)}-${text.slice(20)}`;
 }
 
@@ -74,44 +77,52 @@ export function stableClientId() {
 export function randomUint64() {
   const bytes = crypto.getRandomValues(new Uint8Array(8));
   let value = 0n;
-  for (let index = 0; index < bytes.length; index += 1) value |= BigInt(bytes[index]) << BigInt(index * 8);
+  for (let index = 0; index < bytes.length; index += 1)
+    value |= BigInt(bytes[index]) << BigInt(index * 8);
   return value || 1n;
 }
 
 export function hexBytes(text) {
-  return Uint8Array.from(text.match(/../g) || [], pair => Number.parseInt(pair, 16));
+  return Uint8Array.from(text.match(/../g) || [], (pair) => Number.parseInt(pair, 16));
 }
 
 export function equalBytes(left, right) {
-  return left.byteLength === right.byteLength && left.every((value, index) => value === right[index]);
+  return (
+    left.byteLength === right.byteLength && left.every((value, index) => value === right[index])
+  );
 }
 
 export function isConnectionFrame(frame) {
-  return frame.attachmentId === 0n
-    && frame.attachmentEpoch === 0n
-    && frame.sessionId.every(byte => byte === 0);
+  return (
+    frame.attachmentId === 0n &&
+    frame.attachmentEpoch === 0n &&
+    frame.sessionId.every((byte) => byte === 0)
+  );
 }
 
 export function validWelcomeCapabilities(payload, maxFrameLength, maxCredit) {
   const interval = readUint32LE(payload, 60);
-  return readUint32LE(payload, 48) === maxFrameLength
-    && readUint32LE(payload, 52) > 0
-    && readUint32LE(payload, 52) <= 16 * 1024 * 1024
-    && readUint32LE(payload, 56) === maxCredit
-    && interval > 0
-    && readUint32LE(payload, 64) > interval
-    && readUint16LE(payload, 68) >= 1
-    && readUint16LE(payload, 68) <= 8
-    && payload[70] === 0
-    && payload[71] === 0
-    && readUint64LE(payload, 80) !== 0n;
+  return (
+    readUint32LE(payload, 48) === maxFrameLength &&
+    readUint32LE(payload, 52) > 0 &&
+    readUint32LE(payload, 52) <= 16 * 1024 * 1024 &&
+    readUint32LE(payload, 56) === maxCredit &&
+    interval > 0 &&
+    readUint32LE(payload, 64) > interval &&
+    readUint16LE(payload, 68) >= 1 &&
+    readUint16LE(payload, 68) <= 8 &&
+    payload[70] === 0 &&
+    payload[71] === 0 &&
+    readUint64LE(payload, 80) !== 0n
+  );
 }
 
 const crcTable = (() => {
   const table = new Uint32Array(256);
   for (let index = 0; index < 256; index += 1) {
     let value = index;
-    for (let bit = 0; bit < 8; bit += 1) value = value & 1 ? 0x82f63b78 ^ value >>> 1 : value >>> 1;
+    for (let bit = 0; bit < 8; bit += 1)
+      value = value & 1 ? 0x82f63b78 ^ (value >>> 1) : value >>> 1;
     table[index] = value >>> 0;
   }
   return table;
@@ -119,12 +130,12 @@ const crcTable = (() => {
 
 export function crc32c(bytes) {
   let crc = 0xffffffff;
-  for (const byte of bytes) crc = crcTable[(crc ^ byte) & 0xff] ^ crc >>> 8;
+  for (const byte of bytes) crc = crcTable[(crc ^ byte) & 0xff] ^ (crc >>> 8);
   return (crc ^ 0xffffffff) >>> 0;
 }
 
 export function updateRtt(state, sample) {
-  const samples = state._rttSamples ??= [];
+  const samples = (state._rttSamples ??= []);
   samples.push(sample);
   if (samples.length > 32) samples.shift();
   const sorted = [...samples].sort((a, b) => a - b);

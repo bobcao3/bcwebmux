@@ -22,7 +22,10 @@ export class SemanticScrollbar {
   }
 
   _listen(type, listener, options) {
-    this.element.addEventListener(type, listener, { ...options, signal: this._listenerController.signal });
+    this.element.addEventListener(type, listener, {
+      ...options,
+      signal: this._listenerController.signal,
+    });
   }
 
   render(adjustment = this.adjustment) {
@@ -37,7 +40,10 @@ export class SemanticScrollbar {
     this.element.setAttribute("aria-valuemin", "0");
     this.element.setAttribute("aria-valuemax", String(maximum));
     this.element.setAttribute("aria-valuenow", String(adjustment.value));
-    this.element.setAttribute("aria-valuetext", `${adjustment.mode}, row ${adjustment.value} of ${maximum}`);
+    this.element.setAttribute(
+      "aria-valuetext",
+      `${adjustment.mode}, row ${adjustment.value} of ${maximum}`,
+    );
     if (!scrollable) {
       this._resetAutohide();
       this.metrics = { track, thumb: track, travel: 0, top: 0 };
@@ -51,7 +57,7 @@ export class SemanticScrollbar {
     const ratio = adjustment.upper > 0 ? adjustment.pageSize / adjustment.upper : 1;
     const thumb = Math.min(track, Math.max(MINIMUM_THUMB_PX, track * ratio));
     const travel = Math.max(0, track - thumb);
-    const top = travel * adjustment.value / maximum;
+    const top = (travel * adjustment.value) / maximum;
     this.metrics = { track, thumb, travel, top };
     this.thumb.style.height = `${thumb}px`;
     this.thumb.style.transform = `translateY(${top}px)`;
@@ -88,35 +94,45 @@ export class SemanticScrollbar {
     if (!adjustment || adjustment.maximum === 0 || this.metrics.travel === 0) return 0;
     const rect = this.element.getBoundingClientRect();
     const thumbTop = Math.max(0, Math.min(this.metrics.travel, clientY - rect.top - grabOffset));
-    return Math.round(thumbTop / this.metrics.travel * adjustment.maximum);
+    return Math.round((thumbTop / this.metrics.travel) * adjustment.maximum);
   }
 
   _installListeners() {
-    this._listen("pointerdown", (event) => {
-      this.reveal();
-      if (event.button !== 0 || !this.adjustment || this.adjustment.maximum === 0) return;
-      this.onInteraction();
-      event.preventDefault();
-      event.stopPropagation();
-      const rect = this.element.getBoundingClientRect();
-      if (event.target === this.thumb) {
-        this.drag = {
-          pointerId: event.pointerId,
-          grabOffset: event.clientY - rect.top - this.metrics.top,
-        };
-        this.element.setPointerCapture(event.pointerId);
-        return;
-      }
-      const position = event.clientY - rect.top;
-      this.onDelta(position < this.metrics.top ? -this.adjustment.pageSize : this.adjustment.pageSize);
-    }, { passive: false });
+    this._listen(
+      "pointerdown",
+      (event) => {
+        this.reveal();
+        if (event.button !== 0 || !this.adjustment || this.adjustment.maximum === 0) return;
+        this.onInteraction();
+        event.preventDefault();
+        event.stopPropagation();
+        const rect = this.element.getBoundingClientRect();
+        if (event.target === this.thumb) {
+          this.drag = {
+            pointerId: event.pointerId,
+            grabOffset: event.clientY - rect.top - this.metrics.top,
+          };
+          this.element.setPointerCapture(event.pointerId);
+          return;
+        }
+        const position = event.clientY - rect.top;
+        this.onDelta(
+          position < this.metrics.top ? -this.adjustment.pageSize : this.adjustment.pageSize,
+        );
+      },
+      { passive: false },
+    );
 
-    this._listen("pointermove", (event) => {
-      if (!this.drag || this.drag.pointerId !== event.pointerId) return;
-      this.reveal();
-      event.preventDefault();
-      this.onRow(this._rowAt(event.clientY, this.drag.grabOffset));
-    }, { passive: false });
+    this._listen(
+      "pointermove",
+      (event) => {
+        if (!this.drag || this.drag.pointerId !== event.pointerId) return;
+        this.reveal();
+        event.preventDefault();
+        this.onRow(this._rowAt(event.clientY, this.drag.grabOffset));
+      },
+      { passive: false },
+    );
 
     const finishDrag = (event) => {
       if (!this.drag || this.drag.pointerId !== event.pointerId) return;
@@ -140,25 +156,42 @@ export class SemanticScrollbar {
       this.reveal();
     });
 
-    this._listen("wheel", (event) => {
-      this.reveal();
-      this.onInteraction();
-      if (!this.onWheel(event)) return;
-      event.preventDefault();
-      event.stopPropagation();
-    }, { passive: false });
+    this._listen(
+      "wheel",
+      (event) => {
+        this.reveal();
+        this.onInteraction();
+        if (!this.onWheel(event)) return;
+        event.preventDefault();
+        event.stopPropagation();
+      },
+      { passive: false },
+    );
 
     this._listen("keydown", (event) => {
       if (!this.adjustment || this.adjustment.maximum === 0) return;
       let handled = true;
       switch (event.key) {
-        case "ArrowUp": this.onDelta(-1); break;
-        case "ArrowDown": this.onDelta(1); break;
-        case "PageUp": this.onDelta(-this.adjustment.pageSize); break;
-        case "PageDown": this.onDelta(this.adjustment.pageSize); break;
-        case "Home": this.onRow(0); break;
-        case "End": this.onRow(this.adjustment.maximum); break;
-        default: handled = false;
+        case "ArrowUp":
+          this.onDelta(-1);
+          break;
+        case "ArrowDown":
+          this.onDelta(1);
+          break;
+        case "PageUp":
+          this.onDelta(-this.adjustment.pageSize);
+          break;
+        case "PageDown":
+          this.onDelta(this.adjustment.pageSize);
+          break;
+        case "Home":
+          this.onRow(0);
+          break;
+        case "End":
+          this.onRow(this.adjustment.maximum);
+          break;
+        default:
+          handled = false;
       }
       if (handled) {
         this.reveal();

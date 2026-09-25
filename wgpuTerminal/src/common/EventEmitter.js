@@ -61,10 +61,14 @@ export class EventEmitter {
                 try {
                   this._onListenerError(error);
                 } catch (handlerError) {
-                  queueMicrotask(() => { throw handlerError; });
+                  queueMicrotask(() => {
+                    throw handlerError;
+                  });
                 }
               } else {
-                queueMicrotask(() => { throw error; });
+                queueMicrotask(() => {
+                  throw error;
+                });
               }
             });
           }
@@ -73,10 +77,14 @@ export class EventEmitter {
             try {
               this._onListenerError(error);
             } catch (handlerError) {
-              queueMicrotask(() => { throw handlerError; });
+              queueMicrotask(() => {
+                throw handlerError;
+              });
             }
           } else {
-            queueMicrotask(() => { throw error; });
+            queueMicrotask(() => {
+              throw error;
+            });
           }
         }
       }

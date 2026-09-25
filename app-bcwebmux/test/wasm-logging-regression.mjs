@@ -33,7 +33,11 @@ const fixture = `
 38;2;161;197;132mX 38;2;154;198;136mX 38;2;152;198;137mX 38;2;145;199;140mX
 38;2;135;200;146mX 38;2;119;202;155mX 38;2;48;48;48mX 10;91f 38;2;140;200;143m
 9;123f 38;2;129;201;150m
-`.trim().split(/\s+/).map(sequence => `\x1b[${sequence}`).join("");
+`
+  .trim()
+  .split(/\s+/)
+  .map((sequence) => `\x1b[${sequence}`)
+  .join("");
 
 const wasmPath = process.argv[2] ?? new URL("../zig-out/web/terminal.wasm", import.meta.url);
 const module = await WebAssembly.compile(await readFile(wasmPath));
@@ -46,14 +50,26 @@ for (const chunkSize of [bytes.length, 1]) {
   core._wasm = instance.exports;
   const e = instance.exports;
   const logs = [];
-  const original = Object.fromEntries(["error", "warn", "info", "debug", "log"].map(method => [method, console[method]]));
-  for (const method of Object.keys(original)) console[method] = (...args) => logs.push({ method, args });
+  const original = Object.fromEntries(
+    ["error", "warn", "info", "debug", "log"].map((method) => [method, console[method]]),
+  );
+  for (const method of Object.keys(original))
+    console[method] = (...args) => logs.push({ method, args });
   try {
     e.term_bootstrap();
     assert.equal(e.term_init(155, 47), 1);
     assert.equal(e.term_resize_canonical(155, 47, 9, 18), 1);
-    for (let offset = 0; offset < bytes.length; offset += chunkSize) core.write(bytes.subarray(offset, offset + chunkSize));
-    assert.ok(logs.some(entry => entry.method === "info" && entry.args[0] === "terminal WASM:" && entry.args[1].includes("(page_list): adjusting page capacity=")), "page adjustment diagnostic must reach the host, not be suppressed");
+    for (let offset = 0; offset < bytes.length; offset += chunkSize)
+      core.write(bytes.subarray(offset, offset + chunkSize));
+    assert.ok(
+      logs.some(
+        (entry) =>
+          entry.method === "info" &&
+          entry.args[0] === "terminal WASM:" &&
+          entry.args[1].includes("(page_list): adjusting page capacity="),
+      ),
+      "page adjustment diagnostic must reach the host, not be suppressed",
+    );
     for (const entry of logs) assert.ok(new TextEncoder().encode(entry.args[1]).length <= 2048);
 
     core.write("\x1b[0m\x1b[HOK");

@@ -28,7 +28,8 @@ const execFileAsync = promisify(execFile),
     encodeResizePayload,
   } = Protocol,
   INITIAL_CREDIT = 33554432,
-  ABI_TEXT = "bcwebmux-graphics-frame-v7-checkpoint-v1-continuation-1m-glyph-cell-partitions-pty-zstd-stream",
+  ABI_TEXT =
+    "bcwebmux-graphics-frame-v7-checkpoint-v1-continuation-1m-glyph-cell-partitions-pty-zstd-stream",
   ABI_DIGEST = new Uint8Array(createHash("sha256").update(ABI_TEXT).digest()),
   ABI_HEX = "9f9159876f7ba9efca0a0410aa307cb533a5a3aef86072427eaf208591b50ae6",
   encoder = new TextEncoder(),
@@ -42,26 +43,21 @@ const OUTPUT_STREAM_PREAMBLE = encoder.encode(
 const crcTable = new Uint32Array(256);
 for (let i = 0; i < 256; i += 1) {
   let value = i;
-  for (let bit = 0; bit < 8; bit += 1)
-    value = value & 1 ? (value >>> 1) ^ 2197175160 : value >>> 1;
+  for (let bit = 0; bit < 8; bit += 1) value = value & 1 ? (value >>> 1) ^ 2197175160 : value >>> 1;
   crcTable[i] = value >>> 0;
 }
 function crc32c(bytes) {
   let value = 4294967295;
-  for (const byte of bytes)
-    value = crcTable[(value ^ byte) & 255] ^ (value >>> 8);
+  for (const byte of bytes) value = crcTable[(value ^ byte) & 255] ^ (value >>> 8);
   return (value ^ 4294967295) >>> 0;
 }
 function sameBytes(left, right) {
   return (
-    left.byteLength === right.byteLength &&
-    left.every((value, index) => value === right[index])
+    left.byteLength === right.byteLength && left.every((value, index) => value === right[index])
   );
 }
 function concatBytes(parts) {
-  const result = new Uint8Array(
-    parts.reduce((total, part) => total + part.byteLength, 0),
-  );
+  const result = new Uint8Array(parts.reduce((total, part) => total + part.byteLength, 0));
   let offset = 0;
   for (const part of parts) {
     result.set(part, offset);
@@ -137,10 +133,7 @@ class RawClient {
       }
     });
     const opened = new Promise((resolve, reject) => {
-      const timer = setTimeout(
-        () => reject(Error(`${this.name} websocket open timeout`)),
-        3000,
-      );
+      const timer = setTimeout(() => reject(Error(`${this.name} websocket open timeout`)), 3000);
       socket.addEventListener(
         "open",
         () => {
@@ -177,15 +170,9 @@ class RawClient {
     writeUint32LE(hello, 48, INITIAL_CREDIT);
     writeUint32LE(hello, 52, MAX_FRAME_LENGTH);
     this.send(FrameType.HELLO, hello, null, this.nextRequest());
-    const welcome = await this.until(
-      (frame) => frame.type === FrameType.WELCOME,
-      "WELCOME",
-    );
+    const welcome = await this.until((frame) => frame.type === FrameType.WELCOME, "WELCOME");
     assert.equal(welcome.payload.byteLength, 88);
-    assert.ok(
-      sameBytes(welcome.payload.subarray(16, 48), ABI_DIGEST),
-      `${this.name} WELCOME ABI`,
-    );
+    assert.ok(sameBytes(welcome.payload.subarray(16, 48), ABI_DIGEST), `${this.name} WELCOME ABI`);
     assert.equal(readUint32LE(welcome.payload, 48), MAX_FRAME_LENGTH);
     assert.equal(readUint32LE(welcome.payload, 56), INITIAL_CREDIT);
     return this;
@@ -203,18 +190,8 @@ class RawClient {
     this.requestId += 1n;
     return value;
   }
-  send(
-    type,
-    payload,
-    attachment,
-    requestId = 0n,
-    epoch = attachment?.epoch ?? 0n,
-  ) {
-    assert.equal(
-      this.socket?.readyState,
-      WebSocket.OPEN,
-      `${this.name} socket open`,
-    );
+  send(type, payload, attachment, requestId = 0n, epoch = attachment?.epoch ?? 0n) {
+    assert.equal(this.socket?.readyState, WebSocket.OPEN, `${this.name} socket open`);
     const frame = encodeFrame({
       type,
       payload,
@@ -263,21 +240,14 @@ class RawClient {
   }
   attachmentFor(frame) {
     const attachment = this.attachments.get(frame.attachmentId.toString());
-    assert.ok(
-      attachment,
-      `${this.name} unknown attachment ${frame.attachmentId}`,
-    );
-    assert.ok(
-      sameBytes(frame.sessionId, attachment.sessionId),
-      `${this.name} attachment session`,
-    );
+    assert.ok(attachment, `${this.name} unknown attachment ${frame.attachmentId}`);
+    assert.ok(sameBytes(frame.sessionId, attachment.sessionId), `${this.name} attachment session`);
     return attachment;
   }
   resetOutputDecoder(attachment) {
     attachment.outputDecoder = new Decompress((chunk) => {
       const target = attachment.outputDecodeTarget;
-      if (!target)
-        throw Error(`${this.name} output decoder callback outside operation`);
+      if (!target) throw Error(`${this.name} output decoder callback outside operation`);
       let offset = 0;
       while (
         offset < chunk.byteLength &&
@@ -294,8 +264,7 @@ class RawClient {
       if (offset === chunk.byteLength) return;
       const body = chunk.subarray(offset),
         end = attachment.outputDecodeOffset + body.byteLength;
-      if (end > target.byteLength)
-        throw Error(`${this.name} output decoder overflow`);
+      if (end > target.byteLength) throw Error(`${this.name} output decoder overflow`);
       target.set(body, attachment.outputDecodeOffset);
       attachment.outputDecodeOffset = end;
     });
@@ -311,10 +280,7 @@ class RawClient {
     attachment.outputDecodeOffset = 0;
     try {
       attachment.outputDecoder.push(body, false);
-      assert.equal(
-        attachment.outputPreambleOffset,
-        OUTPUT_STREAM_PREAMBLE.byteLength,
-      );
+      assert.equal(attachment.outputPreambleOffset, OUTPUT_STREAM_PREAMBLE.byteLength);
       assert.equal(attachment.outputDecodeOffset, rawLength);
       return target;
     } finally {
@@ -390,13 +356,8 @@ class RawClient {
     }
     if (frame.type === FrameType.CHECKPOINT_END) {
       assert.equal(frame.payload.byteLength, 32);
-      assert.equal(
-        attachment.checkpointOffset,
-        attachment.checkpoint.byteLength,
-      );
-      const digest = new Uint8Array(
-        createHash("sha256").update(attachment.checkpoint).digest(),
-      );
+      assert.equal(attachment.checkpointOffset, attachment.checkpoint.byteLength);
+      const digest = new Uint8Array(createHash("sha256").update(attachment.checkpoint).digest());
       assert.ok(sameBytes(digest, attachment.checkpointHash));
       assert.ok(sameBytes(digest, frame.payload));
       attachment.eventSeq = attachment.checkpointEventSeq;
@@ -413,16 +374,8 @@ class RawClient {
         eventSeq = readUint64LE(frame.payload, 16),
         outputOffset = readUint64LE(frame.payload, 24);
       assert.equal(wireLength, frame.payload.byteLength - 32);
-      assert.equal(
-        eventSeq,
-        attachment.eventSeq + 1n,
-        `${this.name} contiguous event sequence`,
-      );
-      assert.equal(
-        outputOffset,
-        attachment.outputOffset,
-        `${this.name} contiguous output cursor`,
-      );
+      assert.equal(eventSeq, attachment.eventSeq + 1n, `${this.name} contiguous event sequence`);
+      assert.equal(outputOffset, attachment.outputOffset, `${this.name} contiguous output cursor`);
       const body = frame.payload.subarray(32);
       let raw = body,
         event = { kind, seq: eventSeq, outputOffset };
@@ -449,11 +402,10 @@ class RawClient {
         assert.equal(rawLength, 12);
         assert.equal(body.byteLength, 12);
         assert.equal(crc, 0);
-        event.exitStatus = new DataView(
-          body.buffer,
-          body.byteOffset,
-          body.byteLength,
-        ).getInt32(0, true);
+        event.exitStatus = new DataView(body.buffer, body.byteOffset, body.byteLength).getInt32(
+          0,
+          true,
+        );
         attachment.exited = true;
       } else assert.fail(`${this.name} unknown event kind ${kind}`);
       assert.equal(raw.byteLength, rawLength);
@@ -478,10 +430,7 @@ class RawClient {
       this.ack(attachment, attachment.barrierCredit);
       return;
     }
-    if (
-      frame.type === FrameType.LEASE_CHANGED ||
-      frame.type === FrameType.CANONICAL_RESIZE
-    ) {
+    if (frame.type === FrameType.LEASE_CHANGED || frame.type === FrameType.CANONICAL_RESIZE) {
       assert.equal(frame.payload.byteLength, 24);
       attachment.leaseEpoch = readUint64LE(frame.payload, 0);
       if (frame.type === FrameType.LEASE_CHANGED)
@@ -492,10 +441,7 @@ class RawClient {
     if (frame.type === FrameType.INPUT_ACK) {
       assert.equal(frame.payload.byteLength, 12);
       const sequence = readUint64LE(frame.payload, 0);
-      attachment.inputAcks.set(
-        sequence.toString(),
-        readUint16LE(frame.payload, 8),
-      );
+      attachment.inputAcks.set(sequence.toString(), readUint16LE(frame.payload, 8));
       return;
     }
     if (frame.type === FrameType.EXITED) {
@@ -556,21 +502,13 @@ class RawClient {
     const requestId = this.nextRequest();
     this.send(FrameType.ATTACH, payload, attachment, requestId, 0n);
     await this.until(
-      (frame) =>
-        frame.type === FrameType.LIVE_BARRIER && frame.requestId === requestId,
+      (frame) => frame.type === FrameType.LIVE_BARRIER && frame.requestId === requestId,
       `${this.name} attach barrier`,
     );
     assert.ok(attachment.live);
     return attachment;
   }
-  async attachExpectError(
-    session,
-    generation,
-    eventSeq,
-    outputOffset,
-    id,
-    initialCredit,
-  ) {
+  async attachExpectError(session, generation, eventSeq, outputOffset, id, initialCredit) {
     const attachment = {
       id: id ?? BigInt(this.attachments.size + 1),
       sessionId: uuidBytes(session.id),
@@ -597,22 +535,15 @@ class RawClient {
     const requestId = this.nextRequest();
     this.send(FrameType.ATTACH, payload, attachment, requestId, 0n);
     return this.until(
-      (frame) =>
-        frame.type === FrameType.ERROR && frame.requestId === requestId,
+      (frame) => frame.type === FrameType.ERROR && frame.requestId === requestId,
       `${this.name} attach error`,
     );
   }
   async claim(attachment) {
     const requestId = this.nextRequest();
-    this.send(
-      FrameType.CLAIM_CONTROL,
-      new Uint8Array(0),
-      attachment,
-      requestId,
-    );
+    this.send(FrameType.CLAIM_CONTROL, new Uint8Array(0), attachment, requestId);
     await this.until(
-      (frame) =>
-        frame.type === FrameType.LEASE_CHANGED && frame.requestId === requestId,
+      (frame) => frame.type === FrameType.LEASE_CHANGED && frame.requestId === requestId,
       `${this.name} claim lease`,
     );
     assert.equal(attachment.controllerId, attachment.id);
@@ -630,8 +561,7 @@ class RawClient {
     const requestId = this.nextRequest();
     this.send(FrameType.INPUT, payload, attachment, requestId);
     const frame = await this.until(
-      (value) =>
-        value.type === FrameType.INPUT_ACK && value.requestId === requestId,
+      (value) => value.type === FrameType.INPUT_ACK && value.requestId === requestId,
       `${this.name} input ACK`,
     );
     assert.equal(readUint64LE(frame.payload, 0), sequence);
@@ -647,9 +577,7 @@ class RawClient {
     const requestId = this.nextRequest();
     this.send(FrameType.RESIZE_REQUEST, payload, attachment, requestId);
     const frame = await this.until(
-      (value) =>
-        value.type === FrameType.CANONICAL_RESIZE &&
-        value.requestId === requestId,
+      (value) => value.type === FrameType.CANONICAL_RESIZE && value.requestId === requestId,
       `${this.name} resize response`,
     );
     return {
@@ -668,8 +596,7 @@ class RawClient {
     const requestId = this.nextRequest();
     this.send(FrameType.RESIZE_REQUEST, payload, attachment, requestId);
     const frame = await this.until(
-      (value) =>
-        value.type === FrameType.ERROR && value.requestId === requestId,
+      (value) => value.type === FrameType.ERROR && value.requestId === requestId,
       `${this.name} stale resize error`,
     );
     assert.equal(frame.errorFatal, false);
@@ -680,25 +607,15 @@ class RawClient {
       present = () => {
         const bytes = concatBytes(attachment.outputParts);
         let count = 0;
-        for (
-          let index = 0;
-          index + needle.byteLength <= bytes.byteLength;
-          index += 1
-        )
-          if (
-            needle.every((value, offset) => bytes[index + offset] === value)
-          ) {
+        for (let index = 0; index + needle.byteLength <= bytes.byteLength; index += 1)
+          if (needle.every((value, offset) => bytes[index + offset] === value)) {
             count += 1;
             index += needle.byteLength - 1;
           }
         return count >= occurrences;
       };
     if (!present())
-      await this.until(
-        () => present(),
-        `${this.name} output ${String(marker)}`,
-        timeoutMs,
-      );
+      await this.until(() => present(), `${this.name} output ${String(marker)}`, timeoutMs);
     return concatBytes(attachment.outputParts);
   }
   async waitQuiet(attachment, quietMs = 100) {
@@ -717,10 +634,7 @@ class RawClient {
     return attachment.events.find(predicate);
   }
   async waitError() {
-    return this.until(
-      (frame) => frame.type === FrameType.ERROR,
-      `${this.name} ERROR`,
-    );
+    return this.until((frame) => frame.type === FrameType.ERROR, `${this.name} ERROR`);
   }
   async heartbeat() {
     const requestId = this.nextRequest();
@@ -820,25 +734,19 @@ async function workerPids(parentPid) {
     )
     .flatMap((line) => {
       const match = line.trim().match(/^(\d+)\s+(\d+)\s+(.+)$/);
-      return match &&
-        Number(match[2]) === parentPid &&
-        match[3].includes("--session-worker")
+      return match && Number(match[2]) === parentPid && match[3].includes("--session-worker")
         ? [Number(match[1])]
         : [];
     });
 }
 async function processState(pid) {
   try {
-    return (
-      await execFileAsync("ps", ["-p", String(pid), "-o", "stat="])
-    ).stdout.trim();
+    return (await execFileAsync("ps", ["-p", String(pid), "-o", "stat="])).stdout.trim();
   } catch {
     return "";
   }
 }
-const { runSessionWebSocketScenario } = await import(
-  "./session-ws-scenario.mjs"
-);
+const { runSessionWebSocketScenario } = await import("./session-ws-scenario.mjs");
 await runSessionWebSocketScenario(serverPath, {
   RawClient,
   attachmentText,
@@ -849,7 +757,7 @@ await runSessionWebSocketScenario(serverPath, {
   mutationHeaders,
   processState,
   sameBytes,
-  stopServer: server => terminateProcess(server, 1500),
+  stopServer: (server) => terminateProcess(server, 1500),
   unsupportedWebSocket,
   waitFor,
   waitSession,

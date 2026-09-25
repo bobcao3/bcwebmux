@@ -17,7 +17,7 @@ test("install manifest references real icons and a root start URL", async () => 
   assert.equal(manifest.start_url, "/");
   assert.equal(manifest.scope, "/");
   for (const size of [192, 512]) {
-    const icon = manifest.icons.find(icon => icon.sizes === `${size}x${size}`);
+    const icon = manifest.icons.find((icon) => icon.sizes === `${size}x${size}`);
     assert.ok(icon);
     const png = await readFile(path.join(web, icon.src.replace(/^\//, "")));
     assert.equal(png.subarray(0, 8).toString("hex"), "89504e470d0a1a0a");
@@ -33,17 +33,30 @@ test("service worker installs a network-only navigation handler", async () => {
   const requests = [];
   const context = {
     self: { addEventListener: (name, handler) => listeners.set(name, handler) },
-    fetch: request => { requests.push(request); return Promise.resolve({ ok: true }); },
+    fetch: (request) => {
+      requests.push(request);
+      return Promise.resolve({ ok: true });
+    },
   };
   vm.runInNewContext(await readFile(path.join(web, "sw.js"), "utf8"), context);
   const handler = listeners.get("fetch");
   assert.equal(typeof handler, "function");
   const request = { mode: "navigate" };
   let response;
-  handler({ request, respondWith: promise => { response = promise; } });
+  handler({
+    request,
+    respondWith: (promise) => {
+      response = promise;
+    },
+  });
   assert.equal((await response).ok, true);
   assert.deepEqual(requests, [request]);
   response = undefined;
-  handler({ request: { mode: "cors" }, respondWith: promise => { response = promise; } });
+  handler({
+    request: { mode: "cors" },
+    respondWith: (promise) => {
+      response = promise;
+    },
+  });
   assert.equal(response, undefined);
 });

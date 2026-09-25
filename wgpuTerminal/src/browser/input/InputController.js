@@ -63,8 +63,12 @@ export function eventCode(event) {
 }
 
 export function isImeKeyEvent(event) {
-  return event.key === "Process" || event.key === "Dead" ||
-    event.keyCode === 229 || eventCode(event) === "Unidentified";
+  return (
+    event.key === "Process" ||
+    event.key === "Dead" ||
+    event.keyCode === 229 ||
+    eventCode(event) === "Unidentified"
+  );
 }
 
 export function isModifierCode(code) {
@@ -97,15 +101,26 @@ class InputDiagnostics {
 
     this.panel?.removeAttribute("hidden");
     for (const type of [
-      "keydown", "keyup", "keypress", "beforeinput", "input",
-      "compositionstart", "compositionupdate", "compositionend",
-      "textInput", "focus", "blur",
+      "keydown",
+      "keyup",
+      "keypress",
+      "beforeinput",
+      "input",
+      "compositionstart",
+      "compositionupdate",
+      "compositionend",
+      "textInput",
+      "focus",
+      "blur",
     ]) {
       const listener = (event) => {
         this.event("event", event);
         queueMicrotask(() => this.event("post", event));
       };
-      input.addEventListener(type, listener, { capture: true, signal: this._listenerController.signal });
+      input.addEventListener(type, listener, {
+        capture: true,
+        signal: this._listenerController.signal,
+      });
     }
     const clear = () => this.clear();
     const copy = () => this.copy();
@@ -127,7 +142,10 @@ class InputDiagnostics {
     this.entries.push({ t: performance.now() - this.started, kind, data });
     if (this.entries.length > 400) this.entries.splice(0, this.entries.length - 400);
     if (this.logElement) {
-      this.logElement.textContent = this.entries.slice(-80).map((entry) => JSON.stringify(entry)).join("\n");
+      this.logElement.textContent = this.entries
+        .slice(-80)
+        .map((entry) => JSON.stringify(entry))
+        .join("\n");
     }
   }
 
@@ -205,17 +223,16 @@ export class InputController {
     this.heldHardwareModifiers = 0;
     this.suppressedShortcutKeyUps = new Set();
     this._listenerController = new AbortController();
-    this.diagnostics = new InputDiagnostics(
-      this.input,
-      options.debugElements,
-      options.inputDebug,
-    );
+    this.diagnostics = new InputDiagnostics(this.input, options.debugElements, options.inputDebug);
     this.clear();
     this._installListeners();
   }
 
   _listen(target, type, listener, options) {
-    target.addEventListener(type, listener, { ...options, signal: this._listenerController.signal });
+    target.addEventListener(type, listener, {
+      ...options,
+      signal: this._listenerController.signal,
+    });
   }
 
   _installListeners() {
@@ -224,8 +241,13 @@ export class InputController {
       if (!this.keyDown(event)) return;
       const code = eventCode(event);
       // Let macOS dispatch native clipboard events to the handlers below.
-      if (isMac && event.metaKey && !event.ctrlKey && !event.altKey &&
-          (code === "KeyC" || code === "KeyV")) {
+      if (
+        isMac &&
+        event.metaKey &&
+        !event.ctrlKey &&
+        !event.altKey &&
+        (code === "KeyC" || code === "KeyV")
+      ) {
         this.suppressedShortcutKeyUps.add(code);
         return;
       }
@@ -291,9 +313,20 @@ export class InputController {
   resetGeometry() {
     if (this.coarsePointer.matches) {
       for (const property of [
-        "left", "top", "right", "bottom", "width", "height", "line-height",
-        "padding", "padding-left", "padding-top", "padding-right", "padding-bottom",
-      ]) this.input.style.removeProperty(property);
+        "left",
+        "top",
+        "right",
+        "bottom",
+        "width",
+        "height",
+        "line-height",
+        "padding",
+        "padding-left",
+        "padding-top",
+        "padding-right",
+        "padding-bottom",
+      ])
+        this.input.style.removeProperty(property);
     } else {
       this.input.style.left = "0px";
       this.input.style.top = "0px";
@@ -465,7 +498,10 @@ export class InputController {
 
   beforeInput(event) {
     const compositionEvent = event.isComposing || event.inputType?.includes("Composition");
-    if (this.heldHardwareModifiers || (compositionEvent && !this.isComposing && !this.isSendingComposition)) {
+    if (
+      this.heldHardwareModifiers ||
+      (compositionEvent && !this.isComposing && !this.isSendingComposition)
+    ) {
       if (event.cancelable) event.preventDefault();
       this.discardBufferedComposition();
     }
@@ -473,7 +509,10 @@ export class InputController {
 
   inputEvent(event) {
     const compositionEvent = event.isComposing || event.inputType?.includes("Composition");
-    if (this.heldHardwareModifiers || (compositionEvent && !this.isComposing && !this.isSendingComposition)) {
+    if (
+      this.heldHardwareModifiers ||
+      (compositionEvent && !this.isComposing && !this.isSendingComposition)
+    ) {
       this.discardBufferedComposition();
       return;
     }
@@ -552,7 +591,8 @@ export class FocusController {
     if (this.textView.hasSelection()) return;
     requestAnimationFrame(() => {
       const active = document.activeElement;
-      if (active !== this.input && active !== document.body && active !== document.documentElement) return;
+      if (active !== this.input && active !== document.body && active !== document.documentElement)
+        return;
       this.focus();
     });
   }

@@ -23,15 +23,16 @@ function limits(renderer, width, height) {
 
 function apply(renderer, plan, nextMetrics, fontFamily) {
   if (renderer.atlas) renderer.flushAtlasGrowthCopies?.();
-  const candidate = renderer.atlas && (plan.textureChanged || plan.textureReset)
-    ? renderer.atlas.prepareLayout(
-      plan.geometry,
-      nextMetrics.width,
-      nextMetrics.height,
-      nextMetrics.fontSize,
-      plan.textureReset,
-    )
-    : null;
+  const candidate =
+    renderer.atlas && (plan.textureChanged || plan.textureReset)
+      ? renderer.atlas.prepareLayout(
+          plan.geometry,
+          nextMetrics.width,
+          nextMetrics.height,
+          nextMetrics.fontSize,
+          plan.textureReset,
+        )
+      : null;
   if (!renderer.atlas) renderer.atlas = renderer.createGlyphAtlas(plan.geometry, nextMetrics);
   else if (candidate) renderer.atlas.commitLayout(candidate);
   renderer.atlas.fontFamily = fontFamily || renderer.atlas.fontFamily;
@@ -42,7 +43,9 @@ function apply(renderer, plan, nextMetrics, fontFamily) {
 }
 
 function visibleSlots(renderer) {
-  return new Map(renderer.glyphPartitions.values().map(record => [record.terminal, record.visibleSlots]));
+  return new Map(
+    renderer.glyphPartitions.values().map((record) => [record.terminal, record.visibleSlots]),
+  );
 }
 
 export function registerTerminal(renderer, terminal, visibleCells, preferredColumns) {
@@ -52,11 +55,19 @@ export function registerTerminal(renderer, terminal, visibleCells, preferredColu
       preferredColumns,
     );
   }
-  return apply(renderer, renderer.glyphPartitions.planRegister(terminal, visibleCells), metrics(renderer));
+  return apply(
+    renderer,
+    renderer.glyphPartitions.planRegister(terminal, visibleCells),
+    metrics(renderer),
+  );
 }
 
 export function resizeTerminalPartition(renderer, terminal, visibleCells) {
-  return apply(renderer, renderer.glyphPartitions.planResize(terminal, visibleCells), metrics(renderer));
+  return apply(
+    renderer,
+    renderer.glyphPartitions.planResize(terminal, visibleCells),
+    metrics(renderer),
+  );
 }
 
 export function releaseTerminal(renderer, terminal) {
@@ -71,7 +82,13 @@ export function glyphPartition(renderer, terminal) {
   return renderer.glyphPartitions?.get(terminal) ?? null;
 }
 
-export function reconfigureGlyphAtlas(renderer, nextMetrics, textRenderer, fontFamily, activeVisibleSlots) {
+export function reconfigureGlyphAtlas(
+  renderer,
+  nextMetrics,
+  textRenderer,
+  fontFamily,
+  activeVisibleSlots,
+) {
   if (!renderer.glyphPartitions) {
     Object.assign(renderer, {
       physicalCellWidth: nextMetrics.width,
@@ -101,9 +118,7 @@ export function reconfigureGlyphAtlas(renderer, nextMetrics, textRenderer, fontF
 export function selectTerminal(renderer, terminal) {
   if (!renderer.initialized) throw new Error("GPU terminal is not initialized");
   if (!renderer.glyphPartitions.get(terminal)) throw new Error("terminal has no glyph partition");
-  for (const field of [
-    "cols", "rows", "cursorFlags", "drawnCellCount",
-  ]) renderer[field] = 0;
+  for (const field of ["cols", "rows", "cursorFlags", "drawnCellCount"]) renderer[field] = 0;
   if (renderer.indirectData) {
     renderer.indirectData[1] = 0;
     renderer.indirectDirty = true;
@@ -113,10 +128,15 @@ export function selectTerminal(renderer, terminal) {
 }
 
 export function setTextRenderer(renderer, textRenderer) {
-  if (textRenderer !== "kb-stb" && textRenderer !== "canvas") throw new Error("invalid text renderer");
+  if (textRenderer !== "kb-stb" && textRenderer !== "canvas")
+    throw new Error("invalid text renderer");
   if (textRenderer === renderer.textRenderer) return null;
-  return reconfigureGlyphAtlas(renderer, {
-    ...metrics(renderer),
-    columns: renderer.glyphPartitions?.preferredColumns ?? 1,
-  }, textRenderer);
+  return reconfigureGlyphAtlas(
+    renderer,
+    {
+      ...metrics(renderer),
+      columns: renderer.glyphPartitions?.preferredColumns ?? 1,
+    },
+    textRenderer,
+  );
 }

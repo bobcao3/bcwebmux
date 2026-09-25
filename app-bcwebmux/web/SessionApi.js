@@ -50,9 +50,15 @@ export class SessionApi {
     if (typeof this.#fetch !== "function") throw new TypeError("SessionApi requires fetch");
   }
 
-  info() { return this.#request("GET", "/api/server"); }
-  list() { return this.#request("GET", "/api/sessions"); }
-  get(id) { return this.#request("GET", `/api/sessions/${encodeURIComponent(id)}`); }
+  info() {
+    return this.#request("GET", "/api/server");
+  }
+  list() {
+    return this.#request("GET", "/api/sessions");
+  }
+  get(id) {
+    return this.#request("GET", `/api/sessions/${encodeURIComponent(id)}`);
+  }
 
   create(options, idempotencyKey = randomRequestId()) {
     return this.#request("POST", "/api/sessions", { body: options, idempotencyKey });
@@ -66,7 +72,9 @@ export class SessionApi {
   }
 
   terminate(id, idempotencyKey = randomRequestId()) {
-    return this.#request("POST", `/api/sessions/${encodeURIComponent(id)}/terminate`, { idempotencyKey });
+    return this.#request("POST", `/api/sessions/${encodeURIComponent(id)}/terminate`, {
+      idempotencyKey,
+    });
   }
 
   delete(id, idempotencyKey = randomRequestId()) {
@@ -97,23 +105,32 @@ export class SessionApi {
     if (response.status === 204) return null;
     const contentLength = Number(response.headers.get("Content-Length"));
     if (Number.isFinite(contentLength) && contentLength > MAX_RESPONSE_BYTES) {
-      throw new SessionApiError("session API response is too large", { status: response.status, code: "response_too_large" });
+      throw new SessionApiError("session API response is too large", {
+        status: response.status,
+        code: "response_too_large",
+      });
     }
     const text = await readBoundedText(response);
     let value = null;
     if (text) {
-      try { value = JSON.parse(text); }
-      catch { throw new SessionApiError("session API returned invalid JSON", { status: response.status, code: "invalid_response" }); }
+      try {
+        value = JSON.parse(text);
+      } catch {
+        throw new SessionApiError("session API returned invalid JSON", {
+          status: response.status,
+          code: "invalid_response",
+        });
+      }
     }
     if (!response.ok) {
-      const message = typeof value?.error === "string"
-        ? value.error
-        : typeof value?.error?.message === "string"
-          ? value.error.message
-          : `session API request failed (${response.status})`;
-      const code = typeof value?.error?.code === "string"
-        ? value.error.code
-        : value?.code || "request_failed";
+      const message =
+        typeof value?.error === "string"
+          ? value.error
+          : typeof value?.error?.message === "string"
+            ? value.error.message
+            : `session API request failed (${response.status})`;
+      const code =
+        typeof value?.error?.code === "string" ? value.error.code : value?.code || "request_failed";
       // The session cookie is required by the whole API surface; report the
       // expiry once so the application can hand back to the login page.
       if (response.status === 401) {
@@ -132,5 +149,5 @@ export class SessionApi {
 export function randomRequestId() {
   if (typeof crypto?.randomUUID === "function") return crypto.randomUUID();
   const bytes = crypto.getRandomValues(new Uint8Array(16));
-  return Array.from(bytes, byte => byte.toString(16).padStart(2, "0")).join("");
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
 }

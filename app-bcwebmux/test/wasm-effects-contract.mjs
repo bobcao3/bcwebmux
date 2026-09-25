@@ -13,7 +13,10 @@ const writes = [];
 let replies = "";
 let status = 0;
 imports.host.clipboard_write = (location, ptr, len) => {
-  writes.push({ location, text: new TextDecoder().decode(new Uint8Array(core._wasm.memory.buffer, ptr, len)) });
+  writes.push({
+    location,
+    text: new TextDecoder().decode(new Uint8Array(core._wasm.memory.buffer, ptr, len)),
+  });
   return status;
 };
 imports.host.terminal_reply = (ptr, len) => {
@@ -43,7 +46,15 @@ try {
   core.write(osc("52;c;"));
   assert.deepEqual(writes.pop(), { location: 0, text: "" });
 
-  for (const [code, expected] of [[0, "DONE"], [1, "EPERM"], [2, "ENOSYS"], [3, "EBUSY"], [4, "EINVAL"], [5, "EIO"], [99, "EIO"]]) {
+  for (const [code, expected] of [
+    [0, "DONE"],
+    [1, "EPERM"],
+    [2, "ENOSYS"],
+    [3, "EBUSY"],
+    [4, "EINVAL"],
+    [5, "EIO"],
+    [99, "EIO"],
+  ]) {
     status = code;
     kittyWrite();
     expectStatus(expected);
@@ -72,7 +83,9 @@ try {
     assert.equal(e.term_apply_theme(), 1);
     replies = "";
     core.write(osc("4;1;?"));
-    const rgb = [16, 8, 0].map(shift => ((color >>> shift) & 255).toString(16).padStart(2, "0").repeat(2)).join("/");
+    const rgb = [16, 8, 0]
+      .map((shift) => ((color >>> shift) & 255).toString(16).padStart(2, "0").repeat(2))
+      .join("/");
     assert.equal(replies, osc(`4;1;rgb:${rgb}`));
   }
   core.write(osc("4;1;#112233"));

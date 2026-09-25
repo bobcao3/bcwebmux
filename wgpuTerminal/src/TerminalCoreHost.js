@@ -31,9 +31,9 @@ export async function createCore(host, options = {}) {
     if (host._disposed || recoveryGeneration !== host._recoveryGeneration) {
       throw new Error("terminal changed during core creation");
     }
-    if ((host.options.canonicalGeometry
-      ? core.setRenderMetrics(layout)
-      : core.resize(layout)) !== 1) {
+    if (
+      (host.options.canonicalGeometry ? core.setRenderMetrics(layout) : core.resize(layout)) !== 1
+    ) {
       throw new Error("terminal core resize failed");
     }
     return core;
@@ -68,16 +68,20 @@ export function attachCore(host, core) {
   host._renderingCore = core;
   try {
     if (!wasOwned) host._registerTerminal(core, layout);
-    host._prepareTerminalFrame(core, host.options.canonicalGeometry
-      ? Math.max(layout.cols * layout.rows, core.cols * core.rows)
-      : layout.cols * layout.rows);
+    host._prepareTerminalFrame(
+      core,
+      host.options.canonicalGeometry
+        ? Math.max(layout.cols * layout.rows, core.cols * core.rows)
+        : layout.cols * layout.rows,
+    );
     host._presenter.selectTerminal(core);
     core._applyRenderer(host.options.renderer);
     core.setFont(host.options.font);
     core.invalidateForAttach();
-    if ((host.options.canonicalGeometry
-      ? core.setRenderMetrics(layout)
-      : core.resize(layout)) !== 1) throw new Error("terminal core resize failed");
+    if (
+      (host.options.canonicalGeometry ? core.setRenderMetrics(layout) : core.resize(layout)) !== 1
+    )
+      throw new Error("terminal core resize failed");
     if (host._scheduler.flushImmediate() !== 1) throw new Error("terminal core render failed");
     host._core = core;
     host.clearPendingLatency();
@@ -90,9 +94,12 @@ export function attachCore(host, core) {
       previousCore._applyRenderer(host.options.renderer);
       previousCore.setFont(host.options.font);
       previousCore.invalidateForAttach();
-      if ((host.options.canonicalGeometry
-        ? previousCore.setRenderMetrics(layout)
-        : previousCore.resize(layout)) !== 1) throw new Error("previous core resize failed");
+      if (
+        (host.options.canonicalGeometry
+          ? previousCore.setRenderMetrics(layout)
+          : previousCore.resize(layout)) !== 1
+      )
+        throw new Error("previous core resize failed");
       if (host._scheduler.flushImmediate() !== 1) throw new Error("previous core render failed");
     } catch {}
     host._renderingCore = null;

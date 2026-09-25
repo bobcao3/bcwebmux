@@ -105,21 +105,33 @@ function asUint64(name, value) {
 function writeUint16LE(bytes, offset, value) {
   requireUint8Array("bytes", bytes);
   requireRange(bytes, offset, 2);
-  new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).setUint16(offset, asUint16("value", value), true);
+  new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).setUint16(
+    offset,
+    asUint16("value", value),
+    true,
+  );
   return bytes;
 }
 
 function writeUint32LE(bytes, offset, value) {
   requireUint8Array("bytes", bytes);
   requireRange(bytes, offset, 4);
-  new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).setUint32(offset, asUint32("value", value), true);
+  new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).setUint32(
+    offset,
+    asUint32("value", value),
+    true,
+  );
   return bytes;
 }
 
 function writeUint64LE(bytes, offset, value) {
   requireUint8Array("bytes", bytes);
   requireRange(bytes, offset, 8);
-  new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).setBigUint64(offset, asUint64("value", value), true);
+  new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).setBigUint64(
+    offset,
+    asUint64("value", value),
+    true,
+  );
   return bytes;
 }
 
@@ -152,7 +164,10 @@ function validateType(type) {
 
 function validateFlags(type, flags) {
   asUint8("flags", flags);
-  if ((flags & ~COMPRESSED_FLAG) !== 0 || (flags & COMPRESSED_FLAG) !== 0 && !allowsCompression(type)) {
+  if (
+    (flags & ~COMPRESSED_FLAG) !== 0 ||
+    ((flags & COMPRESSED_FLAG) !== 0 && !allowsCompression(type))
+  ) {
     throw new RangeError("unknown or invalid frame flags");
   }
 }
@@ -171,10 +186,12 @@ function encodeFrame(frame, output) {
   const attachmentEpoch = asUint64("attachmentEpoch", frame.attachmentEpoch ?? 0);
   const sessionId = frame.sessionId ?? ZERO_SESSION_ID;
   requireUint8Array("sessionId", sessionId);
-  if (sessionId.byteLength !== SESSION_ID_LENGTH) throw new RangeError("sessionId must be exactly 16 bytes");
+  if (sessionId.byteLength !== SESSION_ID_LENGTH)
+    throw new RangeError("sessionId must be exactly 16 bytes");
   const payload = frame.payload ?? EMPTY_PAYLOAD;
   requireUint8Array("payload", payload);
-  if (payload.byteLength > MAX_PAYLOAD_LENGTH) throw new RangeError("payload exceeds maximum length");
+  if (payload.byteLength > MAX_PAYLOAD_LENGTH)
+    throw new RangeError("payload exceeds maximum length");
   const totalLength = HEADER_LENGTH + payload.byteLength;
   if (output === undefined) output = new Uint8Array(totalLength);
   requireUint8Array("output", output);
@@ -197,7 +214,8 @@ function encodeFrame(frame, output) {
 
 function decodeFrame(message) {
   const bytes = requireUint8Array("message", message);
-  if (bytes.byteLength < HEADER_LENGTH) throw new RangeError("frame is shorter than its fixed header");
+  if (bytes.byteLength < HEADER_LENGTH)
+    throw new RangeError("frame is shorter than its fixed header");
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   if (view.getUint32(MAGIC_OFFSET, true) !== MAGIC) throw new RangeError("invalid frame magic");
   const type = view.getUint8(TYPE_OFFSET);
@@ -206,10 +224,12 @@ function decodeFrame(message) {
   validateFlags(type, flags);
   const headerLength = view.getUint16(HEADER_LENGTH_OFFSET, true);
   if (headerLength !== HEADER_LENGTH) throw new RangeError("invalid frame header length");
-  if (view.getUint32(RESERVED_OFFSET, true) !== 0) throw new RangeError("reserved header bytes must be zero");
+  if (view.getUint32(RESERVED_OFFSET, true) !== 0)
+    throw new RangeError("reserved header bytes must be zero");
   const payloadLength = view.getUint32(PAYLOAD_LENGTH_OFFSET, true);
   if (payloadLength > MAX_PAYLOAD_LENGTH) throw new RangeError("payload exceeds maximum length");
-  if (bytes.byteLength - HEADER_LENGTH !== payloadLength) throw new RangeError("payload length does not match frame length");
+  if (bytes.byteLength - HEADER_LENGTH !== payloadLength)
+    throw new RangeError("payload length does not match frame length");
   const connectionSequence = view.getBigUint64(CONNECTION_SEQUENCE_OFFSET, true);
   if (connectionSequence === 0n) throw new RangeError("connection sequence must be nonzero");
   return {
@@ -229,7 +249,8 @@ function decodeFrame(message) {
 
 function encodeResizePayload(cols, rows, payload = new Uint8Array(RESIZE_PAYLOAD_LENGTH)) {
   requireUint8Array("payload", payload);
-  if (payload.byteLength !== RESIZE_PAYLOAD_LENGTH) throw new RangeError("resize payload must be exactly 4 bytes");
+  if (payload.byteLength !== RESIZE_PAYLOAD_LENGTH)
+    throw new RangeError("resize payload must be exactly 4 bytes");
   const view = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
   view.setUint16(RESIZE_COLS_OFFSET, asUint16("cols", cols), true);
   view.setUint16(RESIZE_ROWS_OFFSET, asUint16("rows", rows), true);

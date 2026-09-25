@@ -33,25 +33,46 @@ export function initGpuGraphics(renderer) {
   renderer.graphicsPipeline = device.createRenderPipeline({
     layout: "auto",
     vertex: { module, entryPoint: "vertex" },
-    fragment: { module, entryPoint: "fragment", targets: [{ format: renderer.format,
-      blend: { color: { srcFactor: "src-alpha", dstFactor: "one-minus-src-alpha", operation: "add" },
-        alpha: { srcFactor: "one", dstFactor: "one-minus-src-alpha", operation: "add" } },
-    }] },
+    fragment: {
+      module,
+      entryPoint: "fragment",
+      targets: [
+        {
+          format: renderer.format,
+          blend: {
+            color: { srcFactor: "src-alpha", dstFactor: "one-minus-src-alpha", operation: "add" },
+            alpha: { srcFactor: "one", dstFactor: "one-minus-src-alpha", operation: "add" },
+          },
+        },
+      ],
+    },
     primitive: { topology: "triangle-list" },
   });
-  renderer.graphicsUniform = device.createBuffer({ size: 2048 * 256,
-    usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+  renderer.graphicsUniform = device.createBuffer({
+    size: 2048 * 256,
+    usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+  });
   renderer.graphicsSampler = device.createSampler({ magFilter: "nearest", minFilter: "nearest" });
 }
 
 export function createGpuGraphicsTexture(renderer, width, height, data) {
-  const texture = renderer.device.createTexture({ size: [width, height], format: "rgba8unorm",
-    usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST });
+  const texture = renderer.device.createTexture({
+    size: [width, height],
+    format: "rgba8unorm",
+    usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+  });
   try {
-    renderer.device.queue.writeTexture({ texture }, data, { bytesPerRow: width * 4, rowsPerImage: height },
-      [width, height, 1]);
+    renderer.device.queue.writeTexture(
+      { texture },
+      data,
+      { bytesPerRow: width * 4, rowsPerImage: height },
+      [width, height, 1],
+    );
     return texture;
-  } catch (error) { texture.destroy(); throw error; }
+  } catch (error) {
+    texture.destroy();
+    throw error;
+  }
 }
 
 export function drawGpuGraphics(renderer, pass, behindText) {
@@ -62,22 +83,36 @@ export function drawGpuGraphics(renderer, pass, behindText) {
     const source = renderer.graphicsScene.sources.get(draw.key);
     if (!source?.texture) continue;
     const offset = index * 64;
-    rects.set([
-      draw.x * renderer.physicalCellWidth + draw.offsetX,
-      draw.y * renderer.physicalCellHeight + draw.offsetY, draw.width, draw.height,
-      draw.sourceX / source.width, draw.sourceY / source.height,
-      draw.sourceWidth / source.width, draw.sourceHeight / source.height,
-      renderer.canvas.width, renderer.canvas.height, 0, 0,
-    ], offset);
-    if ((draw.z < 0) === behindText) prepared.push({ source, index });
+    rects.set(
+      [
+        draw.x * renderer.physicalCellWidth + draw.offsetX,
+        draw.y * renderer.physicalCellHeight + draw.offsetY,
+        draw.width,
+        draw.height,
+        draw.sourceX / source.width,
+        draw.sourceY / source.height,
+        draw.sourceWidth / source.width,
+        draw.sourceHeight / source.height,
+        renderer.canvas.width,
+        renderer.canvas.height,
+        0,
+        0,
+      ],
+      offset,
+    );
+    if (draw.z < 0 === behindText) prepared.push({ source, index });
   }
   if (!prepared.length) return false;
   renderer.device.queue.writeBuffer(renderer.graphicsUniform, 0, rects.buffer, 0, rects.byteLength);
   pass.setPipeline(renderer.graphicsPipeline);
   for (let i = 0; i < prepared.length; i++) {
     const group = renderer.device.createBindGroup({
-      layout: renderer.graphicsPipeline.getBindGroupLayout(0), entries: [
-        { binding: 0, resource: { buffer: renderer.graphicsUniform, offset: prepared[i].index * 256, size: 48 } },
+      layout: renderer.graphicsPipeline.getBindGroupLayout(0),
+      entries: [
+        {
+          binding: 0,
+          resource: { buffer: renderer.graphicsUniform, offset: prepared[i].index * 256, size: 48 },
+        },
         { binding: 1, resource: prepared[i].source.texture.createView() },
         { binding: 2, resource: renderer.graphicsSampler },
       ],

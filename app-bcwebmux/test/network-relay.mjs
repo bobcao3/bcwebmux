@@ -7,12 +7,28 @@ import { deadline } from "./network-support.mjs";
 
 const now = () => performance.now();
 export class FaultRelay extends EventEmitter {
-  constructor({ protocol = "tcp", upstreamPort, latencyMs = 0, maxBufferedBytes = 4 * 1024 * 1024, maxFlows = 64 } = {}) {
+  constructor({
+    protocol = "tcp",
+    upstreamPort,
+    latencyMs = 0,
+    maxBufferedBytes = 4 * 1024 * 1024,
+    maxFlows = 64,
+  } = {}) {
     super();
     if (!["tcp", "udp"].includes(protocol)) throw new Error("invalid relay protocol");
-    if (upstreamPort !== undefined && (!Number.isInteger(upstreamPort) || upstreamPort < 1 || upstreamPort > 65535)) throw new Error("invalid upstream port");
-    if (!Number.isFinite(latencyMs) || latencyMs < 0 || latencyMs > 60000) throw new Error("invalid latency");
-    if (!Number.isFinite(maxBufferedBytes) || maxBufferedBytes <= 0 || maxBufferedBytes > 64 * 1024 * 1024) throw new Error("invalid max buffered bytes");
+    if (
+      upstreamPort !== undefined &&
+      (!Number.isInteger(upstreamPort) || upstreamPort < 1 || upstreamPort > 65535)
+    )
+      throw new Error("invalid upstream port");
+    if (!Number.isFinite(latencyMs) || latencyMs < 0 || latencyMs > 60000)
+      throw new Error("invalid latency");
+    if (
+      !Number.isFinite(maxBufferedBytes) ||
+      maxBufferedBytes <= 0 ||
+      maxBufferedBytes > 64 * 1024 * 1024
+    )
+      throw new Error("invalid max buffered bytes");
     if (!Number.isInteger(maxFlows) || maxFlows <= 0) throw new Error("invalid max flows");
     this.protocol = protocol;
     this.upstreamPort = upstreamPort;
@@ -36,9 +52,13 @@ export class FaultRelay extends EventEmitter {
     return event;
   }
   async listen() {
-    this.listener = this.protocol === "tcp" ? net.createServer(socket => this.acceptTcp(socket)) : dgram.createSocket("udp4");
-    this.listener.on("error", error => this.record("error", { message: error.message }));
-    if (this.protocol === "udp") this.listener.on("message", (bytes, peer) => this.acceptUdp(bytes, peer));
+    this.listener =
+      this.protocol === "tcp"
+        ? net.createServer((socket) => this.acceptTcp(socket))
+        : dgram.createSocket("udp4");
+    this.listener.on("error", (error) => this.record("error", { message: error.message }));
+    if (this.protocol === "udp")
+      this.listener.on("message", (bytes, peer) => this.acceptUdp(bytes, peer));
     const ready = once(this.listener, "listening");
     if (this.protocol === "tcp") this.listener.listen(0, "127.0.0.1");
     else this.listener.bind(0, "127.0.0.1");
@@ -48,15 +68,16 @@ export class FaultRelay extends EventEmitter {
     return this;
   }
   setLatency(latencyMs) {
-    if (!Number.isFinite(latencyMs) || latencyMs < 0 || latencyMs > 60000) throw new Error("invalid latency");
+    if (!Number.isFinite(latencyMs) || latencyMs < 0 || latencyMs > 60000)
+      throw new Error("invalid latency");
     this.latencyMs = latencyMs;
     return this.record("latency", { latencyMs });
   }
   track(socket) {
-    const closed = new Promise(resolve => socket.once("close", resolve));
+    const closed = new Promise((resolve) => socket.once("close", resolve));
     this.pendingCloses.add(closed);
     closed.then(() => this.pendingCloses.delete(closed));
-    socket.on("error", error => this.record("socket-error", { message: error.message }));
+    socket.on("error", (error) => this.record("socket-error", { message: error.message }));
     return socket;
   }
   schedule(flow, bytes, deliver, direction) {
@@ -118,30 +139,51 @@ export class FaultRelay extends EventEmitter {
     this.flows.add(flow);
     socket.setNoDelay(true);
     socket.once("close", () => this.drop(flow));
-    if (flow.stale) { socket.resume(); return; }
-    const upstream = flow.upstream = this.track(net.connect({ host: "127.0.0.1", port: this.upstreamPort }));
+    if (flow.stale) {
+      socket.resume();
+      return;
+    }
+    const upstream = (flow.upstream = this.track(
+      net.connect({ host: "127.0.0.1", port: this.upstreamPort }),
+    ));
     upstream.setNoDelay(true);
-    upstream.once("connect", () => this.record("tcp-connected", { sourcePort: upstream.localPort, targetPort: this.upstreamPort }));
+    upstream.once("connect", () =>
+      this.record("tcp-connected", {
+        sourcePort: upstream.localPort,
+        targetPort: this.upstreamPort,
+      }),
+    );
     upstream.once("close", () => this.drop(flow));
     upstream.on("error", () => this.drop(flow));
     socket.on("error", () => this.drop(flow));
     const pipe = (source, target) => {
       const direction = { items: new Set(), queued: 0, blocked: false };
-      source.on("data", bytes => {
+      source.on("data", (bytes) => {
         if (this.mode !== "up" || flow.stale || flow.closed) return;
-        this.schedule(flow, bytes, copy => {
-          if (target.destroyed) return;
-          if (!target.write(copy)) {
-            source.pause();
-            direction.blocked = true;
-            target.once("drain", () => {
-              direction.blocked = false;
-              this.drainBuffers(direction);
-              if (!flow.closed && !flow.stale && !direction.blocked && direction.queued < 128 * 1024) source.resume();
-            });
-          }
-          if (!direction.blocked && direction.queued < 128 * 1024) source.resume();
-        }, direction);
+        this.schedule(
+          flow,
+          bytes,
+          (copy) => {
+            if (target.destroyed) return;
+            if (!target.write(copy)) {
+              source.pause();
+              direction.blocked = true;
+              target.once("drain", () => {
+                direction.blocked = false;
+                this.drainBuffers(direction);
+                if (
+                  !flow.closed &&
+                  !flow.stale &&
+                  !direction.blocked &&
+                  direction.queued < 128 * 1024
+                )
+                  source.resume();
+              });
+            }
+            if (!direction.blocked && direction.queued < 128 * 1024) source.resume();
+          },
+          direction,
+        );
         if (direction.queued >= 128 * 1024) source.pause();
       });
     };
@@ -149,24 +191,36 @@ export class FaultRelay extends EventEmitter {
     pipe(upstream, socket);
   }
   async udpUpstream(flow) {
-    const socket = flow.upstream = this.track(dgram.createSocket("udp4"));
-    socket.on("message", bytes => this.schedule(flow, bytes, copy => this.listener.send(copy, flow.peer.port, flow.peer.address)));
+    const socket = (flow.upstream = this.track(dgram.createSocket("udp4")));
+    socket.on("message", (bytes) =>
+      this.schedule(flow, bytes, (copy) =>
+        this.listener.send(copy, flow.peer.port, flow.peer.address),
+      ),
+    );
     const ready = once(socket, "listening");
     socket.bind(0, "127.0.0.1");
     await deadline(ready, 5000, "UDP upstream binding");
-    return this.record("udp-bound", { sourcePort: socket.address().port, peerPort: flow.peer.port });
+    return this.record("udp-bound", {
+      sourcePort: socket.address().port,
+      peerPort: flow.peer.port,
+    });
   }
   acceptUdp(bytes, peer) {
     if (this.closed || this.mode !== "up") return;
-    let flow = [...this.flows].find(f => f.peer.port === peer.port && f.peer.address === peer.address);
+    let flow = [...this.flows].find(
+      (f) => f.peer.port === peer.port && f.peer.address === peer.address,
+    );
     if (!flow) {
       if (this.flows.size >= this.maxFlows) return this.record("flow-limit");
       flow = { peer, closed: false };
       this.flows.add(flow);
       flow.ready = this.udpUpstream(flow);
-      flow.ready.catch(error => { this.record("error", { message: error.message }); this.drop(flow); });
+      flow.ready.catch((error) => {
+        this.record("error", { message: error.message });
+        this.drop(flow);
+      });
     }
-    this.schedule(flow, bytes, copy => {
+    this.schedule(flow, bytes, (copy) => {
       if (!flow.closed) flow.upstream.send(copy, this.upstreamPort, "127.0.0.1");
     });
   }
@@ -188,7 +242,8 @@ export class FaultRelay extends EventEmitter {
     return event;
   }
   restore({ upstreamPort = this.upstreamPort } = {}) {
-    if (!Number.isInteger(upstreamPort) || upstreamPort < 1 || upstreamPort > 65535) throw new Error("invalid upstream port");
+    if (!Number.isInteger(upstreamPort) || upstreamPort < 1 || upstreamPort > 65535)
+      throw new Error("invalid upstream port");
     this.upstreamPort = upstreamPort;
     this.mode = "up";
     return this.record("path-restored", { upstreamPort });
@@ -222,14 +277,25 @@ export class FaultRelay extends EventEmitter {
         if (reset && !socket.connecting) socket.resetAndDestroy();
         else socket.destroy();
       }
-    } else { try { flow.upstream?.close(); } catch {} }
+    } else {
+      try {
+        flow.upstream?.close();
+      } catch {}
+    }
   }
   async close() {
     if (this.closed) return;
     this.closed = true;
     this.cancelBuffers();
     for (const flow of [...this.flows]) this.drop(flow);
-    if (this.listener) await deadline(new Promise((resolve, reject) => this.listener.close(error => error ? reject(error) : resolve())), 5000, "relay listener close");
+    if (this.listener)
+      await deadline(
+        new Promise((resolve, reject) =>
+          this.listener.close((error) => (error ? reject(error) : resolve())),
+        ),
+        5000,
+        "relay listener close",
+      );
     await deadline(Promise.all([...this.pendingCloses]), 5000, "relay socket close");
     this.record("closed");
     this.removeAllListeners();
@@ -239,8 +305,14 @@ export class FaultRelay extends EventEmitter {
 // Only explicit simulation timers; all readiness waits use events.
 export function faultDuration(ms, signal) {
   return new Promise((resolve, reject) => {
-    const abort = () => { clearTimeout(timer); reject(signal.reason ?? new Error("aborted")); };
-    const timer = setTimeout(() => { signal?.removeEventListener("abort", abort); resolve(); }, ms);
+    const abort = () => {
+      clearTimeout(timer);
+      reject(signal.reason ?? new Error("aborted"));
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", abort);
+      resolve();
+    }, ms);
     if (signal?.aborted) abort();
     else signal?.addEventListener("abort", abort, { once: true });
   });

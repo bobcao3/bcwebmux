@@ -267,13 +267,26 @@ function createTexture(gl, internalFormat, width, height) {
   return texture;
 }
 
-export function initializeWebGl(renderer, grain, grainSize, maxCells, maxStyles, styleSize, cellSize) {
+export function initializeWebGl(
+  renderer,
+  grain,
+  grainSize,
+  maxCells,
+  maxStyles,
+  styleSize,
+  cellSize,
+) {
   if (!renderer.atlas || !renderer.glyphPartitions) {
     throw new Error("GPU glyph resources are unavailable");
   }
   if (renderer.initialized) {
-    if (styleSize !== STYLE_SIZE || cellSize !== CELL_SIZE ||
-        !(grain instanceof Int8Array) || grainSize !== 64 || grain.length !== grainSize * grainSize) {
+    if (
+      styleSize !== STYLE_SIZE ||
+      cellSize !== CELL_SIZE ||
+      !(grain instanceof Int8Array) ||
+      grainSize !== 64 ||
+      grain.length !== grainSize * grainSize
+    ) {
       throw new Error("terminal core renderer ABI mismatch");
     }
     ensureFrameCapacityWebGl(renderer, maxCells);
@@ -282,8 +295,7 @@ export function initializeWebGl(renderer, grain, grainSize, maxCells, maxStyles,
   if (!(grain instanceof Int8Array) || grainSize !== 64 || grain.length !== grainSize * grainSize) {
     throw new Error("invalid grain texture");
   }
-  if (maxCells <= 0 || maxStyles <= 0 || styleSize !== STYLE_SIZE ||
-      cellSize !== CELL_SIZE) {
+  if (maxCells <= 0 || maxStyles <= 0 || styleSize !== STYLE_SIZE || cellSize !== CELL_SIZE) {
     throw new Error("invalid GPU initialization constants");
   }
   Object.assign(renderer, { maxCells, maxStyles, styleSize, cellSize });
@@ -297,30 +309,63 @@ export function initializeWebGl(renderer, grain, grainSize, maxCells, maxStyles,
   renderer.glyphProgram = createProgram(gl, GLYPH_SOURCE);
   renderer.vertexArray = gl.createVertexArray();
   renderer.cellBuffer = gl.createBuffer();
-  if (!renderer.vertexArray || !renderer.cellBuffer) throw new Error("WebGL cell buffer allocation failed");
+  if (!renderer.vertexArray || !renderer.cellBuffer)
+    throw new Error("WebGL cell buffer allocation failed");
   gl.bindVertexArray(renderer.vertexArray);
   gl.bindBuffer(gl.ARRAY_BUFFER, renderer.cellBuffer);
   gl.bufferData(gl.ARRAY_BUFFER, maxCells * cellSize, gl.DYNAMIC_DRAW);
   gl.enableVertexAttribArray(0);
   gl.vertexAttribIPointer(0, 2, gl.UNSIGNED_INT, cellSize, 0);
   gl.vertexAttribDivisor(0, 1);
-  renderer.styleTexture = createTexture(gl, gl.RGB32UI, renderer.styleTextureWidth, renderer.styleTextureHeight);
-  renderer.selectionTexture = createTexture(gl, gl.R32UI, renderer.selectionTextureWidth, renderer.selectionTextureHeight);
+  renderer.styleTexture = createTexture(
+    gl,
+    gl.RGB32UI,
+    renderer.styleTextureWidth,
+    renderer.styleTextureHeight,
+  );
+  renderer.selectionTexture = createTexture(
+    gl,
+    gl.R32UI,
+    renderer.selectionTextureWidth,
+    renderer.selectionTextureHeight,
+  );
   renderer.grainTexture = createTexture(gl, gl.R8_SNORM, grainSize, grainSize);
   gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
   gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, grainSize, grainSize, gl.RED, gl.BYTE, grain);
   renderer.uniforms = {};
   for (const name of [
-    "cols", "cell_width", "cell_height", "viewport_width", "viewport_height", "default_fg",
-    "cursor_x", "cursor_y", "cursor_flags", "cursor_style", "atlas_cols", "grain_strength",
-    "tile_width", "tile_height", "blink_on", "style_texture_width",
-    "selection_texture_width", "atlas", "styles", "selections", "grain",
+    "cols",
+    "cell_width",
+    "cell_height",
+    "viewport_width",
+    "viewport_height",
+    "default_fg",
+    "cursor_x",
+    "cursor_y",
+    "cursor_flags",
+    "cursor_style",
+    "atlas_cols",
+    "grain_strength",
+    "tile_width",
+    "tile_height",
+    "blink_on",
+    "style_texture_width",
+    "selection_texture_width",
+    "atlas",
+    "styles",
+    "selections",
+    "grain",
   ]) {
     const location = gl.getUniformLocation(renderer.program, `u_${name}`);
     if (location === null) throw new Error(`WebGL uniform u_${name} unavailable`);
     renderer.uniforms[name] = location;
   }
-  renderer.glyphUniforms = Object.fromEntries(Object.keys(renderer.uniforms).map(name => [name, gl.getUniformLocation(renderer.glyphProgram, `u_${name}`)]));
+  renderer.glyphUniforms = Object.fromEntries(
+    Object.keys(renderer.uniforms).map((name) => [
+      name,
+      gl.getUniformLocation(renderer.glyphProgram, `u_${name}`),
+    ]),
+  );
   gl.useProgram(renderer.glyphProgram);
   gl.uniform1i(renderer.glyphUniforms.atlas, 0);
   gl.uniform1i(renderer.glyphUniforms.styles, 1);
@@ -402,8 +447,14 @@ export function resizeWebGl(renderer, widthValue, heightValue) {
   const width = Math.round(Number(widthValue));
   const height = Math.round(Number(heightValue));
   const maximum = renderer.gl.getParameter(renderer.gl.MAX_TEXTURE_SIZE);
-  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0 ||
-      width > maximum || height > maximum) {
+  if (
+    !Number.isFinite(width) ||
+    !Number.isFinite(height) ||
+    width <= 0 ||
+    height <= 0 ||
+    width > maximum ||
+    height > maximum
+  ) {
     throw new Error("invalid GPU viewport dimensions");
   }
   renderer.viewportWidth = width;

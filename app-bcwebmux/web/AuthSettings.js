@@ -8,7 +8,13 @@
 // session cookie alone can do neither.
 
 import {
-  creationOptions, describeError, requestJSON, requestOptions, serializeCredential, supported, unsupportedReason,
+  creationOptions,
+  describeError,
+  requestJSON,
+  requestOptions,
+  serializeCredential,
+  supported,
+  unsupportedReason,
 } from "/webauthn.js";
 
 const disarmDelayMs = 5000;
@@ -84,7 +90,9 @@ export function initializeAuthSettings() {
     closeCode(null);
     codeRow.hidden = false;
     codeInput.focus();
-    return new Promise(resolve => { askForCode = resolve; });
+    return new Promise((resolve) => {
+      askForCode = resolve;
+    });
   }
 
   function render(credentials, rpId, totp) {
@@ -120,7 +128,9 @@ export function initializeAuthSettings() {
         title.append(" ", badge);
       }
       const detail = document.createElement("small");
-      const transports = credential.transports?.length ? ` · ${credential.transports.join(", ")}` : "";
+      const transports = credential.transports?.length
+        ? ` · ${credential.transports.join(", ")}`
+        : "";
       detail.textContent = `created ${formatTime(credential.createdAt)} · last used ${formatTime(credential.lastUsedAt)}${transports}`;
       copy.append(title, detail);
       const remove = document.createElement("button");
@@ -133,7 +143,9 @@ export function initializeAuthSettings() {
           armed = remove;
           remove.textContent = "CONFIRM";
           armedTimer = setTimeout(disarm, disarmDelayMs);
-          report(`Remove "${credential.name}"? Click CONFIRM to drop it, and this session with it if it is the key you are using.`);
+          report(
+            `Remove "${credential.name}"? Click CONFIRM to drop it, and this session with it if it is the key you are using.`,
+          );
           return;
         }
         disarm();
@@ -144,7 +156,8 @@ export function initializeAuthSettings() {
     }
     const factors = [];
     if (totp) factors.push("the authenticator app");
-    if (credentials.length) factors.push(`${credentials.length} security key${credentials.length === 1 ? "" : "s"}`);
+    if (credentials.length)
+      factors.push(`${credentials.length} security key${credentials.length === 1 ? "" : "s"}`);
     summary.textContent = factors.length
       ? `${factors.join(" and ")} can sign in at ${rpId}${totp ? "; the app works at every address" : ""}.`
       : `Nothing is enrolled for ${rpId} yet. Enroll the authenticator app on the host with bcwebmux-server auth totp.`;
@@ -192,7 +205,9 @@ export function initializeAuthSettings() {
       // before the running process is restarted, and a server that predates
       // the step-up endpoint answers 404 rather than naming the reason.
       if (error?.code === "not_found") {
-        throw new Error("the running server predates this page; restart bcwebmux-server and try again");
+        throw new Error(
+          "the running server predates this page; restart bcwebmux-server and try again",
+        );
       }
       throw error;
     }
@@ -201,9 +216,14 @@ export function initializeAuthSettings() {
   async function keyStepUp() {
     report("Verify your security key to unlock key management…");
     const assertion = await requestJSON("/auth/stepup/begin", { method: "POST", body: {} });
-    const credential = await navigator.credentials.get({ publicKey: requestOptions(assertion.publicKey) });
+    const credential = await navigator.credentials.get({
+      publicKey: requestOptions(assertion.publicKey),
+    });
     if (!credential) throw new Error("the browser returned no credential");
-    await requestJSON("/auth/stepup/finish", { method: "POST", body: serializeCredential(credential) });
+    await requestJSON("/auth/stepup/finish", {
+      method: "POST",
+      body: serializeCredential(credential),
+    });
   }
 
   async function codeStepUp() {
@@ -220,14 +240,25 @@ export function initializeAuthSettings() {
       await stepUp();
       report("Follow the browser prompt to enroll the new security key…");
       const name = nameInput.value.trim();
-      const path = name ? `/auth/register/begin?name=${encodeURIComponent(name)}` : "/auth/register/begin";
+      const path = name
+        ? `/auth/register/begin?name=${encodeURIComponent(name)}`
+        : "/auth/register/begin";
       const options = await requestJSON(path, { method: "POST", body: {} });
-      const credential = await navigator.credentials.create({ publicKey: creationOptions(options.publicKey) });
+      const credential = await navigator.credentials.create({
+        publicKey: creationOptions(options.publicKey),
+      });
       if (!credential) throw new Error("the browser returned no credential");
-      const result = await requestJSON("/auth/register/finish", { method: "POST", body: serializeCredential(credential) });
+      const result = await requestJSON("/auth/register/finish", {
+        method: "POST",
+        body: serializeCredential(credential),
+      });
       nameInput.value = "";
       const listed = await refresh();
-      if (listed) report(`Enrolled "${result?.name ?? "security key"}". Key management stays unlocked for five minutes.`, "ok");
+      if (listed)
+        report(
+          `Enrolled "${result?.name ?? "security key"}". Key management stays unlocked for five minutes.`,
+          "ok",
+        );
     } catch (error) {
       failure(error, "security key enrollment");
     } finally {
@@ -240,14 +271,21 @@ export function initializeAuthSettings() {
     setBusy(true);
     try {
       await stepUp();
-      await requestJSON("/auth/credentials/remove", { method: "POST", body: { id: credential.id } });
+      await requestJSON("/auth/credentials/remove", {
+        method: "POST",
+        body: { id: credential.id },
+      });
       if (credential.current) {
         // The session was issued to the key that just went away.
         location.replace("/login");
         return;
       }
       const listed = await refresh();
-      if (listed) report(`Removed "${credential.name}". Key management stays unlocked for five minutes.`, "ok");
+      if (listed)
+        report(
+          `Removed "${credential.name}". Key management stays unlocked for five minutes.`,
+          "ok",
+        );
     } catch (error) {
       failure(error, "security key removal");
     } finally {
@@ -269,16 +307,22 @@ export function initializeAuthSettings() {
 
   addButton.addEventListener("click", addKey);
   signOutButton.addEventListener("click", signOut);
-  codeForm.addEventListener("submit", event => {
+  codeForm.addEventListener("submit", (event) => {
     event.preventDefault();
     closeCode(codeInput.value.trim());
   });
-  nameInput.addEventListener("keydown", event => {
+  nameInput.addEventListener("keydown", (event) => {
     if (event.key === "Enter") {
       event.preventDefault();
       addKey();
     }
   });
 
-  return { refresh: load, close: () => { closeCode(null); disarm(); } };
+  return {
+    refresh: load,
+    close: () => {
+      closeCode(null);
+      disarm();
+    },
+  };
 }

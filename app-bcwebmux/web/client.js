@@ -12,7 +12,7 @@ import { initializeAuthSettings } from "./AuthSettings.js";
 
 // Network-only worker: installation should not cache terminal output or authenticated assets.
 if ("serviceWorker" in navigator && isSecureContext) {
-  navigator.serviceWorker.register("/sw.js").catch(error => {
+  navigator.serviceWorker.register("/sw.js").catch((error) => {
     console.warn("service worker registration failed", error);
   });
 }
@@ -109,9 +109,11 @@ window.addEventListener("bcwebmux:unauthenticated", () => location.replace("/log
 const query = new URLSearchParams(location.search);
 const requestedRenderer = query.get("renderer");
 const requestedBackend = query.get("backend");
-const renderBackend = requestedBackend === "webgpu" || requestedBackend === "webgl2"
-  ? requestedBackend : "auto";
-const textRenderer = ["canvas", "kb-canvas"].includes(requestedRenderer) ? "canvas" : settings.renderer;
+const renderBackend =
+  requestedBackend === "webgpu" || requestedBackend === "webgl2" ? requestedBackend : "auto";
+const textRenderer = ["canvas", "kb-canvas"].includes(requestedRenderer)
+  ? "canvas"
+  : settings.renderer;
 if (query.has("gpu-test")) document.querySelector("#session-toggle").hidden = true;
 
 let softkeysVisibilityOverride = null;
@@ -139,7 +141,7 @@ async function openInitialSession() {
       startupRetryAt = performance.now() + retryMs;
       console.warn("session startup failed; retrying", { retryMs, error });
       renderConnectionStatus();
-      await new Promise(resolve => setTimeout(resolve, retryMs));
+      await new Promise((resolve) => setTimeout(resolve, retryMs));
       retryMs = Math.min(startupRetryCeilingMs, retryMs * 2);
       startupRetryAt = null;
     }
@@ -158,10 +160,14 @@ async function openGpuTestSession() {
   let selected = sessionList.sessions.find((session) => session.state === "running");
   if (!selected) {
     const state = terminal.state;
-    const cellWidth = Number.isFinite(state.physicalCellWidth) && state.physicalCellWidth > 0
-      ? Math.round(state.physicalCellWidth) : 8;
-    const cellHeight = Number.isFinite(state.physicalCellHeight) && state.physicalCellHeight > 0
-      ? Math.round(state.physicalCellHeight) : 16;
+    const cellWidth =
+      Number.isFinite(state.physicalCellWidth) && state.physicalCellWidth > 0
+        ? Math.round(state.physicalCellWidth)
+        : 8;
+    const cellHeight =
+      Number.isFinite(state.physicalCellHeight) && state.physicalCellHeight > 0
+        ? Math.round(state.physicalCellHeight)
+        : 16;
     selected = await sessionApi.create({
       profile: "shell",
       geometry: {
@@ -189,10 +195,15 @@ function renderConnectionStatus() {
   if (!appReady && startupRetryAt != null) {
     const retryMs = Math.max(0, startupRetryAt - performance.now());
     const label = `Retrying · ${retryMs < 1000 ? "<1s" : `${Math.ceil(retryMs / 1000)}s`}`;
-    return setConnectionStatus("recovering", label, `${label} · ${errorValueMessage(startupError) || "session startup failed"}`);
+    return setConnectionStatus(
+      "recovering",
+      label,
+      `${label} · ${errorValueMessage(startupError) || "session startup failed"}`,
+    );
   }
   const retryMs = state.retryAt == null ? null : Math.max(0, state.retryAt - performance.now());
-  const retry = retryMs == null ? "" : ` · ${retryMs < 1000 ? "<1s" : `${Math.ceil(retryMs / 1000)}s`}`;
+  const retry =
+    retryMs == null ? "" : ` · ${retryMs < 1000 ? "<1s" : `${Math.ceil(retryMs / 1000)}s`}`;
   const labels = {
     idle: "Offline",
     connecting: "Connecting",
@@ -208,21 +219,39 @@ function renderConnectionStatus() {
     failed: "Connection failed",
     disposed: "Disconnected",
   };
-  const recovering = ["checking", "suspect", "hedging-connect", "hedging-negotiate", "roaming"].includes(state.status);
+  const recovering = [
+    "checking",
+    "suspect",
+    "hedging-connect",
+    "hedging-negotiate",
+    "roaming",
+  ].includes(state.status);
   const detail = [
     labels[state.status] ?? state.status,
     `generation ${state.generation}`,
     `${state.unreleasedSockets} socket${state.unreleasedSockets === 1 ? "" : "s"}`,
     state.lastOutcome?.kind ? `last: ${state.lastOutcome.kind}` : null,
-  ].filter(Boolean).join(" · ");
-  if (!state.connected) return setConnectionStatus(state.status === "failed" ? "error" : "offline", labels[state.status] ?? state.status, detail);
+  ]
+    .filter(Boolean)
+    .join(" · ");
+  if (!state.connected)
+    return setConnectionStatus(
+      state.status === "failed" ? "error" : "offline",
+      labels[state.status] ?? state.status,
+      detail,
+    );
   if (!appReady) return setConnectionStatus("recovering", "Initializing", detail);
   if (!activeAttachment) return setConnectionStatus("offline", "No active session", detail);
-  if (!activeAttachment.live) return setConnectionStatus("recovering", activeAttachment.state || "Restoring session", detail);
+  if (!activeAttachment.live)
+    return setConnectionStatus("recovering", activeAttachment.state || "Restoring session", detail);
   if (activeAttachment.metadata?.state === "running" && !activeAttachment.controller) {
     return setConnectionStatus("recovering", "Waiting for control", detail);
   }
-  setConnectionStatus(recovering ? "recovering" : "online", labels[state.status] ?? "Connected", detail);
+  setConnectionStatus(
+    recovering ? "recovering" : "online",
+    labels[state.status] ?? "Connected",
+    detail,
+  );
 }
 
 function setConnectionStatus(state, label, detail = label) {
@@ -284,8 +313,13 @@ function dismissNotificationPrompt() {
 }
 
 function maybeShowNotificationPrompt() {
-  if (typeof Notification === "undefined" || Notification.permission !== "default" ||
-      notificationPromptWasDismissed() || notificationDialog.open) return;
+  if (
+    typeof Notification === "undefined" ||
+    Notification.permission !== "default" ||
+    notificationPromptWasDismissed() ||
+    notificationDialog.open
+  )
+    return;
   terminal.suspendFocus();
   notificationDialog.showModal();
 }
@@ -358,15 +392,27 @@ function updateSoftkeysUi() {
   softkeysVisible = visible;
   terminalElement.classList.toggle("softkeys-visible", visible);
   softkeysToggle?.setAttribute("aria-pressed", String(visible));
-  softkeysToggle?.setAttribute("aria-label", visible ? "Hide terminal soft keys" : "Show terminal soft keys");
-  softkeysToggle?.setAttribute("title", visible ? "Hide terminal soft keys" : "Show terminal soft keys");
+  softkeysToggle?.setAttribute(
+    "aria-label",
+    visible ? "Hide terminal soft keys" : "Show terminal soft keys",
+  );
+  softkeysToggle?.setAttribute(
+    "title",
+    visible ? "Hide terminal soft keys" : "Show terminal soft keys",
+  );
 }
 
 function updateSelectionModeUi(active = terminal?.selectionMode || false) {
   terminalElement.classList.toggle("selection-mode", active);
   selectionButton?.setAttribute("aria-pressed", String(active));
-  selectionButton?.setAttribute("aria-label", active ? "Exit selection mode" : "Enter selection mode");
-  selectionButton?.setAttribute("title", active ? "Resume live terminal" : "Select frozen terminal text");
+  selectionButton?.setAttribute(
+    "aria-label",
+    active ? "Exit selection mode" : "Enter selection mode",
+  );
+  selectionButton?.setAttribute(
+    "title",
+    active ? "Resume live terminal" : "Select frozen terminal text",
+  );
 }
 
 function updateSoftModifiers(value) {
@@ -471,7 +517,9 @@ const drawer = new SessionDrawer({
 drawer.init();
 if (query.has("gpu-test")) drawer.close();
 sessionController.onChange(() => {
-  activeAttachment = query.has("gpu-test") ? transport.activeAttachment : sessionController.activeAttachment;
+  activeAttachment = query.has("gpu-test")
+    ? transport.activeAttachment
+    : sessionController.activeAttachment;
   updateTerminalIdentity(sessionController.activeSession);
   renderConnectionStatus();
   const count = sessionController.sessions.length;
@@ -479,7 +527,9 @@ sessionController.onChange(() => {
     `${count} ${count === 1 ? "SESSION" : "SESSIONS"}`;
 });
 sessionController.onActiveChange(() => {
-  activeAttachment = query.has("gpu-test") ? transport.activeAttachment : sessionController.activeAttachment;
+  activeAttachment = query.has("gpu-test")
+    ? transport.activeAttachment
+    : sessionController.activeAttachment;
   updateTerminalIdentity(sessionController.activeSession);
   renderConnectionStatus();
 });
@@ -498,7 +548,11 @@ sessionController.onTitleChange((title, metadata) => {
   updateTerminalIdentity(metadata, title);
 });
 sessionController.onNotification(({ title, body }, metadata, active) => {
-  if (!active) showDesktopNotification(metadata?.name || metadata?.title || title || "bcwebmux", title ? `${title}: ${body}` : body);
+  if (!active)
+    showDesktopNotification(
+      metadata?.name || metadata?.title || title || "bcwebmux",
+      title ? `${title}: ${body}` : body,
+    );
 });
 sessionController.onError((error) => {
   showClientError(error, "session error");
@@ -574,10 +628,13 @@ function combinedState() {
   Object.assign(state, transport.state, {
     selectionMode: terminal.selectionMode,
     softkeysVisible,
-    activeSessionId: activeAttachment?.metadata?.id ?? activeAttachment?.sessionId ?? activeAttachment?.id ?? null,
+    activeSessionId:
+      activeAttachment?.metadata?.id ?? activeAttachment?.sessionId ?? activeAttachment?.id ?? null,
     sessionState: activeAttachment?.metadata?.state ?? null,
     controller: activeAttachment?.controller ?? null,
-    connected: transport.state.connected && !!activeAttachment?.live &&
+    connected:
+      transport.state.connected &&
+      !!activeAttachment?.live &&
       (activeAttachment?.metadata?.state !== "running" || !!activeAttachment?.controller),
   });
   return state;
@@ -598,24 +655,25 @@ function updateTelemetry() {
   if (document.hidden || mode === "off") return;
   const atlasUsed = state.glyphSlotsUsed ?? 0;
   const atlasCapacity = state.atlasCapacity ?? 0;
-  const atlasPercent = atlasCapacity ? Math.round(atlasUsed * 100 / atlasCapacity) : 0;
+  const atlasPercent = atlasCapacity ? Math.round((atlasUsed * 100) / atlasCapacity) : 0;
   const cacheHits = state.cacheHits ?? 0;
   const cacheMisses = state.cacheMisses ?? 0;
   const viewportMode = state.viewportMode ?? "unknown";
   const scrollMaximum = Math.max(0, (state.scrollTotal ?? 0) - (state.scrollLength ?? 0));
-  const line = mode === "simple"
-    ? `R: ${formatBytes(state.rxWireBytes)} · S: ${formatBytes(state.txBytes)} · WS RTT: ${formatMs(state.wsRttLatestMs)} ms · WASM: ${formatMs(state.wasmFrameMs)} ms`
-    : [
-      `WASM frame: ${formatMs(state.wasmFrameMs)} ms · parse: ${formatMs(state.wasmParseMs)} ms`,
-      `GPU submit: ${formatMs(state.frameMs)} ms · presentation opportunity: ${formatMs(state.presentationOpportunityMs)} ms`,
-      `Queue drain: ${formatMs(state.queueDrainMs)} ms`,
-      `Socket → frame: ${formatMs(state.rxLatencyMs)} ms · Input → echo frame: ${formatMs(state.inputLatencyMs)} ms`,
-      `WebSocket RTT latest / median / p95: ${formatMs(state.wsRttLatestMs)} / ${formatMs(state.wsRttMedianMs)} / ${formatMs(state.wsRttP95Ms)} ms`,
-      `Viewport: ${state.cols} × ${state.rows} · cell: ${state.physicalCellWidth}x${state.physicalCellHeight} px · font: ${state.physicalFontSize} px · Glyph atlas: ${atlasUsed} / ${atlasCapacity} (${atlasPercent}%) · cache: ${cacheHits} hit / ${cacheMisses} miss`,
-      `Scroll: ${viewportMode} · ${formatScrollValue(state.scrollOffset)}+${formatScrollValue(state.scrollLength)}/${formatScrollValue(state.scrollTotal)}`,
-      `Rows: ${formatScrollValue(state.scrollOffset)}/${formatScrollValue(scrollMaximum)} · page ${formatScrollValue(state.scrollLength)}`,
-      `Network received: ${formatBytes(state.rxBytes)} decoded · wire: ${formatBytes(state.rxWireBytes)} · compression: ${formatCompressionRatio(state.rxBytes, state.rxWireBytes)} · sent: ${formatBytes(state.txBytes)}`,
-    ].join("\n");
+  const line =
+    mode === "simple"
+      ? `R: ${formatBytes(state.rxWireBytes)} · S: ${formatBytes(state.txBytes)} · WS RTT: ${formatMs(state.wsRttLatestMs)} ms · WASM: ${formatMs(state.wasmFrameMs)} ms`
+      : [
+          `WASM frame: ${formatMs(state.wasmFrameMs)} ms · parse: ${formatMs(state.wasmParseMs)} ms`,
+          `GPU submit: ${formatMs(state.frameMs)} ms · presentation opportunity: ${formatMs(state.presentationOpportunityMs)} ms`,
+          `Queue drain: ${formatMs(state.queueDrainMs)} ms`,
+          `Socket → frame: ${formatMs(state.rxLatencyMs)} ms · Input → echo frame: ${formatMs(state.inputLatencyMs)} ms`,
+          `WebSocket RTT latest / median / p95: ${formatMs(state.wsRttLatestMs)} / ${formatMs(state.wsRttMedianMs)} / ${formatMs(state.wsRttP95Ms)} ms`,
+          `Viewport: ${state.cols} × ${state.rows} · cell: ${state.physicalCellWidth}x${state.physicalCellHeight} px · font: ${state.physicalFontSize} px · Glyph atlas: ${atlasUsed} / ${atlasCapacity} (${atlasPercent}%) · cache: ${cacheHits} hit / ${cacheMisses} miss`,
+          `Scroll: ${viewportMode} · ${formatScrollValue(state.scrollOffset)}+${formatScrollValue(state.scrollLength)}/${formatScrollValue(state.scrollTotal)}`,
+          `Rows: ${formatScrollValue(state.scrollOffset)}/${formatScrollValue(scrollMaximum)} · page ${formatScrollValue(state.scrollLength)}`,
+          `Network received: ${formatBytes(state.rxBytes)} decoded · wire: ${formatBytes(state.rxWireBytes)} · compression: ${formatCompressionRatio(state.rxBytes, state.rxWireBytes)} · sent: ${formatBytes(state.txBytes)}`,
+        ].join("\n");
   if (line !== lastTelemetryLine) {
     perf.value = line;
     lastTelemetryLine = line;
@@ -630,22 +688,48 @@ function updateTelemetry() {
 
 window.bcwebmux = {
   get connected() {
-    return appReady && transport.state.connected && !!activeAttachment?.live &&
-      (activeAttachment?.metadata?.state !== "running" || !!activeAttachment?.controller);
+    return (
+      appReady &&
+      transport.state.connected &&
+      !!activeAttachment?.live &&
+      (activeAttachment?.metadata?.state !== "running" || !!activeAttachment?.controller)
+    );
   },
   get activeSessionId() {
-    return activeAttachment?.metadata?.id ?? activeAttachment?.sessionId ?? activeAttachment?.id ?? null;
+    return (
+      activeAttachment?.metadata?.id ?? activeAttachment?.sessionId ?? activeAttachment?.id ?? null
+    );
   },
-  get attachmentState() { return activeAttachment?.state ?? null; },
-  get selectionMode() { return terminal.selectionMode; },
-  enterSelectionMode() { return terminal.enterSelectionMode(); },
-  exitSelectionMode() { return terminal.exitSelectionMode(); },
-  get state() { return combinedState(); },
-  get inputTrace() { return terminal.inputTrace; },
-  selectionText() { return terminal.getSelection(); },
-  copySelection() { return terminal.copySelection(); },
-  write(text) { terminal.input(text); },
-  paste(text) { terminal.paste(text); },
+  get attachmentState() {
+    return activeAttachment?.state ?? null;
+  },
+  get selectionMode() {
+    return terminal.selectionMode;
+  },
+  enterSelectionMode() {
+    return terminal.enterSelectionMode();
+  },
+  exitSelectionMode() {
+    return terminal.exitSelectionMode();
+  },
+  get state() {
+    return combinedState();
+  },
+  get inputTrace() {
+    return terminal.inputTrace;
+  },
+  selectionText() {
+    return terminal.getSelection();
+  },
+  copySelection() {
+    return terminal.copySelection();
+  },
+  write(text) {
+    terminal.input(text);
+  },
+  paste(text) {
+    terminal.paste(text);
+  },
 };
 if (query.has("gpu-test") || query.has("session-test")) {
   window.bcwebmux.readPixels = () => terminal.readPixels();
@@ -664,10 +748,14 @@ if (query.has("session-test")) {
       },
     },
     coreCount: {
-      get() { return terminal.coreCount; },
+      get() {
+        return terminal.coreCount;
+      },
     },
     clientInstanceId: {
-      get() { return transport.clientInstanceId; },
+      get() {
+        return transport.clientInstanceId;
+      },
     },
     sessions: {
       get() {
@@ -675,40 +763,64 @@ if (query.has("session-test")) {
       },
     },
     drawerState: {
-      get() { return drawer.state; },
+      get() {
+        return drawer.state;
+      },
     },
     createSession: {
-      value(options) { return sessionController.create(options); },
+      value(options) {
+        return sessionController.create(options);
+      },
     },
     switchSession: {
-      value(id) { return sessionController.switchTo(id); },
+      value(id) {
+        return sessionController.switchTo(id);
+      },
     },
     renameSession: {
-      value(id, name) { return sessionController.rename(id, name); },
+      value(id, name) {
+        return sessionController.rename(id, name);
+      },
     },
     terminateSession: {
-      value(id) { return sessionController.terminate(id); },
+      value(id) {
+        return sessionController.terminate(id);
+      },
     },
     deleteSession: {
-      value(id) { return sessionController.delete(id); },
+      value(id) {
+        return sessionController.delete(id);
+      },
     },
     claimControl: {
-      value() { return sessionController.claim(); },
+      value() {
+        return sessionController.claim();
+      },
     },
     refreshSessions: {
-      value() { return sessionController.refresh(); },
+      value() {
+        return sessionController.refresh();
+      },
     },
     toggleDrawer: {
-      value() { return drawer.toggle(); },
+      value() {
+        return drawer.toggle();
+      },
     },
     openDrawer: {
-      value() { return drawer.open(); },
+      value() {
+        return drawer.open();
+      },
     },
     closeDrawer: {
-      value() { return drawer.close(); },
+      value() {
+        return drawer.close();
+      },
     },
     resetDrawerPreference: {
-      value() { return drawer.resetPreference(); },
+      value() {
+        return drawer.resetPreference();
+      },
     },
     rendererIdentity: {
       get() {

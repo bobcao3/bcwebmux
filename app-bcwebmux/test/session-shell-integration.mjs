@@ -21,7 +21,9 @@ await mkdir(inaccessible);
 await chmod(inaccessible, 0);
 // Observe cwd before any shell startup scripts; then verify a real bash login
 // shell without host profiles changing cwd or introducing machine-specific effects.
-await writeFile(shell, `#!/bin/sh
+await writeFile(
+  shell,
+  `#!/bin/sh
 PROBE='${probe}'
 export PROBE
 printf '%s\\n' "$@" > "$PROBE.args"
@@ -29,7 +31,9 @@ pwd -P > "$PROBE.cwd"
 env | grep -E '^(TERM|COLORTERM|TERM_PROGRAM|KITTY_WINDOW_ID)=' | sort > "$PROBE.env"
 readlink "/proc/$PPID/cwd" > "$PROBE.worker-cwd"
 exec /bin/bash --noprofile --norc "$@" -c 'shopt -q login_shell || exit 42; pwd -P > "$PROBE.login"'
-`, { mode: 0o700 });
+`,
+  { mode: 0o700 },
+);
 
 try {
   for (const [name, value, expected] of [
@@ -42,20 +46,50 @@ try {
   ]) {
     const port = await freePort();
     const base = `http://127.0.0.1:${port}`;
-    for (const suffix of ["args", "cwd", "login", "worker-cwd", "env"]) await rm(`${probe}.${suffix}`, { force: true });
+    for (const suffix of ["args", "cwd", "login", "worker-cwd", "env"])
+      await rm(`${probe}.${suffix}`, { force: true });
     const env = { ...process.env };
     if (value === undefined) delete env.HOME;
     else env.HOME = value;
-    const server = spawn(serverPath, ["--config", join(root, "config.toml"), "--auth=false", "--port", String(port), "--origin", base, "--shell", shell, ...(name === "explicit" ? ["--term", "screen-256color", "--kitty-graphics=false"] : [])], {
-      cwd: outside, env, stdio: ["ignore", "pipe", "pipe"],
-    });
+    const server = spawn(
+      serverPath,
+      [
+        "--config",
+        join(root, "config.toml"),
+        "--auth=false",
+        "--port",
+        String(port),
+        "--origin",
+        base,
+        "--shell",
+        shell,
+        ...(name === "explicit" ? ["--term", "screen-256color", "--kitty-graphics=false"] : []),
+      ],
+      {
+        cwd: outside,
+        env,
+        stdio: ["ignore", "pipe", "pipe"],
+      },
+    );
     let logs = "";
-    server.stdout.on("data", chunk => { logs += chunk; });
-    server.stderr.on("data", chunk => { logs += chunk; });
+    server.stdout.on("data", (chunk) => {
+      logs += chunk;
+    });
+    server.stderr.on("data", (chunk) => {
+      logs += chunk;
+    });
     try {
-      await waitFor(async () => {
-        try { return (await fetch(`${base}/api/server`)).ok; } catch { return false; }
-      }, 5000, () => `${name}: server failed to start\n${logs}`);
+      await waitFor(
+        async () => {
+          try {
+            return (await fetch(`${base}/api/server`)).ok;
+          } catch {
+            return false;
+          }
+        },
+        5000,
+        () => `${name}: server failed to start\n${logs}`,
+      );
       const response = await fetch(`${base}/api/sessions`, {
         method: "POST",
         headers: { Origin: base, "Content-Type": "application/json", "Idempotency-Key": name },
@@ -63,18 +97,34 @@ try {
       });
       assert.equal(response.status, 201, `${name}: ${await response.clone().text()}`);
       const session = await response.json();
-      const exited = await waitFor(async () => {
-        const current = await (await fetch(`${base}/api/sessions/${session.id}`)).json();
-        return current.state === "exited" && current;
-      }, 5000, () => `${name}: session did not exit\n${logs}`);
-      assert.equal(await readlink(`/proc/${server.pid}/cwd`), outside, "server cwd must not change");
+      const exited = await waitFor(
+        async () => {
+          const current = await (await fetch(`${base}/api/sessions/${session.id}`)).json();
+          return current.state === "exited" && current;
+        },
+        5000,
+        () => `${name}: session did not exit\n${logs}`,
+      );
+      assert.equal(
+        await readlink(`/proc/${server.pid}/cwd`),
+        outside,
+        "server cwd must not change",
+      );
       if (expected) {
         assert.equal(exited.exitStatus, 0, name);
         assert.equal(await readFile(`${probe}.args`, "utf8"), "-l\n", name);
         assert.equal((await readFile(`${probe}.cwd`, "utf8")).trim(), expected, name);
         assert.equal((await readFile(`${probe}.login`, "utf8")).trim(), expected, name);
-        assert.equal((await readFile(`${probe}.worker-cwd`, "utf8")).trim(), outside, "worker cwd must not change");
-        assert.equal(await readFile(`${probe}.env`, "utf8"), `COLORTERM=truecolor\n${name === "explicit" ? "" : "KITTY_WINDOW_ID=1\n"}TERM_PROGRAM=bcwebmux\nTERM=${name === "explicit" ? "screen-256color" : "xterm-ghostty"}\n`, name);
+        assert.equal(
+          (await readFile(`${probe}.worker-cwd`, "utf8")).trim(),
+          outside,
+          "worker cwd must not change",
+        );
+        assert.equal(
+          await readFile(`${probe}.env`, "utf8"),
+          `COLORTERM=truecolor\n${name === "explicit" ? "" : "KITTY_WINDOW_ID=1\n"}TERM_PROGRAM=bcwebmux\nTERM=${name === "explicit" ? "screen-256color" : "xterm-ghostty"}\n`,
+          name,
+        );
       } else {
         assert.equal(exited.exitStatus, 126 << 8, name);
         assert.ok(exited.outputOffset > 0, "home failure must emit a diagnostic");

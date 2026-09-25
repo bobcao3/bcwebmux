@@ -28,8 +28,14 @@ export class WebGlGlyphAtlas {
 
   prepareLayout(geometry, cellWidth, cellHeight, fontSize, reset) {
     validateAtlasGeometry(geometry);
-    if (!Number.isInteger(cellWidth) || !Number.isInteger(cellHeight) || !Number.isInteger(fontSize) ||
-        cellWidth <= 0 || cellHeight <= 0 || fontSize <= 0) {
+    if (
+      !Number.isInteger(cellWidth) ||
+      !Number.isInteger(cellHeight) ||
+      !Number.isInteger(fontSize) ||
+      cellWidth <= 0 ||
+      cellHeight <= 0 ||
+      fontSize <= 0
+    ) {
       throw new Error("invalid physical cell metrics");
     }
     const tileWidth = Math.max(1, Math.round(cellWidth));
@@ -44,7 +50,9 @@ export class WebGlGlyphAtlas {
       this.gl.deleteTexture(texture);
       throw new Error("WebGL glyph atlas allocation failed");
     }
-    const preserve = !reset && this.texture &&
+    const preserve =
+      !reset &&
+      this.texture &&
       geometry.columns === this.columns &&
       tileWidth === this.tileWidth &&
       tileHeight === this.tileHeight;
@@ -69,7 +77,13 @@ export class WebGlGlyphAtlas {
         throw new Error("WebGL glyph atlas copy allocation failed");
       }
       gl.bindFramebuffer(gl.READ_FRAMEBUFFER, framebuffer);
-      gl.framebufferTexture2D(gl.READ_FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, oldTexture, 0);
+      gl.framebufferTexture2D(
+        gl.READ_FRAMEBUFFER,
+        gl.COLOR_ATTACHMENT0,
+        gl.TEXTURE_2D,
+        oldTexture,
+        0,
+      );
       if (gl.checkFramebufferStatus(gl.READ_FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) {
         gl.bindFramebuffer(gl.READ_FRAMEBUFFER, null);
         gl.deleteFramebuffer(framebuffer);
@@ -78,7 +92,12 @@ export class WebGlGlyphAtlas {
       }
       gl.bindTexture(gl.TEXTURE_2D, candidate.texture);
       gl.copyTexSubImage2D(
-        gl.TEXTURE_2D, 0, 0, 0, 0, 0,
+        gl.TEXTURE_2D,
+        0,
+        0,
+        0,
+        0,
+        0,
         this.columns * this.tileWidth,
         this.rows * this.tileHeight,
       );
@@ -103,7 +122,7 @@ export class WebGlGlyphAtlas {
 
   uploadBitmap(firstSlot, slotCount, pixels, pixelOffset, bytesPerRow) {
     const gl = this.gl;
-    if (firstSlot % this.columns + slotCount > this.columns) {
+    if ((firstSlot % this.columns) + slotCount > this.columns) {
       throw new Error("glyph atlas bitmap upload crosses a row");
     }
     const width = slotCount * this.tileWidth;
@@ -139,7 +158,13 @@ export class WebGlGlyphAtlas {
     if (!framebuffer) throw new Error("Glyph texture readback allocation failed");
     try {
       gl.bindFramebuffer(gl.READ_FRAMEBUFFER, framebuffer);
-      gl.framebufferTexture2D(gl.READ_FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, this.texture, 0);
+      gl.framebufferTexture2D(
+        gl.READ_FRAMEBUFFER,
+        gl.COLOR_ATTACHMENT0,
+        gl.TEXTURE_2D,
+        this.texture,
+        0,
+      );
       if (gl.checkFramebufferStatus(gl.READ_FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) {
         throw new Error("Glyph texture readback framebuffer incomplete");
       }

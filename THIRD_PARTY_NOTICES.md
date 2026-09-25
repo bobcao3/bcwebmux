@@ -80,8 +80,9 @@ this project's build and are not distributed here.
 - **Copyright:** Copyright 2020 The JetBrains Mono Project Authors
 - **Used as:** the served terminal font (`JetBrainsMonoNerdFontMono-*.ttf`),
   fetched from the pinned `nerd-fonts` release in `app-bcwebmux/build.zig.zon`.
-- **License text:** [app-bcwebmux/web/fonts/OFL.txt](app-bcwebmux/web/fonts/OFL.txt),
-  also installed to `zig-out/wgpu-terminal/fonts/OFL.txt`.
+- **License text:**
+  [app-bcwebmux/web/fonts/OFL.txt](app-bcwebmux/web/fonts/OFL.txt), also
+  installed to `zig-out/wgpu-terminal/fonts/OFL.txt`.
 
 ### Noto Emoji
 
@@ -106,27 +107,27 @@ this project's build and are not distributed here.
 Downloaded using `app-bcwebmux/go/go.mod` and `go.sum`, then linked into
 `bcwebmux-server`. The license links below identify the pinned module versions:
 
-| Module | License | Copyright | License text |
-| --- | --- | --- | --- |
-| `github.com/BurntSushi/toml` | MIT | Copyright (c) 2013 TOML authors | <https://pkg.go.dev/github.com/BurntSushi/toml@v1.5.0?tab=licenses> |
-| `github.com/fxamacker/cbor/v2` | MIT | Copyright (c) 2019-present Faye Amacker | <https://pkg.go.dev/github.com/fxamacker/cbor/v2@v2.9.4?tab=licenses> |
-| `github.com/go-viper/mapstructure/v2` | MIT | Copyright (c) 2013 Mitchell Hashimoto | <https://pkg.go.dev/github.com/go-viper/mapstructure/v2@v2.5.0?tab=licenses> |
-| `github.com/go-webauthn/webauthn` | BSD 3-Clause | Copyright (c) 2025 github.com/go-webauthn/webauthn authors | <https://pkg.go.dev/github.com/go-webauthn/webauthn@v0.18.2?tab=licenses> |
-| `github.com/go-webauthn/x` | BSD 3-Clause | Copyright (c) 2021-2023 github.com/go-webauthn authors | <https://pkg.go.dev/github.com/go-webauthn/x@v0.3.1?tab=licenses> |
-| `github.com/golang-jwt/jwt/v5` | MIT | Copyright (c) 2012 Dave Grijalva, 2021 golang-jwt maintainers | <https://pkg.go.dev/github.com/golang-jwt/jwt/v5@v5.3.1?tab=licenses> |
-| `github.com/google/go-tpm` | Apache-2.0 | Copyright 2018 Google Inc. | <https://pkg.go.dev/github.com/google/go-tpm@v0.9.8?tab=licenses> |
-| `github.com/google/uuid` | BSD 3-Clause | Copyright (c) 2009,2014 Google Inc. All rights reserved. | <https://pkg.go.dev/github.com/google/uuid@v1.6.0?tab=licenses> |
-| `github.com/gorilla/websocket` | BSD 2-Clause | Copyright (c) 2013 The Gorilla WebSocket Authors | <https://pkg.go.dev/github.com/gorilla/websocket@v1.5.3?tab=licenses> |
-| `github.com/philhofer/fwd` | MIT | Copyright (c) 2014-2015 Philip Hofer | <https://pkg.go.dev/github.com/philhofer/fwd@v1.2.0?tab=licenses> |
-| `github.com/quic-go/quic-go` | MIT | Copyright (c) 2016 the quic-go authors & Google, Inc. | <https://pkg.go.dev/github.com/quic-go/quic-go@v0.62.0?tab=licenses> |
-| `github.com/quic-go/qpack` | MIT | Copyright 2019 Marten Seemann | <https://pkg.go.dev/github.com/quic-go/qpack@v0.6.0?tab=licenses> |
-| `github.com/tinylib/msgp` | MIT | Copyright (c) 2014 Philip Hofer; portions Copyright (c) 2009 The Go Authors | <https://pkg.go.dev/github.com/tinylib/msgp@v1.6.4?tab=licenses> |
-| `github.com/x448/float16` | MIT | Copyright (c) 2019 Montgomery Edwards⁴⁴⁸ and Faye Amacker | <https://pkg.go.dev/github.com/x448/float16@v0.8.4?tab=licenses> |
-| `rsc.io/qr` | BSD 3-Clause | Copyright (c) 2009 The Go Authors | <https://pkg.go.dev/rsc.io/qr@v0.2.0?tab=licenses> |
-| `golang.org/x/crypto` | BSD 3-Clause | Copyright 2009 The Go Authors | <https://pkg.go.dev/golang.org/x/crypto@v0.57.0?tab=licenses> (plus `PATENTS`) |
-| `golang.org/x/net` | BSD 3-Clause | Copyright 2009 The Go Authors | <https://pkg.go.dev/golang.org/x/net@v0.58.0?tab=licenses> (plus `PATENTS`) |
-| `golang.org/x/sys` | BSD 3-Clause | Copyright 2009 The Go Authors | <https://pkg.go.dev/golang.org/x/sys@v0.48.0?tab=licenses> (plus `PATENTS`) |
-| `golang.org/x/text` | BSD 3-Clause | Copyright 2009 The Go Authors | <https://pkg.go.dev/golang.org/x/text@v0.42.0?tab=licenses> (plus `PATENTS`) |
+| Module                                | License      | Copyright                                                                   | License text                                                                   |
+| ------------------------------------- | ------------ | --------------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
+| `github.com/BurntSushi/toml`          | MIT          | Copyright (c) 2013 TOML authors                                             | <https://pkg.go.dev/github.com/BurntSushi/toml@v1.5.0?tab=licenses>            |
+| `github.com/fxamacker/cbor/v2`        | MIT          | Copyright (c) 2019-present Faye Amacker                                     | <https://pkg.go.dev/github.com/fxamacker/cbor/v2@v2.9.4?tab=licenses>          |
+| `github.com/go-viper/mapstructure/v2` | MIT          | Copyright (c) 2013 Mitchell Hashimoto                                       | <https://pkg.go.dev/github.com/go-viper/mapstructure/v2@v2.5.0?tab=licenses>   |
+| `github.com/go-webauthn/webauthn`     | BSD 3-Clause | Copyright (c) 2025 github.com/go-webauthn/webauthn authors                  | <https://pkg.go.dev/github.com/go-webauthn/webauthn@v0.18.2?tab=licenses>      |
+| `github.com/go-webauthn/x`            | BSD 3-Clause | Copyright (c) 2021-2023 github.com/go-webauthn authors                      | <https://pkg.go.dev/github.com/go-webauthn/x@v0.3.1?tab=licenses>              |
+| `github.com/golang-jwt/jwt/v5`        | MIT          | Copyright (c) 2012 Dave Grijalva, 2021 golang-jwt maintainers               | <https://pkg.go.dev/github.com/golang-jwt/jwt/v5@v5.3.1?tab=licenses>          |
+| `github.com/google/go-tpm`            | Apache-2.0   | Copyright 2018 Google Inc.                                                  | <https://pkg.go.dev/github.com/google/go-tpm@v0.9.8?tab=licenses>              |
+| `github.com/google/uuid`              | BSD 3-Clause | Copyright (c) 2009,2014 Google Inc. All rights reserved.                    | <https://pkg.go.dev/github.com/google/uuid@v1.6.0?tab=licenses>                |
+| `github.com/gorilla/websocket`        | BSD 2-Clause | Copyright (c) 2013 The Gorilla WebSocket Authors                            | <https://pkg.go.dev/github.com/gorilla/websocket@v1.5.3?tab=licenses>          |
+| `github.com/philhofer/fwd`            | MIT          | Copyright (c) 2014-2015 Philip Hofer                                        | <https://pkg.go.dev/github.com/philhofer/fwd@v1.2.0?tab=licenses>              |
+| `github.com/quic-go/quic-go`          | MIT          | Copyright (c) 2016 the quic-go authors & Google, Inc.                       | <https://pkg.go.dev/github.com/quic-go/quic-go@v0.62.0?tab=licenses>           |
+| `github.com/quic-go/qpack`            | MIT          | Copyright 2019 Marten Seemann                                               | <https://pkg.go.dev/github.com/quic-go/qpack@v0.6.0?tab=licenses>              |
+| `github.com/tinylib/msgp`             | MIT          | Copyright (c) 2014 Philip Hofer; portions Copyright (c) 2009 The Go Authors | <https://pkg.go.dev/github.com/tinylib/msgp@v1.6.4?tab=licenses>               |
+| `github.com/x448/float16`             | MIT          | Copyright (c) 2019 Montgomery Edwards⁴⁴⁸ and Faye Amacker                   | <https://pkg.go.dev/github.com/x448/float16@v0.8.4?tab=licenses>               |
+| `rsc.io/qr`                           | BSD 3-Clause | Copyright (c) 2009 The Go Authors                                           | <https://pkg.go.dev/rsc.io/qr@v0.2.0?tab=licenses>                             |
+| `golang.org/x/crypto`                 | BSD 3-Clause | Copyright 2009 The Go Authors                                               | <https://pkg.go.dev/golang.org/x/crypto@v0.57.0?tab=licenses> (plus `PATENTS`) |
+| `golang.org/x/net`                    | BSD 3-Clause | Copyright 2009 The Go Authors                                               | <https://pkg.go.dev/golang.org/x/net@v0.58.0?tab=licenses> (plus `PATENTS`)    |
+| `golang.org/x/sys`                    | BSD 3-Clause | Copyright 2009 The Go Authors                                               | <https://pkg.go.dev/golang.org/x/sys@v0.48.0?tab=licenses> (plus `PATENTS`)    |
+| `golang.org/x/text`                   | BSD 3-Clause | Copyright 2009 The Go Authors                                               | <https://pkg.go.dev/golang.org/x/text@v0.42.0?tab=licenses> (plus `PATENTS`)   |
 
 The module archives downloaded into Go's module cache contain their license
 texts. Redistributors must include those texts with the built artifacts; they
@@ -149,6 +150,6 @@ included in the artifacts:
 ## Referenced at runtime
 
 [`example-terminal/asciinema_playback.html`](example-terminal/asciinema_playback.html)
-links to and fetches the asciinema recording
-<https://asciinema.org/a/664965> in the browser. The recording is not
-redistributed here; its terms are those of its author and asciinema.org.
+links to and fetches the asciinema recording <https://asciinema.org/a/664965> in
+the browser. The recording is not redistributed here; its terms are those of its
+author and asciinema.org.

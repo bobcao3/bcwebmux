@@ -17,7 +17,10 @@ if (result.status !== 0) process.exit(result.status ?? 1);
 
 const destination = resolve(packageRoot, "dist/terminal.wasm");
 await mkdir(dirname(destination), { recursive: true });
-await copyFile(resolve(repositoryRoot, "app-bcwebmux/zig-out/wgpu-terminal/terminal.wasm"), destination);
+await copyFile(
+  resolve(repositoryRoot, "app-bcwebmux/zig-out/wgpu-terminal/terminal.wasm"),
+  destination,
+);
 
 const fontFiles = [
   "JetBrainsMonoNerdFontMono-Regular.ttf",

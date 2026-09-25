@@ -4,7 +4,6 @@
 import { generateGrain, GRAIN_SIZE } from "../Grain.js";
 import { CELL_SIZE, STYLE_SIZE } from "../FrameSchema.js";
 
-
 import {
   initializeWebGl,
   resizeWebGl,
@@ -12,10 +11,7 @@ import {
   readWebGlPixels,
   disposeWebGl,
 } from "./WebGlTerminalResources.js";
-import {
-  reconfigureGlyphAtlas,
-  setTextRenderer,
-} from "../GlyphAtlasRuntime.js";
+import { reconfigureGlyphAtlas, setTextRenderer } from "../GlyphAtlasRuntime.js";
 import { WebGlGlyphAtlas } from "./WebGlGlyphAtlas.js";
 import { GraphicsScene } from "../GraphicsScene.js";
 import { createWebGlGraphicsTexture, drawWebGlGraphics } from "./WebGlGraphics.js";
@@ -40,7 +36,9 @@ function uploadIntegerRecords(gl, texture, textureWidth, first, count, component
 }
 
 export class WebGlTerminal {
-  get available() { return !this.disposed && !this.gl.isContextLost(); }
+  get available() {
+    return !this.disposed && !this.gl.isContextLost();
+  }
 
   static async create(canvas, pixelViewport, textRenderer, glyphCacheMaxBytes, powerPreference) {
     const contextOptions = {
@@ -81,7 +79,9 @@ export class WebGlTerminal {
       device: debug ? gl.getParameter(debug.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER),
       description: gl.getParameter(gl.VERSION),
     };
-    this.adapterFallback = /swiftshader|llvmpipe|software/i.test(Object.values(this.adapterInfo).join(" "));
+    this.adapterFallback = /swiftshader|llvmpipe|software/i.test(
+      Object.values(this.adapterInfo).join(" "),
+    );
     this.maxCells = 0;
     this.maxStyles = 0;
     this.styleSize = 0;
@@ -119,7 +119,7 @@ export class WebGlTerminal {
     this.cacheMisses = 0;
     this.error = null;
     this.initialized = false;
-    this.contextLostListener = event => {
+    this.contextLostListener = (event) => {
       event.preventDefault();
       this.contextLost = true;
       this.error = "WebGL context lost";
@@ -133,13 +133,16 @@ export class WebGlTerminal {
   }
 
   initialize(maxCells) {
-    return initializeWebGl(this, generateGrain(), GRAIN_SIZE,
-      maxCells, Math.min(65536, maxCells + 1), STYLE_SIZE, CELL_SIZE);
+    return initializeWebGl(
+      this,
+      generateGrain(),
+      GRAIN_SIZE,
+      maxCells,
+      Math.min(65536, maxCells + 1),
+      STYLE_SIZE,
+      CELL_SIZE,
+    );
   }
-
-
-
-
 
   reconfigureGlyphAtlas(metrics, textRenderer, fontFamily, activeVisibleSlots) {
     return reconfigureGlyphAtlas(this, metrics, textRenderer, fontFamily, activeVisibleSlots);
@@ -148,16 +151,35 @@ export class WebGlTerminal {
   createGlyphAtlas(geometry, metrics) {
     const parent = this.canvas.parentElement;
     const { width, height, fontSize } = metrics;
-    return new WebGlGlyphAtlas(this.gl, getComputedStyle(parent), geometry, width, height, fontSize);
+    return new WebGlGlyphAtlas(
+      this.gl,
+      getComputedStyle(parent),
+      geometry,
+      width,
+      height,
+      fontSize,
+    );
   }
 
   setPhysicalCellMetrics(width, height, fontSize, columns, activeVisibleSlots) {
-    if (!Number.isInteger(width) || !Number.isInteger(height) || !Number.isInteger(fontSize) ||
-        !Number.isInteger(columns) || width <= 0 || height <= 0 || fontSize <= 0 || columns <= 0) {
+    if (
+      !Number.isInteger(width) ||
+      !Number.isInteger(height) ||
+      !Number.isInteger(fontSize) ||
+      !Number.isInteger(columns) ||
+      width <= 0 ||
+      height <= 0 ||
+      fontSize <= 0 ||
+      columns <= 0
+    ) {
       throw new Error("invalid physical cell metrics");
     }
-    if (width === this.physicalCellWidth && height === this.physicalCellHeight &&
-        fontSize === this.physicalFontSize) return null;
+    if (
+      width === this.physicalCellWidth &&
+      height === this.physicalCellHeight &&
+      fontSize === this.physicalFontSize
+    )
+      return null;
     return reconfigureGlyphAtlas(
       this,
       { width, height, fontSize, columns },
@@ -169,7 +191,8 @@ export class WebGlTerminal {
 
   setGrainStrength(value) {
     const strength = Number(value);
-    if (!Number.isFinite(strength) || strength < 0 || strength > 32) throw new Error("invalid grain strength");
+    if (!Number.isFinite(strength) || strength < 0 || strength > 32)
+      throw new Error("invalid grain strength");
     if (strength === this.grainStrength) return;
     this.grainStrength = strength;
     if (this.initialized && this.rows) this.presenter?.requestPresentation();
@@ -200,7 +223,6 @@ export class WebGlTerminal {
     return plan;
   }
 
-
   setTextRenderer(textRenderer) {
     return setTextRenderer(this, textRenderer);
   }
@@ -210,7 +232,9 @@ export class WebGlTerminal {
     return this.atlas.columns;
   }
 
-  uploadBitmap(...args) { this.atlas.uploadBitmap(...args); }
+  uploadBitmap(...args) {
+    this.atlas.uploadBitmap(...args);
+  }
 
   createGraphicsTexture(width, height, data) {
     return createWebGlGraphicsTexture(this, width, height, data);
@@ -221,17 +245,32 @@ export class WebGlTerminal {
   }
 
   uploadStyles(first, styles) {
-    uploadIntegerRecords(this.gl, this.styleTexture, this.styleTextureWidth,
-      first, styles.length / 3, 3, this.gl.RGB_INTEGER, styles);
+    uploadIntegerRecords(
+      this.gl,
+      this.styleTexture,
+      this.styleTextureWidth,
+      first,
+      styles.length / 3,
+      3,
+      this.gl.RGB_INTEGER,
+      styles,
+    );
   }
 
   uploadCells(firstRow, rowCount, cells, selections) {
     this.gl.bindBuffer(this.gl.ARRAY_BUFFER, this.cellBuffer);
     this.gl.bufferSubData(this.gl.ARRAY_BUFFER, firstRow * this.cols * this.cellSize, cells);
-    uploadIntegerRecords(this.gl, this.selectionTexture, this.selectionTextureWidth,
-      firstRow, rowCount, 1, this.gl.RED_INTEGER, selections);
+    uploadIntegerRecords(
+      this.gl,
+      this.selectionTexture,
+      this.selectionTextureWidth,
+      firstRow,
+      rowCount,
+      1,
+      this.gl.RED_INTEGER,
+      selections,
+    );
   }
-
 
   applyCellUniforms(uniforms, blinkOn) {
     const gl = this.gl;
@@ -271,8 +310,8 @@ export class WebGlTerminal {
     gl.activeTexture(gl.TEXTURE3);
     gl.bindTexture(gl.TEXTURE_2D, this.grainTexture);
     gl.clearColor(
-      (this.background >> 16 & 255) / 255,
-      (this.background >> 8 & 255) / 255,
+      ((this.background >> 16) & 255) / 255,
+      ((this.background >> 8) & 255) / 255,
       (this.background & 255) / 255,
       1,
     );
@@ -297,12 +336,13 @@ export class WebGlTerminal {
     this.rasterPasses += 1;
   }
 
-  readGlyphAtlas() { return this.atlas.readPixels(); }
+  readGlyphAtlas() {
+    return this.atlas.readPixels();
+  }
 
   readPixels() {
     return readWebGlPixels(this);
   }
-
 
   dispose() {
     return disposeWebGl(this);

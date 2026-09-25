@@ -7,29 +7,55 @@ import { initGpuGraphics, disposeGpuGraphics } from "./GpuGraphics.js";
 const UNIFORM_BUFFER_SIZE = 68;
 
 function validateFrameCapacity(renderer, cells, styles, cellSize, styleSize) {
-  const limit = Math.min(renderer.device.limits.maxBufferSize, renderer.device.limits.maxStorageBufferBindingSize);
+  const limit = Math.min(
+    renderer.device.limits.maxBufferSize,
+    renderer.device.limits.maxStorageBufferBindingSize,
+  );
   if (cells * cellSize > limit || styles * styleSize > limit || cells * 4 > limit) {
     throw new Error("frame capacity exceeds GPU buffer limits");
   }
 }
 
-export function initialize(renderer, cellSource, grain, grainSize, maxCellsValue, maxStylesValue, styleSize, cellSize) {
+export function initialize(
+  renderer,
+  cellSource,
+  grain,
+  grainSize,
+  maxCellsValue,
+  maxStylesValue,
+  styleSize,
+  cellSize,
+) {
   if (renderer.initialized) {
-    const matches = styleSize === renderer.styleSize && cellSize === renderer.cellSize &&
-      grainSize === 64 && grain.length === grainSize * grainSize;
+    const matches =
+      styleSize === renderer.styleSize &&
+      cellSize === renderer.cellSize &&
+      grainSize === 64 &&
+      grain.length === grainSize * grainSize;
     if (!matches) throw new Error("terminal renderer ABI mismatch");
     ensureFrameCapacity(renderer, maxCellsValue);
     return 1;
   }
-  if (!renderer.atlas || !renderer.glyphPartitions) throw new Error("glyph atlas was not registered");
+  if (!renderer.atlas || !renderer.glyphPartitions)
+    throw new Error("glyph atlas was not registered");
   if (!(grain instanceof Int8Array) || grainSize !== 64 || grain.length !== grainSize * grainSize) {
     throw new Error("invalid grain texture");
   }
-  if (maxCellsValue <= 0 || maxStylesValue <= 0 || styleSize !== STYLE_SIZE || cellSize !== CELL_SIZE) {
+  if (
+    maxCellsValue <= 0 ||
+    maxStylesValue <= 0 ||
+    styleSize !== STYLE_SIZE ||
+    cellSize !== CELL_SIZE
+  ) {
     throw new Error("invalid GPU initialization constants");
   }
   validateFrameCapacity(renderer, maxCellsValue, maxStylesValue, cellSize, styleSize);
-  Object.assign(renderer, { maxCells: maxCellsValue, maxStyles: maxStylesValue, styleSize, cellSize });
+  Object.assign(renderer, {
+    maxCells: maxCellsValue,
+    maxStyles: maxStylesValue,
+    styleSize,
+    cellSize,
+  });
   const device = renderer.device;
   renderer.context.configure({
     device,
@@ -37,11 +63,26 @@ export function initialize(renderer, cellSource, grain, grainSize, maxCellsValue
     alphaMode: "opaque",
     usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_DST,
   });
-  renderer.uniformBuffer = device.createBuffer({ size: UNIFORM_BUFFER_SIZE, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
-  renderer.cellBuffer = device.createBuffer({ size: maxCellsValue * cellSize, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
-  renderer.styleBuffer = device.createBuffer({ size: maxStylesValue * styleSize, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
-  renderer.selectionBuffer = device.createBuffer({ size: maxCellsValue * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
-  renderer.drawIndirectBuffer = device.createBuffer({ size: 16, usage: GPUBufferUsage.INDIRECT | GPUBufferUsage.COPY_DST });
+  renderer.uniformBuffer = device.createBuffer({
+    size: UNIFORM_BUFFER_SIZE,
+    usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+  });
+  renderer.cellBuffer = device.createBuffer({
+    size: maxCellsValue * cellSize,
+    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+  });
+  renderer.styleBuffer = device.createBuffer({
+    size: maxStylesValue * styleSize,
+    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+  });
+  renderer.selectionBuffer = device.createBuffer({
+    size: maxCellsValue * 4,
+    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+  });
+  renderer.drawIndirectBuffer = device.createBuffer({
+    size: 16,
+    usage: GPUBufferUsage.INDIRECT | GPUBufferUsage.COPY_DST,
+  });
   renderer.grainTexture = device.createTexture({
     size: [grainSize, grainSize],
     format: "r8snorm",
@@ -59,19 +100,29 @@ export function initialize(renderer, cellSource, grain, grainSize, maxCellsValue
     ? cellSource.replace(shaderMarker, "enable f16;\nalias Lowp = f16;")
     : cellSource;
   const cellModule = device.createShaderModule({ code: selectedCellSource });
-  const cellLayout = device.createBindGroupLayout({ entries: [
-    { binding: 0, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: "uniform" } },
-    { binding: 1, visibility: GPUShaderStage.VERTEX, buffer: { type: "read-only-storage" } },
-    { binding: 2, visibility: GPUShaderStage.VERTEX, buffer: { type: "read-only-storage" } },
-    { binding: 3, visibility: GPUShaderStage.VERTEX, buffer: { type: "read-only-storage" } },
-    { binding: 4, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
-    { binding: 5, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
-  ] });
+  const cellLayout = device.createBindGroupLayout({
+    entries: [
+      {
+        binding: 0,
+        visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT,
+        buffer: { type: "uniform" },
+      },
+      { binding: 1, visibility: GPUShaderStage.VERTEX, buffer: { type: "read-only-storage" } },
+      { binding: 2, visibility: GPUShaderStage.VERTEX, buffer: { type: "read-only-storage" } },
+      { binding: 3, visibility: GPUShaderStage.VERTEX, buffer: { type: "read-only-storage" } },
+      { binding: 4, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
+      { binding: 5, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
+    ],
+  });
   const cellPipelineLayout = device.createPipelineLayout({ bindGroupLayouts: [cellLayout] });
   renderer.cellPipeline = device.createRenderPipeline({
     layout: cellPipelineLayout,
     vertex: { module: cellModule, entryPoint: "vertex" },
-    fragment: { module: cellModule, entryPoint: "fragment", targets: [{ format: renderer.format }] },
+    fragment: {
+      module: cellModule,
+      entryPoint: "fragment",
+      targets: [{ format: renderer.format }],
+    },
     primitive: { topology: "triangle-list" },
   });
   renderer.glyphPipeline = device.createRenderPipeline({
@@ -80,13 +131,15 @@ export function initialize(renderer, cellSource, grain, grainSize, maxCellsValue
     fragment: {
       module: cellModule,
       entryPoint: "fragmentGlyph",
-      targets: [{
-        format: renderer.format,
-        blend: {
-          color: { srcFactor: "src-alpha", dstFactor: "one-minus-src-alpha", operation: "add" },
-          alpha: { srcFactor: "one", dstFactor: "one-minus-src-alpha", operation: "add" },
+      targets: [
+        {
+          format: renderer.format,
+          blend: {
+            color: { srcFactor: "src-alpha", dstFactor: "one-minus-src-alpha", operation: "add" },
+            alpha: { srcFactor: "one", dstFactor: "one-minus-src-alpha", operation: "add" },
+          },
         },
-      }],
+      ],
     },
     primitive: { topology: "triangle-list" },
   });
@@ -111,9 +164,18 @@ export function ensureFrameCapacity(renderer, cellCapacity) {
   let styleBuffer = null;
   let selectionBuffer = null;
   try {
-    cellBuffer = device.createBuffer({ size: maxCells * renderer.cellSize, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
-    styleBuffer = device.createBuffer({ size: maxStyles * renderer.styleSize, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
-    selectionBuffer = device.createBuffer({ size: maxCells * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+    cellBuffer = device.createBuffer({
+      size: maxCells * renderer.cellSize,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+    });
+    styleBuffer = device.createBuffer({
+      size: maxStyles * renderer.styleSize,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+    });
+    selectionBuffer = device.createBuffer({
+      size: maxCells * 4,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+    });
   } catch (error) {
     cellBuffer?.destroy();
     styleBuffer?.destroy();
@@ -172,7 +234,8 @@ export function rebuildCellBundle(renderer) {
 
 export function setGrainStrength(renderer, value) {
   const strength = Number(value);
-  if (!Number.isFinite(strength) || strength < 0 || strength > 32) throw new Error("invalid grain strength");
+  if (!Number.isFinite(strength) || strength < 0 || strength > 32)
+    throw new Error("invalid grain strength");
   if (strength === renderer.grainStrength) return;
   renderer.grainStrength = strength;
   if (renderer.initialized && renderer.rows) renderer.presenter?.requestPresentation();
@@ -182,7 +245,14 @@ export function resize(renderer, widthValue, heightValue) {
   const width = Math.round(Number(widthValue));
   const height = Math.round(Number(heightValue));
   const maximum = renderer.device.limits.maxTextureDimension2D;
-  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0 || width > maximum || height > maximum) {
+  if (
+    !Number.isFinite(width) ||
+    !Number.isFinite(height) ||
+    width <= 0 ||
+    height <= 0 ||
+    width > maximum ||
+    height > maximum
+  ) {
     throw new Error("invalid GPU viewport dimensions");
   }
   const pixelScaleX = width / Math.max(1, renderer.canvas.clientWidth);
@@ -225,16 +295,24 @@ export async function readPixels(renderer) {
   if (renderer.disposed) throw new Error("renderer disposed");
   const width = renderer.canvas.width;
   const height = renderer.canvas.height;
-  const bytesPerRow = Math.ceil(width * 4 / 256) * 256;
-  const buffer = renderer.device.createBuffer({ size: bytesPerRow * height, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST });
+  const bytesPerRow = Math.ceil((width * 4) / 256) * 256;
+  const buffer = renderer.device.createBuffer({
+    size: bytesPerRow * height,
+    usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
+  });
   try {
     const encoder = renderer.device.createCommandEncoder();
-    encoder.copyTextureToBuffer({ texture: renderer.offscreen }, { buffer, bytesPerRow, rowsPerImage: height }, [width, height, 1]);
+    encoder.copyTextureToBuffer(
+      { texture: renderer.offscreen },
+      { buffer, bytesPerRow, rowsPerImage: height },
+      [width, height, 1],
+    );
     renderer.device.queue.submit([encoder.finish()]);
     await buffer.mapAsync(GPUMapMode.READ);
     const source = new Uint8Array(buffer.getMappedRange());
     const data = new Uint8Array(width * height * 4);
-    for (let y = 0; y < height; y += 1) data.set(source.subarray(y * bytesPerRow, y * bytesPerRow + width * 4), y * width * 4);
+    for (let y = 0; y < height; y += 1)
+      data.set(source.subarray(y * bytesPerRow, y * bytesPerRow + width * 4), y * width * 4);
     buffer.unmap();
     return { width, height, format: renderer.format, data };
   } finally {

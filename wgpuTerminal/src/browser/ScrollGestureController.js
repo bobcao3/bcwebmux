@@ -107,8 +107,10 @@ export class ScrollGestureController {
 
   viewportChanged(mode) {
     if (this.momentumRoute !== 1) return;
-    if ((this.momentumVelocity < 0 && mode === "top") ||
-        (this.momentumVelocity > 0 && mode === "active")) {
+    if (
+      (this.momentumVelocity < 0 && mode === "top") ||
+      (this.momentumVelocity > 0 && mode === "active")
+    ) {
       this.cancelMomentum();
     }
   }
@@ -133,7 +135,7 @@ export class ScrollGestureController {
     this.momentumTime = frameTime;
     if (elapsed > 0) {
       this._consumeRows(
-        this.momentumVelocity * elapsed / Math.max(1, this.getCellHeight()),
+        (this.momentumVelocity * elapsed) / Math.max(1, this.getCellHeight()),
         this.momentumContext,
       );
       if (this.momentumFrame === null) return;

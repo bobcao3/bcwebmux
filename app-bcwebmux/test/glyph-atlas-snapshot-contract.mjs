@@ -15,7 +15,10 @@ for (const tileWidth of [0, NaN, Infinity, 16 * 1024 * 1024]) {
 const renderer = { atlas: { texture: {} } };
 const terminal = { _assertMutable() {}, _renderer: renderer };
 let complete;
-renderer.readGlyphAtlas = () => new Promise(resolve => { complete = resolve; });
+renderer.readGlyphAtlas = () =>
+  new Promise((resolve) => {
+    complete = resolve;
+  });
 const read = () => Terminal.prototype.readGlyphAtlas.call(terminal);
 let pending = read();
 await assert.rejects(read(), /already pending/);
@@ -32,7 +35,9 @@ complete({});
 await assert.rejects(pending, /changed during readback/);
 await assert.rejects(read(), /unavailable/);
 terminal._disposed = false;
-renderer.readGlyphAtlas = () => { throw new Error("device lost"); };
+renderer.readGlyphAtlas = () => {
+  throw new Error("device lost");
+};
 await assert.rejects(read(), /device lost/);
 assert.equal(terminal._glyphAtlasReadPending, false);
 
@@ -40,14 +45,27 @@ globalThis.GPUBufferUsage = { MAP_READ: 1, COPY_DST: 2 };
 globalThis.GPUMapMode = { READ: 1 };
 let destroyed = false;
 const buffer = {
-  mapAsync: async () => { throw new Error("map failed"); },
-  destroy() { destroyed = true; },
+  mapAsync: async () => {
+    throw new Error("map failed");
+  },
+  destroy() {
+    destroyed = true;
+  },
 };
 const atlas = Object.assign(Object.create(GlyphAtlas.prototype), geometry, {
-  texture: {}, pendingTextureCopies: [],
+  texture: {},
+  pendingTextureCopies: [],
   device: {
-    createBuffer({ size }) { assert.equal(size, 512); return buffer; },
-    createCommandEncoder: () => ({ copyTextureToBuffer() {}, finish() { return {}; } }),
+    createBuffer({ size }) {
+      assert.equal(size, 512);
+      return buffer;
+    },
+    createCommandEncoder: () => ({
+      copyTextureToBuffer() {},
+      finish() {
+        return {};
+      },
+    }),
     queue: { submit() {} },
   },
 });

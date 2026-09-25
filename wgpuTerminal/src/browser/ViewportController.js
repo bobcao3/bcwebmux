@@ -92,9 +92,18 @@ export class ViewportController {
     const scaleX = pixelViewport.width / Math.max(1, this.screen.clientWidth);
     const scaleY = pixelViewport.height / Math.max(1, this.screen.clientHeight);
     const rasterScale = devicePixelRatio();
-    const cellWidth = Math.max(1, Math.min(pixelViewport.width, Math.round(this.measuredMetrics.width * rasterScale)));
-    const cellHeight = Math.max(1, Math.min(pixelViewport.height, Math.round(this.measuredMetrics.height * rasterScale)));
-    const fontSize = Math.max(1, Math.round(parseFloat(getComputedStyle(this.terminalElement).fontSize) * rasterScale));
+    const cellWidth = Math.max(
+      1,
+      Math.min(pixelViewport.width, Math.round(this.measuredMetrics.width * rasterScale)),
+    );
+    const cellHeight = Math.max(
+      1,
+      Math.min(pixelViewport.height, Math.round(this.measuredMetrics.height * rasterScale)),
+    );
+    const fontSize = Math.max(
+      1,
+      Math.round(parseFloat(getComputedStyle(this.terminalElement).fontSize) * rasterScale),
+    );
     const cols = Math.max(1, Math.floor(pixelViewport.width / cellWidth));
     const rows = Math.max(1, Math.floor(pixelViewport.height / cellHeight));
     if (cols * cellWidth > pixelViewport.width || rows * cellHeight > pixelViewport.height) {
@@ -104,7 +113,9 @@ export class ViewportController {
   }
 
   get dimensions() {
-    const { cols, rows } = this.physicalLayout(this.latestPixelViewport ?? this.nativePixelViewport());
+    const { cols, rows } = this.physicalLayout(
+      this.latestPixelViewport ?? this.nativePixelViewport(),
+    );
     return { cols, rows };
   }
 
@@ -163,9 +174,8 @@ export class ViewportController {
     this.cancelMomentum();
     if (!Number.isFinite(row) || this.adjustment.maximum === 0) return false;
     const target = Math.max(0, Math.min(this.adjustment.maximum, Math.round(row)));
-    const result = target === this.adjustment.maximum
-      ? this.scrollBottom()
-      : this.scrollRow(target);
+    const result =
+      target === this.adjustment.maximum ? this.scrollBottom() : this.scrollRow(target);
     if (!result) return false;
     this.semanticScrollbar.reveal();
     this.scheduleFrame(true);

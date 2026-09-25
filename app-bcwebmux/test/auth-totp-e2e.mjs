@@ -28,7 +28,9 @@ if (!serverPath || !webRoot) {
 const viewport = { width: 1440, height: 900, deviceScaleFactor: 1, mobile: false };
 const testDir = path.dirname(fileURLToPath(import.meta.url));
 const goldenDir = path.join(testDir, "golden");
-const outputDir = path.resolve(process.env.BCWEBMUX_SCREENSHOT_DIR || path.join(testDir, "..", "zig-out", "screenshots"));
+const outputDir = path.resolve(
+  process.env.BCWEBMUX_SCREENSHOT_DIR || path.join(testDir, "..", "zig-out", "screenshots"),
+);
 const account = "bob@bcwebmux";
 
 const directory = await mkdtemp(path.join(os.tmpdir(), "bcwebmux-totp-"));
@@ -48,8 +50,12 @@ let log = "";
 const consoleMessages = [];
 
 function captureLogs(child, prefix) {
-  child.stdout?.on("data", chunk => { log += `[${prefix}] ${chunk}`; });
-  child.stderr?.on("data", chunk => { log += `[${prefix}] ${chunk}`; });
+  child.stdout?.on("data", (chunk) => {
+    log += `[${prefix}] ${chunk}`;
+  });
+  child.stderr?.on("data", (chunk) => {
+    log += `[${prefix}] ${chunk}`;
+  });
 }
 
 function base32Decode(secret) {
@@ -75,17 +81,25 @@ function totp(secret, unix = Math.floor(Date.now() / 1000)) {
   counter.writeBigUInt64BE(BigInt(Math.floor(unix / 30)));
   const digest = createHmac("sha1", base32Decode(secret)).update(counter).digest();
   const offset = digest[digest.length - 1] & 0x0f;
-  const value = ((digest[offset] & 0x7f) << 24) | (digest[offset + 1] << 16) |
-    (digest[offset + 2] << 8) | digest[offset + 3];
+  const value =
+    ((digest[offset] & 0x7f) << 24) |
+    (digest[offset + 1] << 16) |
+    (digest[offset + 2] << 8) |
+    digest[offset + 3];
   return String(value % 1_000_000).padStart(6, "0");
 }
 
 async function evaluate(expression, userGesture = false) {
   const response = await page.call("Runtime.evaluate", {
-    expression, awaitPromise: true, returnByValue: true, userGesture,
+    expression,
+    awaitPromise: true,
+    returnByValue: true,
+    userGesture,
   });
   if (response.exceptionDetails) {
-    throw new Error(response.exceptionDetails.exception?.description || JSON.stringify(response.exceptionDetails));
+    throw new Error(
+      response.exceptionDetails.exception?.description || JSON.stringify(response.exceptionDetails),
+    );
   }
   return response.result.value;
 }
@@ -95,20 +109,30 @@ async function until(expression, message, timeout = 20000) {
 }
 
 async function capture(name, clip) {
-  await evaluate("(async () => { await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))); })()");
+  await evaluate(
+    "(async () => { await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))); })()",
+  );
   let previous;
-  const png = await waitFor(async () => {
-    const request = { format: "png", fromSurface: true, captureBeyondViewport: false };
-    if (clip) request.clip = { ...clip, scale: 1 };
-    const { data } = await page.call("Page.captureScreenshot", request);
-    if (data === previous) return Buffer.from(data, "base64");
-    previous = data;
-    return null;
-  }, 8000, `${name}: compositor did not settle`);
+  const png = await waitFor(
+    async () => {
+      const request = { format: "png", fromSurface: true, captureBeyondViewport: false };
+      if (clip) request.clip = { ...clip, scale: 1 };
+      const { data } = await page.call("Page.captureScreenshot", request);
+      if (data === previous) return Buffer.from(data, "base64");
+      previous = data;
+      return null;
+    },
+    8000,
+    `${name}: compositor did not settle`,
+  );
   const label = `desktop-auth-${name}`;
   await mkdir(outputDir, { recursive: true });
   await compareScreenshot({
-    png, name: label, goldenName: label, goldenDir, outputDir,
+    png,
+    name: label,
+    goldenName: label,
+    goldenDir,
+    outputDir,
     width: clip ? clip.width : viewport.width,
     height: clip ? clip.height : viewport.height,
     update: process.env.UPDATE_GOLDEN === "1",
@@ -118,13 +142,29 @@ async function capture(name, clip) {
 // enrolTOTP drives the CLI exactly as an operator would: read the secret from
 // what the command prints, then type back the code the app would show.
 async function enrolTOTP() {
-  enrolling = spawn(serverPath, [
-    "auth", "totp", "--config", "/dev/null", "--auth-file", authFile,
-    "--account", account, "--no-qr", "--rotate",
-  ], { stdio: ["pipe", "pipe", "pipe"] });
+  enrolling = spawn(
+    serverPath,
+    [
+      "auth",
+      "totp",
+      "--config",
+      "/dev/null",
+      "--auth-file",
+      authFile,
+      "--account",
+      account,
+      "--no-qr",
+      "--rotate",
+    ],
+    { stdio: ["pipe", "pipe", "pipe"] },
+  );
   captureLogs(enrolling, "totp");
-  const exited = new Promise(resolve => enrolling.once("exit", code => resolve(code)));
-  const secret = await waitFor(() => log.match(/secret\s+([A-Z2-7]{16,})/)?.[1], 15000, () => `no secret was printed\n${log}`);
+  const exited = new Promise((resolve) => enrolling.once("exit", (code) => resolve(code)));
+  const secret = await waitFor(
+    () => log.match(/secret\s+([A-Z2-7]{16,})/)?.[1],
+    15000,
+    () => `no secret was printed\n${log}`,
+  );
   enrolling.stdin.write(`${totp(secret)}\n`);
   const code = await exited;
   assert.equal(code, 0, `enrollment exited with ${code}\n${log}`);
@@ -133,41 +173,94 @@ async function enrolTOTP() {
 
 try {
   const secret = await enrolTOTP();
-  assert.match(log, new RegExp(`account\\s+${account}`), "the CLI did not report the account label");
+  assert.match(
+    log,
+    new RegExp(`account\\s+${account}`),
+    "the CLI did not report the account label",
+  );
   const state = JSON.parse(await readFile(authFile, "utf8"));
   assert.ok(state.totp?.secret, "the state file must hold the authenticator secret");
-  assert.ok(state.sessionSecret && state.userHandle, "enrollment must create the session key and user handle");
+  assert.ok(
+    state.sessionSecret && state.userHandle,
+    "enrollment must create the session key and user handle",
+  );
 
-  serving = spawn(serverPath, [
-    "--config", "/dev/null", "--auth-file", authFile,
-    "--listen", "127.0.0.1", "--port", String(port), "--origin", origin,
-    "--web-root", webRoot, "--shell", "/bin/sh",
-  ], { stdio: ["ignore", "pipe", "pipe"], detached: true });
+  serving = spawn(
+    serverPath,
+    [
+      "--config",
+      "/dev/null",
+      "--auth-file",
+      authFile,
+      "--listen",
+      "127.0.0.1",
+      "--port",
+      String(port),
+      "--origin",
+      origin,
+      "--web-root",
+      webRoot,
+      "--shell",
+      "/bin/sh",
+    ],
+    { stdio: ["ignore", "pipe", "pipe"], detached: true },
+  );
   serving.detachedGroup = true;
   captureLogs(serving, "server");
-  await waitFor(async () => (await fetch(`${origin}/auth/session`).catch(() => null))?.ok, 15000, () => `server did not start\n${log}`);
+  await waitFor(
+    async () => (await fetch(`${origin}/auth/session`).catch(() => null))?.ok,
+    15000,
+    () => `server did not start\n${log}`,
+  );
 
   // 1. The application is closed at an IP literal, and the only way in is the app.
   const status = await (await fetch(`${origin}/auth/session`)).json();
   assert.equal(status.required, true, "an enrolled factor must make authentication required");
   assert.equal(status.totp, true, "the authenticator app must be reported as enrolled");
   assert.equal(status.rpId, null, "an IP literal cannot be a relying party");
-  assert.equal((await fetch(`${origin}/`, { redirect: "manual" })).status, 302, "unauthenticated page must redirect");
-  assert.equal((await fetch(`${origin}/api/server`, { redirect: "manual" })).status, 401, "unauthenticated API must be refused");
-  assert.equal((await fetch(`${origin}/ws`, { redirect: "manual" })).status, 401, "unauthenticated websocket must be refused");
+  assert.equal(
+    (await fetch(`${origin}/`, { redirect: "manual" })).status,
+    302,
+    "unauthenticated page must redirect",
+  );
+  assert.equal(
+    (await fetch(`${origin}/api/server`, { redirect: "manual" })).status,
+    401,
+    "unauthenticated API must be refused",
+  );
+  assert.equal(
+    (await fetch(`${origin}/ws`, { redirect: "manual" })).status,
+    401,
+    "unauthenticated websocket must be refused",
+  );
 
-  chromium = spawn(process.env.CHROMIUM || "chromium", [
-    "--headless=new", "--no-sandbox", "--disable-dev-shm-usage",
-    "--enable-unsafe-webgpu", "--use-angle=vulkan", "--ignore-gpu-blocklist", "--enable-features=Vulkan",
-    "--disable-background-networking", `--remote-debugging-port=${debugPort}`,
-    `--user-data-dir=${profile}`, "about:blank",
-  ], { stdio: ["ignore", "ignore", "pipe"], detached: true });
+  chromium = spawn(
+    process.env.CHROMIUM || "chromium",
+    [
+      "--headless=new",
+      "--no-sandbox",
+      "--disable-dev-shm-usage",
+      "--enable-unsafe-webgpu",
+      "--use-angle=vulkan",
+      "--ignore-gpu-blocklist",
+      "--enable-features=Vulkan",
+      "--disable-background-networking",
+      `--remote-debugging-port=${debugPort}`,
+      `--user-data-dir=${profile}`,
+      "about:blank",
+    ],
+    { stdio: ["ignore", "ignore", "pipe"], detached: true },
+  );
   chromium.detachedGroup = true;
   captureLogs(chromium, "chromium");
-  const target = await waitFor(async () => {
-    const response = await fetch(`http://127.0.0.1:${debugPort}/json/list`).catch(() => null);
-    return response?.ok && (await response.json()).find(candidate => candidate.type === "page");
-  }, 15000, () => `Chromium did not expose a page\n${log}`);
+  const target = await waitFor(
+    async () => {
+      const response = await fetch(`http://127.0.0.1:${debugPort}/json/list`).catch(() => null);
+      return response?.ok && (await response.json()).find((candidate) => candidate.type === "page");
+    },
+    15000,
+    () => `Chromium did not expose a page\n${log}`,
+  );
   const version = await (await fetch(`http://127.0.0.1:${debugPort}/json/version`)).json();
   browser = await Cdp.connect(version.webSocketDebuggerUrl);
   page = await Cdp.connect(target.webSocketDebuggerUrl);
@@ -177,28 +270,56 @@ try {
   // The app only prompts for notification permission while it is undecided;
   // granting it here keeps that modal out of the settings captures.
   await browser.call("Browser.grantPermissions", { origin, permissions: ["notifications"] });
-  page.on("Runtime.consoleAPICalled", params => {
-    consoleMessages.push(`${params.type}: ${params.args.map(argument => argument.value ?? argument.description ?? "").join(" ")}`);
+  page.on("Runtime.consoleAPICalled", (params) => {
+    consoleMessages.push(
+      `${params.type}: ${params.args.map((argument) => argument.value ?? argument.description ?? "").join(" ")}`,
+    );
   });
-  page.on("Runtime.exceptionThrown", params => {
-    consoleMessages.push(`exception: ${params.exceptionDetails.exception?.description ?? params.exceptionDetails.text}`);
+  page.on("Runtime.exceptionThrown", (params) => {
+    consoleMessages.push(
+      `exception: ${params.exceptionDetails.exception?.description ?? params.exceptionDetails.text}`,
+    );
   });
 
   // 2. The browser lands on a code form, not on a dead end.
   await page.call("Page.navigate", { url: `${origin}/` });
-  await until(`location.pathname === "/login" && !!document.querySelector("#auth-code-form")`, "unauthenticated navigation must land on the login page");
+  await until(
+    `location.pathname === "/login" && !!document.querySelector("#auth-code-form")`,
+    "unauthenticated navigation must land on the login page",
+  );
   // The template ships the form enabled, so readiness must come from the page
   // itself: the module clears the status line and only then flags itself ready.
-  await until(`globalThis.bcwebmuxAuth?.state.ready === true`, "the code form did not finish initializing");
-  assert.equal(await evaluate(`document.querySelector("#auth-action").hidden`), true, "the security key button must stay hidden at an IP origin");
-  assert.equal(await evaluate(`document.querySelector("#auth-status").getBoundingClientRect().height`), 0, "an empty status line must not reserve space above the footer");
+  await until(
+    `globalThis.bcwebmuxAuth?.state.ready === true`,
+    "the code form did not finish initializing",
+  );
+  assert.equal(
+    await evaluate(`document.querySelector("#auth-action").hidden`),
+    true,
+    "the security key button must stay hidden at an IP origin",
+  );
+  assert.equal(
+    await evaluate(`document.querySelector("#auth-status").getBoundingClientRect().height`),
+    0,
+    "an empty status line must not reserve space above the footer",
+  );
   await capture("totp-login");
 
   // 3. A wrong code is refused in the browser, a right one signs in.
-  await evaluate(`document.querySelector("#auth-code").value = "000000"; document.querySelector("#auth-code-form").requestSubmit()`);
-  await until(`document.querySelector("#auth-status").dataset.tone === "error"`, "a wrong code must be reported");
-  await until(`!document.querySelector("#auth-code").disabled`, "the form must become usable again after a refusal");
-  await evaluate(`document.querySelector("#auth-code").value = ${JSON.stringify(totp(secret))}; document.querySelector("#auth-code-form").requestSubmit()`);
+  await evaluate(
+    `document.querySelector("#auth-code").value = "000000"; document.querySelector("#auth-code-form").requestSubmit()`,
+  );
+  await until(
+    `document.querySelector("#auth-status").dataset.tone === "error"`,
+    "a wrong code must be reported",
+  );
+  await until(
+    `!document.querySelector("#auth-code").disabled`,
+    "the form must become usable again after a refusal",
+  );
+  await evaluate(
+    `document.querySelector("#auth-code").value = ${JSON.stringify(totp(secret))}; document.querySelector("#auth-code-form").requestSubmit()`,
+  );
   await until(`location.pathname === "/"`, "a valid code must sign in", 30000);
 
   const authenticated = await evaluate(`(async () => {
@@ -206,8 +327,16 @@ try {
     return { status: info.status, body: await info.body };
   })()`);
   assert.equal(authenticated.status, 200, "authenticated API must answer at an IP origin");
-  assert.match(authenticated.body, /bcw\.sessions/, "authenticated API must reach the session engine");
-  await until(`typeof window.bcwebmux === "object"`, "application modules did not load once signed in", 30000);
+  assert.match(
+    authenticated.body,
+    /bcw\.sessions/,
+    "authenticated API must reach the session engine",
+  );
+  await until(
+    `typeof window.bcwebmux === "object"`,
+    "application modules did not load once signed in",
+    30000,
+  );
   const socket = await evaluate(`new Promise((resolve) => {
     const socket = new WebSocket("ws://" + location.host + "/ws", "bcw.sessions");
     const done = value => { try { socket.close(); } catch {} resolve(value); };
@@ -220,8 +349,14 @@ try {
   await evaluate(`document.querySelector("#settings-button").click()`);
   await until(`document.querySelector("#settings-dialog").open`, "settings dialog did not open");
   await evaluate(`document.querySelector("#settings-tab-auth").click()`);
-  await until(`/authenticator app/.test(document.querySelector("#auth-summary").textContent)`, "the panel did not report the factor");
-  await until(`document.querySelector("#auth-credential-list").textContent.includes(${JSON.stringify(account)})`, "the panel did not name the account");
+  await until(
+    `/authenticator app/.test(document.querySelector("#auth-summary").textContent)`,
+    "the panel did not report the factor",
+  );
+  await until(
+    `document.querySelector("#auth-credential-list").textContent.includes(${JSON.stringify(account)})`,
+    "the panel did not name the account",
+  );
   // Timestamps differ per run; keep the labels and the layout, fix the values.
   await evaluate(`(() => {
     for (const detail of document.querySelectorAll(".auth-credential-copy small")) {
@@ -240,23 +375,40 @@ try {
   // 5. Signing out returns the browser to the code form.
   await evaluate(`document.querySelector("#auth-sign-out").click()`, true);
   await until(`location.pathname === "/login"`, "sign out did not return to the login page");
-  assert.equal(await evaluate(`fetch("/api/server", { redirect: "manual" }).then(response => response.status)`), 401, "the signed-out browser must be refused again");
+  assert.equal(
+    await evaluate(
+      `fetch("/api/server", { redirect: "manual" }).then(response => response.status)`,
+    ),
+    401,
+    "the signed-out browser must be refused again",
+  );
 
   // 6. The authenticator app can be removed from the host, which reopens the app.
-  const removed = spawn(serverPath, ["auth", "remove", "--totp", "--config", "/dev/null", "--auth-file", authFile], { stdio: ["ignore", "pipe", "pipe"] });
+  const removed = spawn(
+    serverPath,
+    ["auth", "remove", "--totp", "--config", "/dev/null", "--auth-file", authFile],
+    { stdio: ["ignore", "pipe", "pipe"] },
+  );
   captureLogs(removed, "remove");
-  assert.equal(await new Promise(resolve => removed.once("exit", resolve)), 0);
-  await waitFor(async () => {
-    const response = await fetch(`${origin}/api/server`, { redirect: "manual" }).catch(() => null);
-    return response?.status === 200;
-  }, 10000, () => `removing the factor did not reopen the application\n${log}`);
+  assert.equal(await new Promise((resolve) => removed.once("exit", resolve)), 0);
+  await waitFor(
+    async () => {
+      const response = await fetch(`${origin}/api/server`, { redirect: "manual" }).catch(
+        () => null,
+      );
+      return response?.status === 200;
+    },
+    10000,
+    () => `removing the factor did not reopen the application\n${log}`,
+  );
 
   console.log("auth-totp-e2e: CLI enrollment, IP-literal sign-in, panel, and reset verified");
 } catch (error) {
   console.error(error.message);
   if (page) {
     try {
-      console.error(`[page] ${await evaluate(`JSON.stringify({
+      console.error(
+        `[page] ${await evaluate(`JSON.stringify({
         path: location.pathname,
         status: document.querySelector("#auth-status")?.textContent ?? null,
         tone: document.querySelector("#auth-status")?.dataset.tone ?? null,
@@ -265,14 +417,19 @@ try {
         formHidden: document.querySelector("#auth-code-form")?.hidden ?? null,
         intro: document.querySelector("#auth-intro")?.textContent ?? null,
         console: ${JSON.stringify(consoleMessages.slice(-6))},
-      })`)}`);
+      })`)}`,
+      );
     } catch (diagnostic) {
       console.error(`[page] diagnostics failed: ${diagnostic.message}`);
     }
   }
   process.exitCode = 1;
 } finally {
-  await Promise.all([terminateProcess(chromium), terminateProcess(enrolling), terminateProcess(serving)]);
+  await Promise.all([
+    terminateProcess(chromium),
+    terminateProcess(enrolling),
+    terminateProcess(serving),
+  ]);
   if (!process.env.BCWEBMUX_KEEP_AUTH_STATE) await rm(directory, { recursive: true, force: true });
   if (process.exitCode) console.error(log.slice(-8192));
 }

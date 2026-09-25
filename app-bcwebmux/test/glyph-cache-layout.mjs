@@ -24,13 +24,16 @@ const r8Settings = computeGlyphAtlasLimits({
   configuredMaxBytes: 16 * mib,
 });
 assert.equal(r8.bytesPerSlot, 2160);
-assert.equal(r8.slotLimit, Math.floor(32 * mib / 2160));
-assert.equal(computeGlyphAtlasLimits({
-  maxTextureDimension: 65536,
-  cellWidth: 1,
-  cellHeight: 1,
-  configuredMaxBytes: Number.MAX_SAFE_INTEGER,
-}).byteLimit, ABSOLUTE_GLYPH_CACHE_MAX_BYTES);
+assert.equal(r8.slotLimit, Math.floor((32 * mib) / 2160));
+assert.equal(
+  computeGlyphAtlasLimits({
+    maxTextureDimension: 65536,
+    cellWidth: 1,
+    cellHeight: 1,
+    configuredMaxBytes: Number.MAX_SAFE_INTEGER,
+  }).byteLimit,
+  ABSOLUTE_GLYPH_CACHE_MAX_BYTES,
+);
 
 const exact = planGlyphAtlasGeometry(r8, 528, { preferredColumns: 66 });
 assert.deepEqual(exact, {
@@ -74,7 +77,7 @@ const beforeRevision = partitions.revision;
 const beforeA = partitions.get(terminalA);
 assert.throws(
   () => partitions.planResize(terminalA, r8.slotLimit),
-  error => error instanceof GlyphAtlasCapacityError && error.reason === "shared-demand",
+  (error) => error instanceof GlyphAtlasCapacityError && error.reason === "shared-demand",
 );
 assert.equal(partitions.revision, beforeRevision);
 assert.deepEqual(partitions.get(terminalA), beforeA);

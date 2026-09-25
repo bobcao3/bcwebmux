@@ -32,8 +32,13 @@ function configureRasterContext(canvas) {
 }
 
 export function validateAtlasGeometry(geometry) {
-  if (!geometry || !Number.isInteger(geometry.columns) || !Number.isInteger(geometry.rows) ||
-      geometry.columns <= 0 || geometry.rows <= 0) {
+  if (
+    !geometry ||
+    !Number.isInteger(geometry.columns) ||
+    !Number.isInteger(geometry.rows) ||
+    geometry.columns <= 0 ||
+    geometry.rows <= 0
+  ) {
     throw new Error("invalid glyph atlas geometry");
   }
 }
@@ -48,14 +53,24 @@ export class CanvasGlyphRasterizer {
 
   rasterize(firstSlot, slotCount, spanCells, bytes, offset, count, style, atlas, font, upload) {
     validateAtlasGeometry(atlas);
-    if (!Number.isInteger(atlas.tileWidth) || !Number.isInteger(atlas.tileHeight) ||
-        atlas.tileWidth <= 0 || atlas.tileHeight <= 0) {
+    if (
+      !Number.isInteger(atlas.tileWidth) ||
+      !Number.isInteger(atlas.tileHeight) ||
+      atlas.tileWidth <= 0 ||
+      atlas.tileHeight <= 0
+    ) {
       throw new Error("invalid glyph atlas tile dimensions");
     }
-    if (!Number.isInteger(firstSlot) || !Number.isInteger(slotCount) ||
-        !Number.isInteger(spanCells) || firstSlot < 0 ||
-        slotCount < 1 || slotCount > 16 || spanCells !== slotCount ||
-        firstSlot + slotCount > atlas.columns * atlas.rows) {
+    if (
+      !Number.isInteger(firstSlot) ||
+      !Number.isInteger(slotCount) ||
+      !Number.isInteger(spanCells) ||
+      firstSlot < 0 ||
+      slotCount < 1 ||
+      slotCount > 16 ||
+      spanCells !== slotCount ||
+      firstSlot + slotCount > atlas.columns * atlas.rows
+    ) {
       throw new Error("invalid glyph atlas run");
     }
     const runWidth = spanCells * atlas.tileWidth;
@@ -64,8 +79,13 @@ export class CanvasGlyphRasterizer {
       throw new Error("glyph raster run is too large");
     }
     const text = decodeCanvasText(bytes, offset, count);
-    if (!Number.isInteger(style) || style < 0 || style > 3 ||
-        !Number.isInteger(atlas.fontSize) || atlas.fontSize <= 0) {
+    if (
+      !Number.isInteger(style) ||
+      style < 0 ||
+      style > 3 ||
+      !Number.isInteger(atlas.fontSize) ||
+      atlas.fontSize <= 0
+    ) {
       throw new Error("invalid Canvas font configuration");
     }
     if (this.runCanvas.width !== runWidth || this.runCanvas.height !== runHeight) {
@@ -92,9 +112,7 @@ export class CanvasGlyphRasterizer {
       this.metricHeight = runHeight;
     }
     context.fillText(text, 0, this.baseline, runWidth);
-    const mask = extractCanvasAlpha(
-      this.runContext, 0, 0, runWidth, runHeight, this.canvasMask,
-    );
+    const mask = extractCanvasAlpha(this.runContext, 0, 0, runWidth, runHeight, this.canvasMask);
     this.canvasMask = mask.storage;
     for (let tileOffset = 0; tileOffset < slotCount;) {
       const rowOffset = (firstSlot + tileOffset) % atlas.columns;
@@ -105,8 +123,10 @@ export class CanvasGlyphRasterizer {
       const packedPixels = this.uploadMask.subarray(0, chunkPixels);
       for (let y = 0; y < runHeight; y += 1) {
         packedPixels.set(
-          mask.pixels.subarray(y * runWidth + tileOffset * atlas.tileWidth,
-            y * runWidth + tileOffset * atlas.tileWidth + chunkWidth),
+          mask.pixels.subarray(
+            y * runWidth + tileOffset * atlas.tileWidth,
+            y * runWidth + tileOffset * atlas.tileWidth + chunkWidth,
+          ),
           y * chunkWidth,
         );
       }

@@ -34,10 +34,18 @@ class MockCore {
     owner.maxLive = Math.max(owner.maxLive, owner.live.size);
   }
 
-  onTitleChange() { return disposable(); }
-  onBell() { return disposable(); }
-  onNotification() { return disposable(); }
-  onError() { return disposable(); }
+  onTitleChange() {
+    return disposable();
+  }
+  onBell() {
+    return disposable();
+  }
+  onNotification() {
+    return disposable();
+  }
+  onError() {
+    return disposable();
+  }
 
   dispose() {
     if (this.disposed) return;
@@ -58,7 +66,9 @@ class MockTerminal {
     this.failAttachCore = false;
   }
 
-  async createCore() { return new MockCore(this, `core-${this.nextCore++}`); }
+  async createCore() {
+    return new MockCore(this, `core-${this.nextCore++}`);
+  }
   attachCore(core) {
     if (this.failAttachCore) {
       this.failAttachCore = false;
@@ -82,15 +92,28 @@ class MockTransport {
     this.attachmentListeners = new Set();
   }
 
-  onStatus(listener) { this.statusListeners.add(listener); return { dispose: () => this.statusListeners.delete(listener) }; }
-  onError(listener) { this.errorListeners.add(listener); return { dispose: () => this.errorListeners.delete(listener) }; }
-  onAttachmentChanged(listener) { this.attachmentListeners.add(listener); return { dispose: () => this.attachmentListeners.delete(listener) }; }
+  onStatus(listener) {
+    this.statusListeners.add(listener);
+    return { dispose: () => this.statusListeners.delete(listener) };
+  }
+  onError(listener) {
+    this.errorListeners.add(listener);
+    return { dispose: () => this.errorListeners.delete(listener) };
+  }
+  onAttachmentChanged(listener) {
+    this.attachmentListeners.add(listener);
+    return { dispose: () => this.attachmentListeners.delete(listener) };
+  }
   emitStatus(label = "ready") {
     this.state.status = label;
     for (const listener of [...this.statusListeners]) listener(label, this.state);
   }
-  emitAttachment(record) { for (const listener of [...this.attachmentListeners]) listener(record, this.state); }
-  onSessionChanged() { return disposable(); }
+  emitAttachment(record) {
+    for (const listener of [...this.attachmentListeners]) listener(record, this.state);
+  }
+  onSessionChanged() {
+    return disposable();
+  }
   activate() {}
   async connect() {}
 
@@ -111,15 +134,24 @@ class MockTransport {
     };
   }
 
-  setActive(record) { this.active = record; }
-  detach(record) { record.active = false; if (this.active === record) this.active = null; }
-  claimControl() { return true; }
+  setActive(record) {
+    this.active = record;
+  }
+  detach(record) {
+    record.active = false;
+    if (this.active === record) this.active = null;
+  }
+  claimControl() {
+    return true;
+  }
 }
 
 class MockApi {
   constructor(values) {
-    this.values = new Map(values.map(value => [value.id, { ...value, geometry: { ...value.geometry } }]));
-    this.revision = Math.max(1, ...values.map(value => Number(value.revision ?? 0)));
+    this.values = new Map(
+      values.map((value) => [value.id, { ...value, geometry: { ...value.geometry } }]),
+    );
+    this.revision = Math.max(1, ...values.map((value) => Number(value.revision ?? 0)));
     this.serverInstance = "contract-server";
     this.listOverride = null;
     this.renameOverride = null;
@@ -127,12 +159,27 @@ class MockApi {
     this.lastCreateOptions = null;
   }
 
-  async info() { return { protocol: "bcw.sessions", serverInstance: this.serverInstance, principal: "contract-user" }; }
+  async info() {
+    return {
+      protocol: "bcw.sessions",
+      serverInstance: this.serverInstance,
+      principal: "contract-user",
+    };
+  }
   async list() {
     if (this.listOverride) return this.listOverride();
-    return { revision: this.revision, sessions: [...this.values.values()].map(value => ({ ...value, geometry: { ...value.geometry }, revision: this.revision })) };
+    return {
+      revision: this.revision,
+      sessions: [...this.values.values()].map((value) => ({
+        ...value,
+        geometry: { ...value.geometry },
+        revision: this.revision,
+      })),
+    };
   }
-  async get(id) { return this.values.get(id); }
+  async get(id) {
+    return this.values.get(id);
+  }
   async create(options) {
     if (this.failCreate) throw new Error("injected session creation failure");
     this.lastCreateOptions = { ...options };
@@ -148,16 +195,25 @@ class MockApi {
     this.values.set(id, value);
     return { ...value };
   }
-  async terminate(id) { return this.values.get(id); }
-  async delete(id) { this.values.delete(id); }
+  async terminate(id) {
+    return this.values.get(id);
+  }
+  async delete(id) {
+    this.values.delete(id);
+  }
 }
 
-function disposable() { return { dispose() {} }; }
+function disposable() {
+  return { dispose() {} };
+}
 
 function waitForController(controller, condition) {
   return new Promise((resolve, reject) => {
     let listener;
-    const timeout = setTimeout(() => { listener.dispose(); reject(new Error("controller transition did not complete")); }, 5000);
+    const timeout = setTimeout(() => {
+      listener.dispose();
+      reject(new Error("controller transition did not complete"));
+    }, 5000);
     const check = () => {
       if (!condition()) return;
       clearTimeout(timeout);
@@ -237,7 +293,7 @@ async function harness(values, coreLimit = 4) {
 {
   const { controller, api } = await harness([metadata("a")]);
   const events = [];
-  const subscription = controller.onChange(event => events.push(event.type));
+  const subscription = controller.onChange((event) => events.push(event.type));
   await controller.refresh();
   assert.deepEqual(events, []);
   api.values.set("a", { ...api.values.get("a"), name: "Changed" });
@@ -251,7 +307,10 @@ async function harness(values, coreLimit = 4) {
 {
   const { controller, api } = await harness([metadata("a", 1, "Original")]);
   let releaseList;
-  api.listOverride = () => new Promise(resolve => { releaseList = resolve; });
+  api.listOverride = () =>
+    new Promise((resolve) => {
+      releaseList = resolve;
+    });
   const delayedRefresh = controller.refresh();
   await Promise.resolve();
   const renamed = await controller.rename("a", "Current");
@@ -271,13 +330,15 @@ async function harness(values, coreLimit = 4) {
   const transport = new MockTransport();
   const api = new MockApi([metadata("a")]);
   const failure = new Error("metadata temporarily unavailable");
-  api.listOverride = async () => { throw failure; };
+  api.listOverride = async () => {
+    throw failure;
+  };
   const controller = new SessionController({ terminal, transport, api, storage: null });
   const errors = [];
-  controller.onError(error => errors.push(error));
+  controller.onError((error) => errors.push(error));
   const first = controller.start();
   assert.equal(controller.start(), first, "concurrent callers share startup");
-  await assert.rejects(first, error => error === failure);
+  await assert.rejects(first, (error) => error === failure);
   assert.deepEqual(errors, [], "operation failure belongs to caller, not another emitter");
   assert.equal(controller.state.started, false);
   api.listOverride = null;
@@ -289,7 +350,7 @@ async function harness(values, coreLimit = 4) {
 {
   const { controller, terminal, transport } = await harness([metadata("a"), metadata("b")]);
   const errors = [];
-  controller.onError(error => errors.push(error));
+  controller.onError((error) => errors.push(error));
   terminal.failAttachCore = true;
   await assert.rejects(controller.switchTo("b"), /renderer handoff failure/);
   assert.deepEqual(errors, [], "switch rollback does not also emit its caller-owned failure");
@@ -314,8 +375,12 @@ async function harness(values, coreLimit = 4) {
 {
   const { controller, terminal } = await harness([metadata("a"), metadata("b")]);
   let entered, release;
-  const creating = new Promise(resolve => { entered = resolve; });
-  const delayed = new Promise(resolve => { release = resolve; });
+  const creating = new Promise((resolve) => {
+    entered = resolve;
+  });
+  const delayed = new Promise((resolve) => {
+    release = resolve;
+  });
   terminal.createCore = async () => {
     entered();
     await delayed;
@@ -326,20 +391,29 @@ async function harness(values, coreLimit = 4) {
   controller.dispose();
   release();
   await assert.rejects(switching, /core creation was canceled/);
-  assert.equal(terminal.live.size, 0, "late owned core is disposed, not published after cancellation");
+  assert.equal(
+    terminal.live.size,
+    0,
+    "late owned core is disposed, not published after cancellation",
+  );
   assert.equal(controller.coreCount, 0);
 }
 
 {
   const { controller, terminal, transport } = await harness([metadata("a"), metadata("b")]);
   let entered;
-  const attaching = new Promise(resolve => { entered = resolve; });
-  let operationSignal;
-  transport.attach = (_metadata, _core, options) => new Promise((_, reject) => {
-    operationSignal = options.signal;
-    operationSignal.addEventListener("abort", () => reject(operationSignal.reason), { once: true });
-    entered();
+  const attaching = new Promise((resolve) => {
+    entered = resolve;
   });
+  let operationSignal;
+  transport.attach = (_metadata, _core, options) =>
+    new Promise((_, reject) => {
+      operationSignal = options.signal;
+      operationSignal.addEventListener("abort", () => reject(operationSignal.reason), {
+        once: true,
+      });
+      entered();
+    });
   const switching = controller.switchTo("b");
   await attaching;
   controller.dispose();
@@ -352,10 +426,16 @@ async function harness(values, coreLimit = 4) {
 {
   const terminal = new MockTerminal();
   const transport = new MockTransport();
-  transport.connect = ({ signal }) => new Promise((_, reject) => {
-    signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+  transport.connect = ({ signal }) =>
+    new Promise((_, reject) => {
+      signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+    });
+  const controller = new SessionController({
+    terminal,
+    transport,
+    api: new MockApi([metadata("a")]),
+    storage: null,
   });
-  const controller = new SessionController({ terminal, transport, api: new MockApi([metadata("a")]), storage: null });
   const starting = controller.start();
   controller.dispose();
   await assert.rejects(starting, /controller is disposed/);
@@ -363,12 +443,14 @@ async function harness(values, coreLimit = 4) {
   assert.equal(controller.activeSessionId, null);
 }
 
-
 {
   const { controller, terminal, transport, api } = await harness([metadata("vanished", 90)]);
   const oldCore = controller.activeCore;
   let resolveOldList;
-  api.listOverride = () => new Promise(resolve => { resolveOldList = resolve; });
+  api.listOverride = () =>
+    new Promise((resolve) => {
+      resolveOldList = resolve;
+    });
   const oldRefresh = controller.refresh();
   assert.equal(typeof resolveOldList, "function");
   api.listOverride = null;
@@ -376,7 +458,10 @@ async function harness(values, coreLimit = 4) {
   api.values.set("replacement", metadata("replacement", 1));
   api.revision = 1;
   api.serverInstance = transport.state.serverInstance = "replacement-server";
-  const recovered = waitForController(controller, () => controller.activeSessionId === "replacement" && controller.get("vanished") === null);
+  const recovered = waitForController(
+    controller,
+    () => controller.activeSessionId === "replacement" && controller.get("vanished") === null,
+  );
   transport.emitStatus("ready");
   await recovered;
   assert.equal(controller.get("vanished"), null);
@@ -395,7 +480,13 @@ async function harness(values, coreLimit = 4) {
   api.values.clear();
   api.revision = 1;
   api.serverInstance = transport.state.serverInstance = "empty-new-server";
-  const recovered = waitForController(controller, () => controller.activeSessionId !== "vanished" && controller.activeSessionId != null && controller.get("vanished") === null);
+  const recovered = waitForController(
+    controller,
+    () =>
+      controller.activeSessionId !== "vanished" &&
+      controller.activeSessionId != null &&
+      controller.get("vanished") === null,
+  );
   transport.emitStatus("ready");
   await recovered;
   assert.equal(controller.get("vanished"), null);
@@ -409,7 +500,10 @@ async function harness(values, coreLimit = 4) {
   api.revision = 1;
   api.failCreate = true;
   api.serverInstance = transport.state.serverInstance = "empty-unavailable-server";
-  const cleared = waitForController(controller, () => controller.get("vanished") === null && controller.activeSessionId === null);
+  const cleared = waitForController(
+    controller,
+    () => controller.get("vanished") === null && controller.activeSessionId === null,
+  );
   transport.emitStatus("ready");
   await cleared;
   api.failCreate = false;

@@ -4,12 +4,20 @@ import { test } from "node:test";
 import { Journal, waitForRestoredController } from "./network-support.mjs";
 
 const state = (connected, usable = connected) => ({ type: "state", state: { connected }, usable });
-const start = journal => waitForRestoredController(journal, { after: 0, deadlineAt: performance.now() + 1000, ready: event => event.usable });
+const start = (journal) =>
+  waitForRestoredController(journal, {
+    after: 0,
+    deadlineAt: performance.now() + 1000,
+    ready: (event) => event.usable,
+  });
 
 test("old suspect authority cannot trigger the one-shot recovery marker", async () => {
   const journal = new Journal();
   let markerAdmissions = 0;
-  const waiting = start(journal).then(result => { markerAdmissions++; return result; });
+  const waiting = start(journal).then((result) => {
+    markerAdmissions++;
+    return result;
+  });
   try {
     journal.add(state(true)); // path restored, old blackholed socket still admits input
     await Promise.resolve();
@@ -27,7 +35,9 @@ test("old suspect authority cannot trigger the one-shot recovery marker", async 
     assert.equal(recovered.controller, ready);
     assert.equal(recovered.welcome.socketId, "new");
     assert.equal(journal.waiters.size, 0);
-  } finally { journal.close(); }
+  } finally {
+    journal.close();
+  }
 });
 
 test("a failed intermediate attempt cannot satisfy a later recovery", async () => {
@@ -45,15 +55,33 @@ test("a failed intermediate attempt cannot satisfy a later recovery", async () =
     const recovered = await start(journal);
     assert.equal(recovered.welcome.socketId, "working");
     assert.equal(recovered.controller, ready);
-  } finally { journal.close(); }
+  } finally {
+    journal.close();
+  }
 });
 
 test("recovery uses one absolute observation deadline and cleans waiters", async () => {
   const journal = new Journal();
   try {
     journal.add(state(true));
-    await assert.rejects(waitForRestoredController(journal, { after: 0, deadlineAt: performance.now() + 5, ready: event => event.usable }), /deadline exceeded/);
+    await assert.rejects(
+      waitForRestoredController(journal, {
+        after: 0,
+        deadlineAt: performance.now() + 5,
+        ready: (event) => event.usable,
+      }),
+      /deadline exceeded/,
+    );
     assert.equal(journal.waiters.size, 0);
-    await assert.rejects(waitForRestoredController(journal, { after: 0, deadlineAt: performance.now() - 1, ready: () => true }), /deadline exceeded/);
-  } finally { journal.close(); }
+    await assert.rejects(
+      waitForRestoredController(journal, {
+        after: 0,
+        deadlineAt: performance.now() - 1,
+        ready: () => true,
+      }),
+      /deadline exceeded/,
+    );
+  } finally {
+    journal.close();
+  }
 });

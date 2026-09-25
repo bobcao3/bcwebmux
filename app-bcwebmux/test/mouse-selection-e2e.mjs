@@ -14,65 +14,108 @@ assert.ok(serverPath && webRoot, "usage: mouse-selection-e2e.mjs SERVER WEB_ROOT
 const serverPort = await freePort();
 const debugPort = await freePort();
 const profile = await mkdtemp(path.join(os.tmpdir(), "bcwebmux-mouse-selection-"));
-const server = spawn(serverPath, ["--config", "/dev/null", "--auth=false", "--web-root", webRoot, "--port", String(serverPort)], {
-  stdio: ["ignore", "pipe", "pipe"],
-});
+const server = spawn(
+  serverPath,
+  ["--config", "/dev/null", "--auth=false", "--web-root", webRoot, "--port", String(serverPort)],
+  {
+    stdio: ["ignore", "pipe", "pipe"],
+  },
+);
 let serverLog = "";
-server.stdout.on("data", data => { serverLog += data; });
-server.stderr.on("data", data => { serverLog += data; });
+server.stdout.on("data", (data) => {
+  serverLog += data;
+});
+server.stderr.on("data", (data) => {
+  serverLog += data;
+});
 let chromium;
 let pageCdp;
 let browserCdp;
 
 try {
-  await waitFor(async () => {
-    const response = await fetch(`http://127.0.0.1:${serverPort}/`).catch(() => null);
-    return response?.ok;
-  }, 10000, () => `server failed to start\n${serverLog}`);
+  await waitFor(
+    async () => {
+      const response = await fetch(`http://127.0.0.1:${serverPort}/`).catch(() => null);
+      return response?.ok;
+    },
+    10000,
+    () => `server failed to start\n${serverLog}`,
+  );
 
-  chromium = spawn(process.env.CHROMIUM || "chromium", [
-    "--headless=new",
-    "--force-device-scale-factor=1.25",
-    "--window-size=1024,720",
-    "--no-sandbox",
-    "--disable-dev-shm-usage",
-    "--enable-unsafe-webgpu",
-    "--use-angle=vulkan",
-    "--ignore-gpu-blocklist",
-    "--enable-features=Vulkan",
-    "--disable-background-networking",
-    `--remote-debugging-port=${debugPort}`,
-    `--user-data-dir=${profile}`,
-    `http://127.0.0.1:${serverPort}/?gpu-test=1`,
-  ], { stdio: ["ignore", "ignore", "pipe"] });
+  chromium = spawn(
+    process.env.CHROMIUM || "chromium",
+    [
+      "--headless=new",
+      "--force-device-scale-factor=1.25",
+      "--window-size=1024,720",
+      "--no-sandbox",
+      "--disable-dev-shm-usage",
+      "--enable-unsafe-webgpu",
+      "--use-angle=vulkan",
+      "--ignore-gpu-blocklist",
+      "--enable-features=Vulkan",
+      "--disable-background-networking",
+      `--remote-debugging-port=${debugPort}`,
+      `--user-data-dir=${profile}`,
+      `http://127.0.0.1:${serverPort}/?gpu-test=1`,
+    ],
+    { stdio: ["ignore", "ignore", "pipe"] },
+  );
   let chromiumLog = "";
-  chromium.stderr.on("data", data => { chromiumLog += data; });
+  chromium.stderr.on("data", (data) => {
+    chromiumLog += data;
+  });
 
-  const target = await waitFor(async () => {
-    const response = await fetch(`http://127.0.0.1:${debugPort}/json/list`).catch(() => null);
-    if (!response?.ok) return null;
-    const targets = await response.json();
-    return targets.find(item => item.type === "page" && item.url.startsWith(`http://127.0.0.1:${serverPort}/?gpu-test=1`));
-  }, 15000, () => `Chromium failed to expose the page\n${chromiumLog}`);
+  const target = await waitFor(
+    async () => {
+      const response = await fetch(`http://127.0.0.1:${debugPort}/json/list`).catch(() => null);
+      if (!response?.ok) return null;
+      const targets = await response.json();
+      return targets.find(
+        (item) =>
+          item.type === "page" && item.url.startsWith(`http://127.0.0.1:${serverPort}/?gpu-test=1`),
+      );
+    },
+    15000,
+    () => `Chromium failed to expose the page\n${chromiumLog}`,
+  );
 
   const version = await (await fetch(`http://127.0.0.1:${debugPort}/json/version`)).json();
   browserCdp = await Cdp.connect(version.webSocketDebuggerUrl);
   pageCdp = await Cdp.connect(target.webSocketDebuggerUrl);
   await pageCdp.call("Runtime.enable");
   await pageCdp.call("Page.enable");
-  await waitFor(async () => {
-    const result = await evaluate("document.readyState").catch(() => null);
-    return result === "complete";
-  }, 10000, () => "page failed to become ready");
-  await waitFor(async () => evaluate("Boolean(window.bcwebmux?.connected)").catch(() => false), 10000, () => {
-    const exceptions = pageCdp.events.filter(event => event.method === "Runtime.exceptionThrown");
-    return `terminal did not connect\n${JSON.stringify(exceptions)}\n${chromiumLog}`;
-  });
-  if (await evaluate("Notification.permission") === "default") {
-    assert.equal(await evaluate("document.querySelector('#notification-dialog')?.open"), true, "notification dialog was not open by default");
+  await waitFor(
+    async () => {
+      const result = await evaluate("document.readyState").catch(() => null);
+      return result === "complete";
+    },
+    10000,
+    () => "page failed to become ready",
+  );
+  await waitFor(
+    async () => evaluate("Boolean(window.bcwebmux?.connected)").catch(() => false),
+    10000,
+    () => {
+      const exceptions = pageCdp.events.filter(
+        (event) => event.method === "Runtime.exceptionThrown",
+      );
+      return `terminal did not connect\n${JSON.stringify(exceptions)}\n${chromiumLog}`;
+    },
+  );
+  if ((await evaluate("Notification.permission")) === "default") {
+    assert.equal(
+      await evaluate("document.querySelector('#notification-dialog')?.open"),
+      true,
+      "notification dialog was not open by default",
+    );
     await evaluate("document.querySelector('#notification-dialog-later').click()");
     await evaluate("new Promise(resolve => requestAnimationFrame(resolve))");
-    assert.equal(await evaluate("document.querySelector('#notification-dialog')?.open"), false, "notification dialog did not close");
+    assert.equal(
+      await evaluate("document.querySelector('#notification-dialog')?.open"),
+      false,
+      "notification dialog did not close",
+    );
   }
 
   const origin = `http://127.0.0.1:${serverPort}`;
@@ -87,10 +130,23 @@ try {
   await evaluate("navigator.clipboard.writeText('sentinel')");
   const osc52Text = "OSC 52 ✓";
   const osc52Payload = Buffer.from(osc52Text).toString("base64");
-  await evaluate(`window.bcwebmux.write(${JSON.stringify(`printf '\\033]52;c;${osc52Payload}\\007'\r`)})`);
-  await waitFor(async () => evaluate(`(async () => await navigator.clipboard.readText() === ${JSON.stringify(osc52Text)})()`), 1500, () => "OSC 52 clipboard write failed");
+  await evaluate(
+    `window.bcwebmux.write(${JSON.stringify(`printf '\\033]52;c;${osc52Payload}\\007'\r`)})`,
+  );
+  await waitFor(
+    async () =>
+      evaluate(
+        `(async () => await navigator.clipboard.readText() === ${JSON.stringify(osc52Text)})()`,
+      ),
+    1500,
+    () => "OSC 52 clipboard write failed",
+  );
   await evaluate(`window.bcwebmux.write(${JSON.stringify("printf '\\033]52;c;\\007'\r")})`);
-  await waitFor(async () => evaluate("(async () => await navigator.clipboard.readText() === '')()"), 1500, () => "OSC 52 clipboard clear failed");
+  await waitFor(
+    async () => evaluate("(async () => await navigator.clipboard.readText() === '')()"),
+    1500,
+    () => "OSC 52 clipboard clear failed",
+  );
 
   const geometry = await evaluate(`(() => {
     const surface = document.querySelector("#surface");
@@ -208,14 +264,19 @@ try {
         }, { once: true });
       })()`);
       await dispatchPress(1, 1);
-      const pointerId = await waitFor(async () => evaluate("window.__bcwCapturedPointer"), 1000, () => "pointer capture was not established");
+      const pointerId = await waitFor(
+        async () => evaluate("window.__bcwCapturedPointer"),
+        1000,
+        () => "pointer capture was not established",
+      );
       await evaluate(`document.querySelector("#surface").releasePointerCapture(${pointerId})`);
       await dispatchRelease(1, 1);
     },
   });
 
   const touch = point(1, 1);
-  const dispatchTouch = async type => await evaluate(`(() => {
+  const dispatchTouch = async (type) =>
+    await evaluate(`(() => {
     document.querySelector("#surface").dispatchEvent(new PointerEvent(${JSON.stringify(type)}, {
       bubbles: true,
       pointerId: 7,
@@ -227,7 +288,8 @@ try {
       buttons: ${type === "pointerdown" ? 1 : 0},
     }));
   })()`);
-  const dispatchTouchClick = async () => await evaluate(`document.querySelector("#surface").dispatchEvent(new MouseEvent("click", {
+  const dispatchTouchClick = async () =>
+    await evaluate(`document.querySelector("#surface").dispatchEvent(new MouseEvent("click", {
     bubbles: true,
     clientX: ${touch.x},
     clientY: ${touch.y},
@@ -240,7 +302,10 @@ try {
       await dispatchTouch("pointerdown");
       await dispatchTouch("pointerup");
       await dispatchTouchClick();
-      assert.ok(await evaluate(`window.bcwebmux.state.txBytes > ${txBeforeShortTouch}`), "short touch did not emit its terminal tap");
+      assert.ok(
+        await evaluate(`window.bcwebmux.state.txBytes > ${txBeforeShortTouch}`),
+        "short touch did not emit its terminal tap",
+      );
     },
   });
 
@@ -248,32 +313,99 @@ try {
   await evaluate(`window.bcwebmux.write(${JSON.stringify(longPressScreen)})`);
   await waitCellColor(0, 0, [255, 128, 0], "long-touch fixture did not render");
   await evaluate("document.querySelector('#input').blur()");
-  assert.notEqual(await evaluate("document.activeElement === document.querySelector('#input')"), true, "keyboard input was active before long touch");
+  assert.notEqual(
+    await evaluate("document.activeElement === document.querySelector('#input')"),
+    true,
+    "keyboard input was active before long touch",
+  );
   const txBeforeLongTouch = await evaluate("window.bcwebmux.state.txBytes");
   await dispatchTouch("pointerdown");
   await delay(450);
   await dispatchTouch("pointerup");
   await dispatchTouchClick();
-  assert.equal(await evaluate("window.bcwebmux.state.txBytes"), txBeforeLongTouch, "long touch emitted PTY mouse reports");
-  assert.notEqual(await evaluate("document.activeElement === document.querySelector('#input')"), true, "long touch refocused keyboard input");
-  await evaluate(`window.bcwebmux.write(${JSON.stringify("printf '\\033[?1000l\\033[?1002l\\033[?1003l\\033[?1006l'\r")})`);
+  assert.equal(
+    await evaluate("window.bcwebmux.state.txBytes"),
+    txBeforeLongTouch,
+    "long touch emitted PTY mouse reports",
+  );
+  assert.notEqual(
+    await evaluate("document.activeElement === document.querySelector('#input')"),
+    true,
+    "long touch refocused keyboard input",
+  );
+  await evaluate(
+    `window.bcwebmux.write(${JSON.stringify("printf '\\033[?1000l\\033[?1002l\\033[?1003l\\033[?1006l'\r")})`,
+  );
 
-  assert.equal(await evaluate("document.querySelector('#text-view').children.length"), 0, "desktop text mirror was activated");
-  assert.equal(await evaluate("window.bcwebmux.enterSelectionMode()"), false, "desktop pointer did not remain outside selection mode");
-  assert.equal(await evaluate("window.bcwebmux.selectionMode"), false, "selection mode was entered by desktop pointer");
-  assert.equal(await evaluate("window.bcwebmux.state.softkeysVisible"), false, "softkeys were visible before coarse pointer mode");
-  assert.equal(await evaluate("getComputedStyle(document.querySelector('#softkeys')).display"), "none", "softkeys were displayed before coarse pointer mode");
-  assert.equal(await evaluate("document.querySelector('#softkeys-toggle').getAttribute('aria-pressed')"), "false", "softkeys toggle was pressed before coarse pointer mode");
+  assert.equal(
+    await evaluate("document.querySelector('#text-view').children.length"),
+    0,
+    "desktop text mirror was activated",
+  );
+  assert.equal(
+    await evaluate("window.bcwebmux.enterSelectionMode()"),
+    false,
+    "desktop pointer did not remain outside selection mode",
+  );
+  assert.equal(
+    await evaluate("window.bcwebmux.selectionMode"),
+    false,
+    "selection mode was entered by desktop pointer",
+  );
+  assert.equal(
+    await evaluate("window.bcwebmux.state.softkeysVisible"),
+    false,
+    "softkeys were visible before coarse pointer mode",
+  );
+  assert.equal(
+    await evaluate("getComputedStyle(document.querySelector('#softkeys')).display"),
+    "none",
+    "softkeys were displayed before coarse pointer mode",
+  );
+  assert.equal(
+    await evaluate("document.querySelector('#softkeys-toggle').getAttribute('aria-pressed')"),
+    "false",
+    "softkeys toggle was pressed before coarse pointer mode",
+  );
   await pageCdp.call("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 1 });
-  await waitFor(async () => evaluate("matchMedia('(pointer: coarse)').matches"), 1500, () => "coarse media query did not match");
-  await waitFor(async () => evaluate("window.bcwebmux.state.softkeysVisible"), 1500, () => "softkeys were not enabled for coarse pointer mode");
-  assert.notEqual(await evaluate("getComputedStyle(document.querySelector('#softkeys')).display"), "none", "softkeys were not displayed for coarse pointer mode");
-  assert.equal(await evaluate("document.querySelector('#softkeys-toggle').getAttribute('aria-pressed')"), "true", "softkeys toggle was not pressed for coarse pointer mode");
-  assert.equal(await evaluate("document.querySelector('#text-view').children.length"), 0, "text mirror rows were populated for coarse pointer mode");
-  assert.equal(await evaluate("getComputedStyle(document.querySelector('#text-view')).pointerEvents"), "none", "text mirror was interactive for coarse pointer mode");
-  assert.equal(await evaluate("window.bcwebmux.selectionMode"), false, "selection mode was active before entering");
+  await waitFor(
+    async () => evaluate("matchMedia('(pointer: coarse)').matches"),
+    1500,
+    () => "coarse media query did not match",
+  );
+  await waitFor(
+    async () => evaluate("window.bcwebmux.state.softkeysVisible"),
+    1500,
+    () => "softkeys were not enabled for coarse pointer mode",
+  );
+  assert.notEqual(
+    await evaluate("getComputedStyle(document.querySelector('#softkeys')).display"),
+    "none",
+    "softkeys were not displayed for coarse pointer mode",
+  );
+  assert.equal(
+    await evaluate("document.querySelector('#softkeys-toggle').getAttribute('aria-pressed')"),
+    "true",
+    "softkeys toggle was not pressed for coarse pointer mode",
+  );
+  assert.equal(
+    await evaluate("document.querySelector('#text-view').children.length"),
+    0,
+    "text mirror rows were populated for coarse pointer mode",
+  );
+  assert.equal(
+    await evaluate("getComputedStyle(document.querySelector('#text-view')).pointerEvents"),
+    "none",
+    "text mirror was interactive for coarse pointer mode",
+  );
+  assert.equal(
+    await evaluate("window.bcwebmux.selectionMode"),
+    false,
+    "selection mode was active before entering",
+  );
 
-  const selectionScreen = "printf '\\033[?1000l\\033[?1002l\\033[?1003l\\033[?1006l\\033[2J\\033[H\\033[38;2;240;240;240m\\033[48;2;127;127;127mAé中Z   Q\\033[0m\\033[10;1H'\r";
+  const selectionScreen =
+    "printf '\\033[?1000l\\033[?1002l\\033[?1003l\\033[?1006l\\033[2J\\033[H\\033[38;2;240;240;240m\\033[48;2;127;127;127mAé中Z   Q\\033[0m\\033[10;1H'\r";
   await evaluate(`window.bcwebmux.write(${JSON.stringify(selectionScreen)})`);
   await waitCellColor(0, 0, [127, 127, 127], "selection fixture did not render");
   const selectionTouch = point(1, 0);
@@ -282,25 +414,58 @@ try {
     type: "touchStart",
     touchPoints: [{ x: selectionTouch.x, y: selectionTouch.y, id: 17 }],
   });
-  await waitFor(async () => evaluate("window.bcwebmux.selectionMode === true"), 1500, () => "coarse long press did not enter selection mode directly");
-  await waitFor(async () => evaluate("window.bcwebmux.selectionText() === 'Aé中Z'"), 1500, () => "first hold did not select a word in Ghostty");
-  await waitFor(async () => evaluate(`(() => {
+  await waitFor(
+    async () => evaluate("window.bcwebmux.selectionMode === true"),
+    1500,
+    () => "coarse long press did not enter selection mode directly",
+  );
+  await waitFor(
+    async () => evaluate("window.bcwebmux.selectionText() === 'Aé中Z'"),
+    1500,
+    () => "first hold did not select a word in Ghostty",
+  );
+  await waitFor(
+    async () =>
+      evaluate(`(() => {
     const selection = window.getSelection();
     const textView = document.querySelector("#text-view");
     return selection.rangeCount === 1 &&
       !selection.isCollapsed &&
       textView.contains(selection.getRangeAt(0).commonAncestorContainer);
-  })()`), 1500, () => "on-demand mirror did not create a browser selection on first hold");
-  assert.equal(await evaluate("window.bcwebmux.selectionText()"), "Aé中Z", "on-demand browser selection did not match Ghostty word boundaries");
-  assert.equal(await evaluate("window.bcwebmux.state.txBytes"), txBeforeLongSelection, "coarse long press emitted PTY bytes");
+  })()`),
+    1500,
+    () => "on-demand mirror did not create a browser selection on first hold",
+  );
+  assert.equal(
+    await evaluate("window.bcwebmux.selectionText()"),
+    "Aé中Z",
+    "on-demand browser selection did not match Ghostty word boundaries",
+  );
+  assert.equal(
+    await evaluate("window.bcwebmux.state.txBytes"),
+    txBeforeLongSelection,
+    "coarse long press emitted PTY bytes",
+  );
   await pageCdp.call("Input.dispatchTouchEvent", {
     type: "touchEnd",
     touchPoints: [],
   });
-  assert.equal(await evaluate("window.bcwebmux.selectionMode"), true, "coarse long press selection mode did not remain active");
-  await waitFor(async () => evaluate("document.querySelector('#text-view').children.length > 0"), 1500, () => "text mirror rows were not populated");
+  assert.equal(
+    await evaluate("window.bcwebmux.selectionMode"),
+    true,
+    "coarse long press selection mode did not remain active",
+  );
+  await waitFor(
+    async () => evaluate("document.querySelector('#text-view').children.length > 0"),
+    1500,
+    () => "text mirror rows were not populated",
+  );
   await evaluate("window.getSelection().removeAllRanges()");
-  await waitFor(async () => evaluate("window.bcwebmux.selectionText() === null"), 1500, () => "browser selection was not cleared");
+  await waitFor(
+    async () => evaluate("window.bcwebmux.selectionText() === null"),
+    1500,
+    () => "browser selection was not cleared",
+  );
   await evaluate(`(() => {
     const cell = document.querySelector('#text-view .text-row[data-row="0"] [data-start="6"]');
     const rect = cell.getBoundingClientRect();
@@ -316,8 +481,13 @@ try {
       buttons: 1,
     }));
   })()`);
-  await waitFor(async () => evaluate("window.bcwebmux.selectionText() === ''"), 1500, () => "coarse whitespace selection did not select three spaces");
-  assert.equal(await evaluate(`(() => {
+  await waitFor(
+    async () => evaluate("window.bcwebmux.selectionText() === ''"),
+    1500,
+    () => "coarse whitespace selection did not select three spaces",
+  );
+  assert.equal(
+    await evaluate(`(() => {
     const selection = window.getSelection();
     const range = selection?.rangeCount ? selection.getRangeAt(0) : null;
     const start = range?.startContainer?.parentElement;
@@ -327,14 +497,29 @@ try {
       range.startOffset === 0 &&
       end?.getAttribute("data-end") === "8" &&
       range.endOffset === 1;
-  })()`), true, "coarse whitespace browser selection did not match");
-  const whitespaceColors = await Promise.all([4, 5, 6, 7, 8].map(column => sampleCell(column, 0)));
+  })()`),
+    true,
+    "coarse whitespace browser selection did not match",
+  );
+  const whitespaceColors = await Promise.all(
+    [4, 5, 6, 7, 8].map((column) => sampleCell(column, 0)),
+  );
   assertGray(whitespaceColors[0], "coarse whitespace leading adjacent cell");
-  whitespaceColors.slice(1, 4).forEach((color, index) => assertDark(color, `coarse whitespace selected cell ${index + 5}`));
+  whitespaceColors
+    .slice(1, 4)
+    .forEach((color, index) => assertDark(color, `coarse whitespace selected cell ${index + 5}`));
   assertGray(whitespaceColors[4], "coarse whitespace trailing adjacent cell");
-  assert.equal(await evaluate("window.bcwebmux.state.txBytes"), txBeforeLongSelection, "coarse whitespace selection emitted PTY bytes");
+  assert.equal(
+    await evaluate("window.bcwebmux.state.txBytes"),
+    txBeforeLongSelection,
+    "coarse whitespace selection emitted PTY bytes",
+  );
   await evaluate("window.getSelection().removeAllRanges()");
-  await waitFor(async () => evaluate("window.bcwebmux.selectionText() === null"), 1500, () => "coarse whitespace browser selection was not cleared");
+  await waitFor(
+    async () => evaluate("window.bcwebmux.selectionText() === null"),
+    1500,
+    () => "coarse whitespace browser selection was not cleared",
+  );
   await evaluate(`(() => {
     const cell = document.querySelector('#text-view .text-row[data-row="0"] [data-start="0"]');
     const rect = cell.getBoundingClientRect();
@@ -353,13 +538,29 @@ try {
       buttons: 1,
     }));
   })()`);
-  await waitFor(async () => evaluate("window.bcwebmux.selectionText() === 'Aé中Z'"), 1500, () => "coarse selection hit slop did not select the nearby word");
-  assert.equal(await evaluate("window.bcwebmux.state.txBytes"), txBeforeLongSelection, "coarse selection hit slop emitted PTY bytes");
+  await waitFor(
+    async () => evaluate("window.bcwebmux.selectionText() === 'Aé中Z'"),
+    1500,
+    () => "coarse selection hit slop did not select the nearby word",
+  );
+  assert.equal(
+    await evaluate("window.bcwebmux.state.txBytes"),
+    txBeforeLongSelection,
+    "coarse selection hit slop emitted PTY bytes",
+  );
   const rxBytesBeforeSelection = await evaluate("window.bcwebmux.state.rxBytes");
   const rxWireBytesBeforeSelection = await evaluate("window.bcwebmux.state.rxWireBytes");
   await evaluate(`window.bcwebmux.write(${JSON.stringify("printf 'FROZEN_OUTPUT'\r")})`);
-  await waitFor(async () => evaluate(`window.bcwebmux.state.rxWireBytes > ${rxWireBytesBeforeSelection}`), 1500, () => "selection output was not received");
-  assert.equal(await evaluate("window.bcwebmux.state.rxBytes"), rxBytesBeforeSelection, "selection mode parsed output while frozen");
+  await waitFor(
+    async () => evaluate(`window.bcwebmux.state.rxWireBytes > ${rxWireBytesBeforeSelection}`),
+    1500,
+    () => "selection output was not received",
+  );
+  assert.equal(
+    await evaluate("window.bcwebmux.state.rxBytes"),
+    rxBytesBeforeSelection,
+    "selection mode parsed output while frozen",
+  );
   const txBeforeDomSelection = await evaluate("window.bcwebmux.state.txBytes");
   await evaluate(`(() => {
     const first = document.querySelector('#text-view .text-row[data-row="0"] [data-start="1"]');
@@ -371,25 +572,77 @@ try {
     selection.removeAllRanges();
     selection.addRange(range);
   })()`);
-  await waitFor(async () => evaluate("window.bcwebmux.selectionText() === 'é中'"), 1500, () => "DOM selection text mismatch");
-  assert.equal(await evaluate("window.bcwebmux.state.txBytes"), txBeforeDomSelection, "DOM selection emitted PTY bytes");
+  await waitFor(
+    async () => evaluate("window.bcwebmux.selectionText() === 'é中'"),
+    1500,
+    () => "DOM selection text mismatch",
+  );
+  assert.equal(
+    await evaluate("window.bcwebmux.state.txBytes"),
+    txBeforeDomSelection,
+    "DOM selection emitted PTY bytes",
+  );
   await evaluate("window.getSelection().removeAllRanges()");
-  await waitFor(async () => evaluate("window.bcwebmux.selectionText() === null"), 1500, () => "DOM selection was not cleared");
-  assert.equal(await evaluate("window.bcwebmux.exitSelectionMode()"), true, "failed to exit selection mode");
-  await waitFor(async () => evaluate("document.querySelector('#text-view').children.length === 0"), 1500, () => "text mirror rows were not released after selection mode");
-  await waitFor(async () => evaluate("window.bcwebmux.selectionMode === false"), 1500, () => "selection mode was not exited");
-  await waitFor(async () => evaluate(`window.bcwebmux.state.rxBytes > ${rxBytesBeforeSelection}`), 1500, () => "queued selection output was not parsed after exit");
+  await waitFor(
+    async () => evaluate("window.bcwebmux.selectionText() === null"),
+    1500,
+    () => "DOM selection was not cleared",
+  );
+  assert.equal(
+    await evaluate("window.bcwebmux.exitSelectionMode()"),
+    true,
+    "failed to exit selection mode",
+  );
+  await waitFor(
+    async () => evaluate("document.querySelector('#text-view').children.length === 0"),
+    1500,
+    () => "text mirror rows were not released after selection mode",
+  );
+  await waitFor(
+    async () => evaluate("window.bcwebmux.selectionMode === false"),
+    1500,
+    () => "selection mode was not exited",
+  );
+  await waitFor(
+    async () => evaluate(`window.bcwebmux.state.rxBytes > ${rxBytesBeforeSelection}`),
+    1500,
+    () => "queued selection output was not parsed after exit",
+  );
   await pageCdp.call("Emulation.setTouchEmulationEnabled", { enabled: false });
-  await waitFor(async () => evaluate("!matchMedia('(pointer: coarse)').matches"), 1500, () => "coarse media query did not stop matching");
-  await waitFor(async () => evaluate("document.querySelector('#text-view').children.length === 0"), 1500, () => "text mirror rows were not released after coarse pointer mode");
-  await waitFor(async () => evaluate("window.bcwebmux.state.softkeysVisible === false"), 1500, () => "softkeys remained enabled after coarse pointer mode");
-  assert.equal(await evaluate("getComputedStyle(document.querySelector('#softkeys')).display"), "none", "softkeys remained displayed after coarse pointer mode");
+  await waitFor(
+    async () => evaluate("!matchMedia('(pointer: coarse)').matches"),
+    1500,
+    () => "coarse media query did not stop matching",
+  );
+  await waitFor(
+    async () => evaluate("document.querySelector('#text-view').children.length === 0"),
+    1500,
+    () => "text mirror rows were not released after coarse pointer mode",
+  );
+  await waitFor(
+    async () => evaluate("window.bcwebmux.state.softkeysVisible === false"),
+    1500,
+    () => "softkeys remained enabled after coarse pointer mode",
+  );
+  assert.equal(
+    await evaluate("getComputedStyle(document.querySelector('#softkeys')).display"),
+    "none",
+    "softkeys remained displayed after coarse pointer mode",
+  );
   const txBeforeSelection = await evaluate("window.bcwebmux.state.txBytes");
   await dispatchPress(1, 0, 0, 0.3);
   await dispatchMove(2, 0, 1, 0, 0.8);
   await dispatchRelease(2, 0, 0, 0.8);
-  await waitFor(async () => evaluate("window.bcwebmux.selectionText() === 'é中'"), 1500, () => "direct selection text mismatch");
-  assert.equal(await evaluate("window.bcwebmux.state.txBytes"), txBeforeSelection, "tracking-off selection emitted PTY bytes");
+  await waitFor(
+    async () => evaluate("window.bcwebmux.selectionText() === 'é中'"),
+    1500,
+    () => "direct selection text mismatch",
+  );
+  assert.equal(
+    await evaluate("window.bcwebmux.state.txBytes"),
+    txBeforeSelection,
+    "tracking-off selection emitted PTY bytes",
+  );
   await evaluate("navigator.clipboard.writeText('sentinel')");
   const txBeforeShortcut = await evaluate("window.bcwebmux.state.txBytes");
   await pageCdp.call("Input.dispatchKeyEvent", {
@@ -406,20 +659,46 @@ try {
     modifiers: 10,
     windowsVirtualKeyCode: 67,
   });
-  await waitFor(async () => evaluate("(async () => await navigator.clipboard.readText() === 'é中')()"), 1500, () => "keyboard shortcut did not copy selection");
-  assert.equal(await evaluate("window.bcwebmux.state.txBytes"), txBeforeShortcut, "keyboard shortcut emitted PTY bytes");
-  await waitFor(async () => evaluate("window.bcwebmux.selectionText() === null"), 1500, () => "copy did not clear selection");
-  const unselectedColors = await Promise.all([0, 1, 2, 3, 4].map(column => sampleCell(column, 0)));
-  unselectedColors.forEach((color, column) => assertGray(color, `cell ${column} did not retain its background`));
+  await waitFor(
+    async () => evaluate("(async () => await navigator.clipboard.readText() === 'é中')()"),
+    1500,
+    () => "keyboard shortcut did not copy selection",
+  );
+  assert.equal(
+    await evaluate("window.bcwebmux.state.txBytes"),
+    txBeforeShortcut,
+    "keyboard shortcut emitted PTY bytes",
+  );
+  await waitFor(
+    async () => evaluate("window.bcwebmux.selectionText() === null"),
+    1500,
+    () => "copy did not clear selection",
+  );
+  const unselectedColors = await Promise.all(
+    [0, 1, 2, 3, 4].map((column) => sampleCell(column, 0)),
+  );
+  unselectedColors.forEach((color, column) =>
+    assertGray(color, `cell ${column} did not retain its background`),
+  );
 
-  await evaluate(`window.bcwebmux.write(${JSON.stringify(selectionScreen.replace("?1002l", "?1002h").replace("?1006l", "?1006h"))})`);
+  await evaluate(
+    `window.bcwebmux.write(${JSON.stringify(selectionScreen.replace("?1002l", "?1002h").replace("?1006l", "?1006h"))})`,
+  );
   await waitCellColor(0, 0, [127, 127, 127], "Shift selection fixture did not render");
   const txBeforeShiftSelection = await evaluate("window.bcwebmux.state.txBytes");
   await dispatchPress(1, 0, 8, 0.3);
   await dispatchMove(2, 0, 1, 0, 0.8);
   await dispatchRelease(2, 0, 0, 0.8);
-  await waitFor(async () => evaluate("window.bcwebmux.selectionText() === 'é中'"), 1500, () => "Shift override selection text mismatch");
-  assert.equal(await evaluate("window.bcwebmux.state.txBytes"), txBeforeShiftSelection, "Shift selection emitted PTY mouse reports");
+  await waitFor(
+    async () => evaluate("window.bcwebmux.selectionText() === 'é中'"),
+    1500,
+    () => "Shift override selection text mismatch",
+  );
+  assert.equal(
+    await evaluate("window.bcwebmux.state.txBytes"),
+    txBeforeShiftSelection,
+    "Shift selection emitted PTY mouse reports",
+  );
   await pageCdp.call("Input.dispatchKeyEvent", {
     type: "rawKeyDown",
     key: "Shift",
@@ -432,7 +711,11 @@ try {
     code: "ShiftLeft",
     modifiers: 8,
   });
-  assert.equal(await evaluate("window.bcwebmux.selectionText()"), "é中", "modifier-only input cleared selection");
+  assert.equal(
+    await evaluate("window.bcwebmux.selectionText()"),
+    "é中",
+    "modifier-only input cleared selection",
+  );
   await pageCdp.call("Input.dispatchKeyEvent", {
     type: "rawKeyDown",
     key: "Enter",
@@ -445,31 +728,45 @@ try {
     code: "Enter",
     windowsVirtualKeyCode: 13,
   });
-  await waitFor(async () => evaluate("window.bcwebmux.selectionText() === null"), 1500, () => "non-modifier input did not clear selection");
+  await waitFor(
+    async () => evaluate("window.bcwebmux.selectionText() === null"),
+    1500,
+    () => "non-modifier input did not clear selection",
+  );
 
-  const tailScreen = "printf '\\033[?1002l\\033[?1006l\\033[2J\\033[H\\033[38;2;240;240;240m\\033[48;2;127;127;127mA中Z \\033[0m\\033[10;1H'\r";
+  const tailScreen =
+    "printf '\\033[?1002l\\033[?1006l\\033[2J\\033[H\\033[38;2;240;240;240m\\033[48;2;127;127;127mA中Z \\033[0m\\033[10;1H'\r";
   await evaluate(`window.bcwebmux.write(${JSON.stringify(tailScreen)})`);
   await waitCellColor(0, 0, [127, 127, 127], "wide-tail fixture did not render");
   await dispatchPress(2, 0, 0, 0.2);
   await dispatchMove(2, 0, 1, 0, 0.9);
   await dispatchRelease(2, 0, 0, 0.9);
-  await waitFor(async () => evaluate("window.bcwebmux.selectionText() !== null"), 1500, () => "wide-tail selection was not created");
-  const tailColors = await Promise.all([0, 1, 2, 3].map(column => sampleCell(column, 0)));
+  await waitFor(
+    async () => evaluate("window.bcwebmux.selectionText() !== null"),
+    1500,
+    () => "wide-tail selection was not created",
+  );
+  const tailColors = await Promise.all([0, 1, 2, 3].map((column) => sampleCell(column, 0)));
   assertGray(tailColors[0], "wide-tail leading adjacent cell");
   assertDark(tailColors[1], "wide-tail glyph lead");
   assertDark(tailColors[2], "wide-tail glyph tail");
   assertGray(tailColors[3], "wide-tail trailing adjacent cell");
 
-  const invisibleScreen = "printf '\\033[2J\\033[H\\033[38;2;127;127;127m\\033[48;2;127;127;127mX\\033[38;2;255;255;255mX\\033[0m\\033[10;1H'\r";
+  const invisibleScreen =
+    "printf '\\033[2J\\033[H\\033[38;2;127;127;127m\\033[48;2;127;127;127mX\\033[38;2;255;255;255mX\\033[0m\\033[10;1H'\r";
   await evaluate(`window.bcwebmux.write(${JSON.stringify(invisibleScreen)})`);
   await waitCellColor(0, 0, [127, 127, 127], "invisible-text fixture did not render");
   await dispatchPress(0, 0, 0, 0.2);
   await dispatchMove(1, 0, 1, 0, 0.9);
   await dispatchRelease(1, 0, 0, 0.9);
-  await waitFor(async () => {
-    const colors = await Promise.all([sampleCell(0, 0), sampleCell(1, 0)]);
-    return colors.every(color => color.every(channel => channel < 60));
-  }, 1500, () => "adaptive selection background did not render");
+  await waitFor(
+    async () => {
+      const colors = await Promise.all([sampleCell(0, 0), sampleCell(1, 0)]);
+      return colors.every((color) => color.every((channel) => channel < 60));
+    },
+    1500,
+    () => "adaptive selection background did not render",
+  );
   const brightPixels = await evaluate(`(async () => {
     await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
     const image = await window.bcwebmux.readPixels();
@@ -493,28 +790,59 @@ try {
   assert.equal(brightPixels[0], 0, "selection revealed intentionally invisible text");
   assert.ok(brightPixels[1] > 2, "selection did not preserve visible glyph contrast");
 
-  const emptySelectionScreen = "printf '\\033[?1000l\\033[?1002l\\033[?1003l\\033[?1006l\\033[2J\\033[H\\033[1;6H\\033[48;2;255;128;0m \\033[0m\\033[10;1H'\r";
+  const emptySelectionScreen =
+    "printf '\\033[?1000l\\033[?1002l\\033[?1003l\\033[?1006l\\033[2J\\033[H\\033[1;6H\\033[48;2;255;128;0m \\033[0m\\033[10;1H'\r";
   await evaluate(`window.bcwebmux.write(${JSON.stringify(emptySelectionScreen)})`);
   await waitCellColor(5, 0, [255, 128, 0], "empty-selection fixture did not render");
   await dispatchPress(0, 0, 0, 0.3);
   await dispatchMove(1, 0, 1, 0, 0.8);
   await dispatchRelease(1, 0, 0, 0.8);
-  await waitFor(async () => evaluate("window.bcwebmux.selectionText() === ''"), 1500, () => "empty selection was not created");
+  await waitFor(
+    async () => evaluate("window.bcwebmux.selectionText() === ''"),
+    1500,
+    () => "empty selection was not created",
+  );
 
   const scrollbarScreen = "printf '\\033[?1003h\\033[2J\\033[H'; seq 1 100\r";
   await evaluate(`window.bcwebmux.write(${JSON.stringify(scrollbarScreen)})`);
-  await waitFor(async () => evaluate(`(() => {
+  await waitFor(
+    async () =>
+      evaluate(`(() => {
     const state = window.bcwebmux.state;
     return state.scrollTotal > state.scrollLength &&
       state.viewportMode === "active" &&
       state.scrollOffset + state.scrollLength === state.scrollTotal &&
       !document.querySelector("#scrollbar").hidden;
-  })()`), 3000, () => "semantic scrollback did not reach the bottom");
-  await waitFor(async () => evaluate("document.querySelector('#scrollbar')?.getAttribute('data-autohidden') === 'true'"), 6500, () => "semantic scrollbar did not autohide");
-  await waitFor(async () => evaluate("parseFloat(getComputedStyle(document.querySelector('#scrollbar')).opacity) <= 0.01"), 1500, () => "semantic scrollbar did not become visually hidden");
-  assert.ok(Math.abs(geometry.screenLeft - geometry.left) <= 1, "screen left did not match surface");
-  assert.ok(Math.abs(geometry.screenRight - geometry.right) <= 1, "screen right did not match surface");
-  assert.ok(Math.abs(geometry.screenWidth - geometry.width) <= 1, "screen width did not match surface");
+  })()`),
+    3000,
+    () => "semantic scrollback did not reach the bottom",
+  );
+  await waitFor(
+    async () =>
+      evaluate("document.querySelector('#scrollbar')?.getAttribute('data-autohidden') === 'true'"),
+    6500,
+    () => "semantic scrollbar did not autohide",
+  );
+  await waitFor(
+    async () =>
+      evaluate(
+        "parseFloat(getComputedStyle(document.querySelector('#scrollbar')).opacity) <= 0.01",
+      ),
+    1500,
+    () => "semantic scrollbar did not become visually hidden",
+  );
+  assert.ok(
+    Math.abs(geometry.screenLeft - geometry.left) <= 1,
+    "screen left did not match surface",
+  );
+  assert.ok(
+    Math.abs(geometry.screenRight - geometry.right) <= 1,
+    "screen right did not match surface",
+  );
+  assert.ok(
+    Math.abs(geometry.screenWidth - geometry.width) <= 1,
+    "screen width did not match surface",
+  );
   assert.equal(geometry.touchAction, "none", "surface touch-action was not none");
   assert.equal(geometry.surfaceCovered, true, "surface does not cover the viewport");
   const txBeforeScrollbar = await evaluate("window.bcwebmux.state.txBytes");
@@ -534,7 +862,11 @@ try {
     buttons: 0,
     modifiers: 0,
   });
-  await waitFor(async () => evaluate("!document.querySelector('#scrollbar')?.hasAttribute('data-autohidden')"), 1500, () => "semantic scrollbar hover did not reveal it");
+  await waitFor(
+    async () => evaluate("!document.querySelector('#scrollbar')?.hasAttribute('data-autohidden')"),
+    1500,
+    () => "semantic scrollbar hover did not reveal it",
+  );
   await pageCdp.call("Input.dispatchMouseEvent", {
     type: "mousePressed",
     x: scrollbarX,
@@ -553,10 +885,23 @@ try {
     modifiers: 0,
     clickCount: 1,
   });
-  await waitFor(async () => evaluate(`window.bcwebmux.state.scrollOffset < ${offsetBeforeScrollbar} &&
-    ["pinned", "top"].includes(window.bcwebmux.state.viewportMode)`), 1500, () => "semantic scrollbar track click did not scroll");
-  assert.equal(await evaluate("window.bcwebmux.state.txBytes"), txBeforeScrollbar, "scrollbar click emitted mouse reports");
-  assert.equal(await evaluate("window.bcwebmux.selectionText()"), selectionBeforeScrollbar, "scrollbar click changed local selection");
+  await waitFor(
+    async () =>
+      evaluate(`window.bcwebmux.state.scrollOffset < ${offsetBeforeScrollbar} &&
+    ["pinned", "top"].includes(window.bcwebmux.state.viewportMode)`),
+    1500,
+    () => "semantic scrollbar track click did not scroll",
+  );
+  assert.equal(
+    await evaluate("window.bcwebmux.state.txBytes"),
+    txBeforeScrollbar,
+    "scrollbar click emitted mouse reports",
+  );
+  assert.equal(
+    await evaluate("window.bcwebmux.selectionText()"),
+    selectionBeforeScrollbar,
+    "scrollbar click changed local selection",
+  );
   const thumbMetrics = await evaluate(`(() => {
     const bar = document.querySelector("#scrollbar").getBoundingClientRect();
     const thumb = document.querySelector("#scrollbar-thumb").getBoundingClientRect();
@@ -569,7 +914,10 @@ try {
     };
   })()`);
   const thumbCenterY = thumbMetrics.thumbTop + thumbMetrics.thumbHeight / 2;
-  const thumbDragY = Math.min(thumbMetrics.barBottom - thumbMetrics.thumbHeight / 2, thumbCenterY + 60);
+  const thumbDragY = Math.min(
+    thumbMetrics.barBottom - thumbMetrics.thumbHeight / 2,
+    thumbCenterY + 60,
+  );
   const txBeforeThumbDrag = await evaluate("window.bcwebmux.state.txBytes");
   const selectionBeforeThumbDrag = await evaluate("window.bcwebmux.selectionText()");
   await pageCdp.call("Input.dispatchMouseEvent", {
@@ -606,19 +954,38 @@ try {
     modifiers: 0,
     clickCount: 1,
   });
-  await waitFor(async () => evaluate(`window.bcwebmux.state.scrollOffset !== ${thumbMetrics.offset}`), 1500, () => "semantic scrollbar thumb drag did not scroll");
-  assert.equal(await evaluate("window.bcwebmux.state.txBytes"), txBeforeThumbDrag, "scrollbar thumb drag emitted mouse reports");
-  assert.equal(await evaluate("window.bcwebmux.selectionText()"), selectionBeforeThumbDrag, "scrollbar thumb drag changed local selection");
+  await waitFor(
+    async () => evaluate(`window.bcwebmux.state.scrollOffset !== ${thumbMetrics.offset}`),
+    1500,
+    () => "semantic scrollbar thumb drag did not scroll",
+  );
+  assert.equal(
+    await evaluate("window.bcwebmux.state.txBytes"),
+    txBeforeThumbDrag,
+    "scrollbar thumb drag emitted mouse reports",
+  );
+  assert.equal(
+    await evaluate("window.bcwebmux.selectionText()"),
+    selectionBeforeThumbDrag,
+    "scrollbar thumb drag changed local selection",
+  );
   await evaluate(`window.bcwebmux.write(${JSON.stringify("printf '\\033[?1003l'\r")})`);
-  await evaluate("new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))");
+  await evaluate(
+    "new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))",
+  );
   await evaluate(`document.querySelector("#scrollbar").dispatchEvent(new KeyboardEvent("keydown", {
     key: "End",
     code: "End",
     bubbles: true,
     cancelable: true,
   }))`);
-  await waitFor(async () => evaluate(`window.bcwebmux.state.viewportMode === "active" &&
-    window.bcwebmux.state.scrollOffset + window.bcwebmux.state.scrollLength === window.bcwebmux.state.scrollTotal`), 1500, () => "semantic End key did not reach the bottom");
+  await waitFor(
+    async () =>
+      evaluate(`window.bcwebmux.state.viewportMode === "active" &&
+    window.bcwebmux.state.scrollOffset + window.bcwebmux.state.scrollLength === window.bcwebmux.state.scrollTotal`),
+    1500,
+    () => "semantic End key did not reach the bottom",
+  );
   const offsetBeforeWheel = await evaluate("window.bcwebmux.state.scrollOffset");
   const txBeforeWheel = await evaluate("window.bcwebmux.state.txBytes");
   await pageCdp.call("Input.dispatchMouseEvent", {
@@ -628,19 +995,35 @@ try {
     deltaX: 0,
     deltaY: -240,
   });
-  await waitFor(async () => evaluate(`window.bcwebmux.state.scrollOffset < ${offsetBeforeWheel} &&
-    ["pinned", "top"].includes(window.bcwebmux.state.viewportMode)`), 1500, () => "semantic mouse wheel did not scroll the viewport");
-  assert.equal(await evaluate("window.bcwebmux.state.txBytes"), txBeforeWheel, "mouse wheel emitted a PTY mouse report");
+  await waitFor(
+    async () =>
+      evaluate(`window.bcwebmux.state.scrollOffset < ${offsetBeforeWheel} &&
+    ["pinned", "top"].includes(window.bcwebmux.state.viewportMode)`),
+    1500,
+    () => "semantic mouse wheel did not scroll the viewport",
+  );
+  assert.equal(
+    await evaluate("window.bcwebmux.state.txBytes"),
+    txBeforeWheel,
+    "mouse wheel emitted a PTY mouse report",
+  );
   await pageCdp.call("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 1 });
-  await evaluate("new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))");
+  await evaluate(
+    "new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))",
+  );
   await evaluate(`document.querySelector("#scrollbar").dispatchEvent(new KeyboardEvent("keydown", {
     key: "End",
     code: "End",
     bubbles: true,
     cancelable: true,
   }))`);
-  await waitFor(async () => evaluate(`window.bcwebmux.state.viewportMode === "active" &&
-    window.bcwebmux.state.scrollOffset + window.bcwebmux.state.scrollLength === window.bcwebmux.state.scrollTotal`), 1500, () => "touch-scroll End key did not reach the bottom");
+  await waitFor(
+    async () =>
+      evaluate(`window.bcwebmux.state.viewportMode === "active" &&
+    window.bcwebmux.state.scrollOffset + window.bcwebmux.state.scrollLength === window.bcwebmux.state.scrollTotal`),
+    1500,
+    () => "touch-scroll End key did not reach the bottom",
+  );
   const txBeforeTouchScroll = await evaluate("window.bcwebmux.state.txBytes");
   await evaluate(`(() => {
     const surface = document.querySelector("#surface");
@@ -660,31 +1043,60 @@ try {
     window.__dispatchScrollTouch("pointerdown", centerY, 0, 1);
   })()`);
   await delay(20);
-  await evaluate(`window.__dispatchScrollTouch("pointermove", (${geometry.top} + ${geometry.bottom}) / 2 + 10, -1, 1)`);
-  await evaluate("new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))");
+  await evaluate(
+    `window.__dispatchScrollTouch("pointermove", (${geometry.top} + ${geometry.bottom}) / 2 + 10, -1, 1)`,
+  );
+  await evaluate(
+    "new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))",
+  );
   const offsetBeforeMomentum = await evaluate("window.bcwebmux.state.scrollOffset");
-  await evaluate(`window.__dispatchScrollTouch("pointerup", (${geometry.top} + ${geometry.bottom}) / 2 + 10, -1, 0)`);
-  await waitFor(async () => evaluate(`window.bcwebmux.state.scrollOffset < ${offsetBeforeMomentum} &&
-    ["pinned", "top"].includes(window.bcwebmux.state.viewportMode)`), 1500, () => "touch inertia did not continue after pointerup");
+  await evaluate(
+    `window.__dispatchScrollTouch("pointerup", (${geometry.top} + ${geometry.bottom}) / 2 + 10, -1, 0)`,
+  );
+  await waitFor(
+    async () =>
+      evaluate(`window.bcwebmux.state.scrollOffset < ${offsetBeforeMomentum} &&
+    ["pinned", "top"].includes(window.bcwebmux.state.viewportMode)`),
+    1500,
+    () => "touch inertia did not continue after pointerup",
+  );
   await evaluate("delete window.__dispatchScrollTouch");
-  assert.equal(await evaluate("window.bcwebmux.state.txBytes"), txBeforeTouchScroll, "touch scroll emitted a PTY mouse report");
+  assert.equal(
+    await evaluate("window.bcwebmux.state.txBytes"),
+    txBeforeTouchScroll,
+    "touch scroll emitted a PTY mouse report",
+  );
   await evaluate(`document.querySelector("#scrollbar").dispatchEvent(new KeyboardEvent("keydown", {
     key: "End",
     code: "End",
     bubbles: true,
     cancelable: true,
   }))`);
-  await waitFor(async () => evaluate(`window.bcwebmux.state.viewportMode === "active" &&
-    window.bcwebmux.state.scrollOffset + window.bcwebmux.state.scrollLength === window.bcwebmux.state.scrollTotal`), 1500, () => "touch-scroll End key did not reach the bottom");
-  assert.notEqual(await evaluate("getComputedStyle(document.querySelector('#selection-button')).display"), "none", "selection button was not displayed");
-  assert.equal(await evaluate(`(() => {
+  await waitFor(
+    async () =>
+      evaluate(`window.bcwebmux.state.viewportMode === "active" &&
+    window.bcwebmux.state.scrollOffset + window.bcwebmux.state.scrollLength === window.bcwebmux.state.scrollTotal`),
+    1500,
+    () => "touch-scroll End key did not reach the bottom",
+  );
+  assert.notEqual(
+    await evaluate("getComputedStyle(document.querySelector('#selection-button')).display"),
+    "none",
+    "selection button was not displayed",
+  );
+  assert.equal(
+    await evaluate(`(() => {
     const button = document.querySelector("#selection-button");
     const controls = document.querySelector("#terminal-controls");
     return Boolean(button.querySelector("svg")) &&
       button.textContent.trim() === "" &&
       Math.abs(button.getBoundingClientRect().left - controls.getBoundingClientRect().left) <= 8;
-  })()`), true, "selection button was not a left-aligned icon-only control");
-  assert.equal(await evaluate(`(() => {
+  })()`),
+    true,
+    "selection button was not a left-aligned icon-only control",
+  );
+  assert.equal(
+    await evaluate(`(() => {
     const selectionButton = document.querySelector("#selection-button");
     const softkeysToggle = document.querySelector("#softkeys-toggle");
     const actions = selectionButton.parentElement;
@@ -699,25 +1111,58 @@ try {
       softkeysToggle.getAttribute("aria-pressed") === "true" &&
       toggleRect.left >= selectionRect.right &&
       toggleRect.left - selectionRect.right <= gap + 1;
-  })()`), true, "softkeys toggle was not positioned after the selection button");
-  assert.equal(await evaluate("getComputedStyle(document.querySelector('#text-view')).pointerEvents"), "none", "native selection mirror was active before selection mode");
-  assert.equal(await evaluate("document.querySelector('#text-view').children.length"), 0, "native selection mirror was active before selection mode");
-  assert.equal(await evaluate("window.bcwebmux.selectionMode"), false, "selection mode was active before button toggle");
+  })()`),
+    true,
+    "softkeys toggle was not positioned after the selection button",
+  );
+  assert.equal(
+    await evaluate("getComputedStyle(document.querySelector('#text-view')).pointerEvents"),
+    "none",
+    "native selection mirror was active before selection mode",
+  );
+  assert.equal(
+    await evaluate("document.querySelector('#text-view').children.length"),
+    0,
+    "native selection mirror was active before selection mode",
+  );
+  assert.equal(
+    await evaluate("window.bcwebmux.selectionMode"),
+    false,
+    "selection mode was active before button toggle",
+  );
   await evaluate("document.querySelector('#selection-button').click()");
-  await waitFor(async () => evaluate("window.bcwebmux.selectionMode === true"), 1500, () => "selection mode was not entered by button");
-  await waitFor(async () => evaluate("document.querySelector('#text-view').children.length > 0"), 1500, () => "text mirror rows were not populated by button");
+  await waitFor(
+    async () => evaluate("window.bcwebmux.selectionMode === true"),
+    1500,
+    () => "selection mode was not entered by button",
+  );
+  await waitFor(
+    async () => evaluate("document.querySelector('#text-view').children.length > 0"),
+    1500,
+    () => "text mirror rows were not populated by button",
+  );
   const coarseHitTarget = await evaluate(`(() => {
     const element = document.elementFromPoint(${point(1, 1).x}, ${point(1, 1).y});
     const textView = document.querySelector("#text-view");
     return element === textView || textView.contains(element);
   })()`);
   assert.ok(coarseHitTarget, "coarse pointer hit target was not #text-view");
-  assert.notEqual(await evaluate("getComputedStyle(document.querySelector('#text-view')).pointerEvents"), "none");
-  assert.equal(await evaluate("getComputedStyle(document.querySelector('#input')).pointerEvents"), "none");
+  assert.notEqual(
+    await evaluate("getComputedStyle(document.querySelector('#text-view')).pointerEvents"),
+    "none",
+  );
+  assert.equal(
+    await evaluate("getComputedStyle(document.querySelector('#input')).pointerEvents"),
+    "none",
+  );
   await evaluate("document.querySelector('#selection-button').click()");
-  await waitFor(async () => evaluate("window.bcwebmux.selectionMode === false"), 1500, () => "selection mode was not exited by button");
+  await waitFor(
+    async () => evaluate("window.bcwebmux.selectionMode === false"),
+    1500,
+    () => "selection mode was not exited by button",
+  );
 
-  const exceptions = pageCdp.events.filter(event => event.method === "Runtime.exceptionThrown");
+  const exceptions = pageCdp.events.filter((event) => event.method === "Runtime.exceptionThrown");
   assert.deepEqual(exceptions, [], JSON.stringify(exceptions));
   console.log(JSON.stringify({ mouseSelection: "ok", selectedText: "é中", brightPixels }));
 
@@ -727,7 +1172,10 @@ try {
       awaitPromise: true,
       returnByValue: true,
     });
-    if (response.exceptionDetails) throw new Error(response.exceptionDetails.exception?.description || "browser evaluation failed");
+    if (response.exceptionDetails)
+      throw new Error(
+        response.exceptionDetails.exception?.description || "browser evaluation failed",
+      );
     return response.result.value;
   }
 
@@ -756,10 +1204,16 @@ try {
   }
 
   async function waitCellColor(column, row, expected, message) {
-    return waitFor(async () => {
-      const color = await sampleCell(column, row);
-      return color.every((channel, index) => Math.abs(channel - expected[index]) < 40) ? color : false;
-    }, 3000, () => message);
+    return waitFor(
+      async () => {
+        const color = await sampleCell(column, row);
+        return color.every((channel, index) => Math.abs(channel - expected[index]) < 40)
+          ? color
+          : false;
+      },
+      3000,
+      () => message,
+    );
   }
 } finally {
   pageCdp?.close();
@@ -770,9 +1224,15 @@ try {
 }
 
 function assertDark(color, label) {
-  assert.ok(color.every(channel => channel < 60), `${label} was not selected: ${color}`);
+  assert.ok(
+    color.every((channel) => channel < 60),
+    `${label} was not selected: ${color}`,
+  );
 }
 
 function assertGray(color, label) {
-  assert.ok(color.every(channel => channel > 75 && channel < 180), `${label} did not retain its background: ${color}`);
+  assert.ok(
+    color.every((channel) => channel > 75 && channel < 180),
+    `${label} did not retain its background: ${color}`,
+  );
 }

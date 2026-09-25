@@ -15,10 +15,31 @@ export async function localTls() {
   const dir = await mkdtemp(path.join(os.tmpdir(), "bcwebmux-tls-"));
   const cert = path.join(dir, "cert.pem");
   const key = path.join(dir, "key.pem");
-  const result = spawnSync("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes",
-    "-keyout", key, "-out", cert, "-days", "1", "-subj", "/CN=127.0.0.1",
-    "-addext", "subjectAltName=IP:127.0.0.1"], { stdio: "ignore" });
-  if (result.status !== 0) { await rm(dir, { recursive: true, force: true }); throw new Error("local TLS certificate failed"); }
+  const result = spawnSync(
+    "openssl",
+    [
+      "req",
+      "-x509",
+      "-newkey",
+      "rsa:2048",
+      "-nodes",
+      "-keyout",
+      key,
+      "-out",
+      cert,
+      "-days",
+      "1",
+      "-subj",
+      "/CN=127.0.0.1",
+      "-addext",
+      "subjectAltName=IP:127.0.0.1",
+    ],
+    { stdio: "ignore" },
+  );
+  if (result.status !== 0) {
+    await rm(dir, { recursive: true, force: true });
+    throw new Error("local TLS certificate failed");
+  }
   process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
   return { cert, key, dispose: () => rm(dir, { recursive: true, force: true }) };
 }
@@ -29,7 +50,9 @@ export async function freePort() {
   listener.listen(0, "127.0.0.1");
   await listening;
   const port = listener.address().port;
-  await new Promise((resolve, reject) => listener.close(error => error ? reject(error) : resolve()));
+  await new Promise((resolve, reject) =>
+    listener.close((error) => (error ? reject(error) : resolve())),
+  );
   return port;
 }
 
@@ -45,12 +68,20 @@ export async function waitFor(check, timeout, message, interval = 50) {
 
 function groupAlive(child) {
   if (!child.detachedGroup || child.pid == null) return false;
-  try { process.kill(-child.pid, 0); return true; } catch { return false; }
+  try {
+    process.kill(-child.pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function signal(child, name) {
   if (child.detachedGroup && child.pid != null) {
-    try { process.kill(-child.pid, name); return; } catch {}
+    try {
+      process.kill(-child.pid, name);
+      return;
+    } catch {}
   }
   child.kill(name);
 }
@@ -84,11 +115,12 @@ export class Cdp {
     this.eventWaiters = new Set();
     this.events = [];
     this.disconnected = false;
-    socket.addEventListener("message", event => {
+    socket.addEventListener("message", (event) => {
       const message = JSON.parse(event.data);
       if (!message.id) {
         this.events.push(message);
-        for (const listener of [...(this.listeners.get(message.method) ?? [])]) listener(message.params);
+        for (const listener of [...(this.listeners.get(message.method) ?? [])])
+          listener(message.params);
         return;
       }
       const pending = this.pending.get(message.id);
@@ -103,14 +135,23 @@ export class Cdp {
   static async connect(url) {
     const socket = new WebSocket(url);
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(new Error("CDP connection timed out")), 10000);
-    socket.addEventListener("error", () => controller.abort(new Error("CDP connection failed")), { signal: controller.signal });
-    socket.addEventListener("close", () => controller.abort(new Error("CDP connection closed")), { signal: controller.signal });
+    const timeout = setTimeout(
+      () => controller.abort(new Error("CDP connection timed out")),
+      10000,
+    );
+    socket.addEventListener("error", () => controller.abort(new Error("CDP connection failed")), {
+      signal: controller.signal,
+    });
+    socket.addEventListener("close", () => controller.abort(new Error("CDP connection closed")), {
+      signal: controller.signal,
+    });
     try {
       await once(socket, "open", { signal: controller.signal });
       return new Cdp(socket);
     } catch (error) {
-      try { socket.close(); } catch {}
+      try {
+        socket.close();
+      } catch {}
       throw error;
     } finally {
       clearTimeout(timeout);
@@ -120,7 +161,7 @@ export class Cdp {
 
   on(method, listener) {
     let listeners = this.listeners.get(method);
-    if (!listeners) this.listeners.set(method, listeners = new Set());
+    if (!listeners) this.listeners.set(method, (listeners = new Set()));
     listeners.add(listener);
     return () => {
       listeners.delete(listener);
@@ -133,7 +174,7 @@ export class Cdp {
     return new Promise((resolve, reject) => {
       let timer;
       const waiter = {
-        reject: error => {
+        reject: (error) => {
           cleanup();
           reject(error);
         },
@@ -143,7 +184,7 @@ export class Cdp {
         unsubscribe();
         this.eventWaiters.delete(waiter);
       };
-      const unsubscribe = this.on(method, params => {
+      const unsubscribe = this.on(method, (params) => {
         try {
           if (!predicate(params)) return;
         } catch (error) {
@@ -173,13 +214,17 @@ export class Cdp {
         settle(value);
       };
       const pending = {
-        resolve: value => finish(resolve, value),
-        reject: error => finish(reject, error),
+        resolve: (value) => finish(resolve, value),
+        reject: (error) => finish(reject, error),
       };
       this.pending.set(id, pending);
-      if (timeout > 0) timer = setTimeout(() => pending.reject(new Error(`CDP ${method} timed out`)), timeout);
-      try { this.socket.send(JSON.stringify({ id, method, params })); }
-      catch (error) { pending.reject(error); }
+      if (timeout > 0)
+        timer = setTimeout(() => pending.reject(new Error(`CDP ${method} timed out`)), timeout);
+      try {
+        this.socket.send(JSON.stringify({ id, method, params }));
+      } catch (error) {
+        pending.reject(error);
+      }
     });
   }
 

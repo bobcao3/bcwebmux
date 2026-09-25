@@ -17,40 +17,59 @@ const requestedBackend = process.env.RENDER_BACKEND === "webgl2" ? "webgl2" : "w
 const backendQuery = `&backend=${requestedBackend}`;
 const pageQuery = `?gpu-test=1${rendererQuery}${backendQuery}`;
 const profile = await mkdtemp(path.join(os.tmpdir(), "bcwebmux-gpu-e2e-"));
-const server = spawn(serverPath, ["--config", "/dev/null", "--auth=false", "--web-root", webRoot, "--port", String(serverPort)], {
-  stdio: ["ignore", "pipe", "pipe"],
-});
+const server = spawn(
+  serverPath,
+  ["--config", "/dev/null", "--auth=false", "--web-root", webRoot, "--port", String(serverPort)],
+  {
+    stdio: ["ignore", "pipe", "pipe"],
+  },
+);
 let serverLog = "";
-server.stdout.on("data", data => { serverLog += data; });
-server.stderr.on("data", data => { serverLog += data; });
+server.stdout.on("data", (data) => {
+  serverLog += data;
+});
+server.stderr.on("data", (data) => {
+  serverLog += data;
+});
 let chromium;
 let bundledServer;
 let pageCdp;
 let browserCdp;
 
-const rgbCommand = "printf '\\033[2J\\033[H\\033[48;2;255;0;0m \\033[48;2;0;255;0m \\033[48;2;0;0;255m \\033[0mX\\n'";
-const imePattern = "test \"$c\" = OK && printf '\\033[2J\\033[H\\033[48;2;255;255;0m \\033[0m中\\n'";
-const softCommand = "stty -icanon -echo -isig min 2 time 0; printf '\\033[2J\\033[H\\033[48;2;64;64;64m \\033[0m'; dd of=/dev/null bs=2 count=1 2>/dev/null; stty sane; printf '\\033[2J\\033[H\\033[48;2;255;0;255m \\033[0mS\\n'\r";
-const mouseCommand = "stty -icanon -echo min 6 time 0; printf '\\033[?1000h\\033[2J\\033[H\\033[48;2;255;128;0m \\033[0m'; dd of=/dev/null bs=6 count=1 2>/dev/null; stty sane; printf '\\033[?1000l\\033[2J\\033[H\\033[48;2;0;255;255m \\033[0mM\\n'\r";
-const alternateScrollCommand = "stty raw -echo; printf '\\033[?1049h\\033[?1007h\\033[2J\\033[H\\033[48;2;255;128;0m \\033[0m'; keys=$(dd bs=1 count=6 2>/dev/null); printf '\\033[?1007l\\033[?1049l'; stty sane; test \"$keys\" = \"$(printf '\\033[A\\033[A')\" && printf '\\033[2J\\033[H\\033[48;2;0;255;0m \\033[0m' || printf '\\033[2J\\033[H\\033[48;2;255;0;0m \\033[0m'\r";
-const specialKeysCommand = "stty raw -echo; printf '\\033[2J\\033[H\\033[48;2;64;64;64m \\033[0m'; keys=$(dd bs=1 count=26 2>/dev/null); stty sane; test \"$keys\" = \"$(printf '\\033[A\\033[B\\033[D\\033[C\\033[H\\033[F\\033[5~\\033[6~')\" && printf '\\033[2J\\033[H\\033[48;2;0;255;0m \\033[0m'\r";
-const cursorMoveCommand = "stty raw -echo; printf '\\033[2J\\033[H\\033[2 q\\033[48;2;255;0;0m \\033[0m\\033[4G'; dd of=/dev/null bs=1 count=3 2>/dev/null; printf '\\033[D'; sleep 1; stty sane\r";
-const historyCommand = "stty -ixon; printf '\\033[3J\\033[2J\\033[H\\033[48;2;255;0;255m \\033[0mHISTORY\\n'; seq 1 40\r";
-const printableAscii = Array.from({ length: 0x7f - 0x20 }, (_, index) => String.fromCharCode(0x20 + index)).join("");
-const glyphAtlasPayload = [
-  "\x1b[0m",
-  "\x1b[1m",
-  "\x1b[3m",
-  "\x1b[1;3m",
-].map(style => `${style}${printableAscii}`).join("");
+const rgbCommand =
+  "printf '\\033[2J\\033[H\\033[48;2;255;0;0m \\033[48;2;0;255;0m \\033[48;2;0;0;255m \\033[0mX\\n'";
+const imePattern =
+  "test \"$c\" = OK && printf '\\033[2J\\033[H\\033[48;2;255;255;0m \\033[0m中\\n'";
+const softCommand =
+  "stty -icanon -echo -isig min 2 time 0; printf '\\033[2J\\033[H\\033[48;2;64;64;64m \\033[0m'; dd of=/dev/null bs=2 count=1 2>/dev/null; stty sane; printf '\\033[2J\\033[H\\033[48;2;255;0;255m \\033[0mS\\n'\r";
+const mouseCommand =
+  "stty -icanon -echo min 6 time 0; printf '\\033[?1000h\\033[2J\\033[H\\033[48;2;255;128;0m \\033[0m'; dd of=/dev/null bs=6 count=1 2>/dev/null; stty sane; printf '\\033[?1000l\\033[2J\\033[H\\033[48;2;0;255;255m \\033[0mM\\n'\r";
+const alternateScrollCommand =
+  "stty raw -echo; printf '\\033[?1049h\\033[?1007h\\033[2J\\033[H\\033[48;2;255;128;0m \\033[0m'; keys=$(dd bs=1 count=6 2>/dev/null); printf '\\033[?1007l\\033[?1049l'; stty sane; test \"$keys\" = \"$(printf '\\033[A\\033[A')\" && printf '\\033[2J\\033[H\\033[48;2;0;255;0m \\033[0m' || printf '\\033[2J\\033[H\\033[48;2;255;0;0m \\033[0m'\r";
+const specialKeysCommand =
+  "stty raw -echo; printf '\\033[2J\\033[H\\033[48;2;64;64;64m \\033[0m'; keys=$(dd bs=1 count=26 2>/dev/null); stty sane; test \"$keys\" = \"$(printf '\\033[A\\033[B\\033[D\\033[C\\033[H\\033[F\\033[5~\\033[6~')\" && printf '\\033[2J\\033[H\\033[48;2;0;255;0m \\033[0m'\r";
+const cursorMoveCommand =
+  "stty raw -echo; printf '\\033[2J\\033[H\\033[2 q\\033[48;2;255;0;0m \\033[0m\\033[4G'; dd of=/dev/null bs=1 count=3 2>/dev/null; printf '\\033[D'; sleep 1; stty sane\r";
+const historyCommand =
+  "stty -ixon; printf '\\033[3J\\033[2J\\033[H\\033[48;2;255;0;255m \\033[0mHISTORY\\n'; seq 1 40\r";
+const printableAscii = Array.from({ length: 0x7f - 0x20 }, (_, index) =>
+  String.fromCharCode(0x20 + index),
+).join("");
+const glyphAtlasPayload = ["\x1b[0m", "\x1b[1m", "\x1b[3m", "\x1b[1;3m"]
+  .map((style) => `${style}${printableAscii}`)
+  .join("");
 const glyphAtlasBase64 = Buffer.from(glyphAtlasPayload).toString("base64");
 const glyphAtlasCommand = `printf '\\033[2J\\033[H'; printf '%s' '${glyphAtlasBase64}' | base64 -d; printf '\\033[0m'`;
 
 try {
-  await waitFor(async () => {
-    const response = await fetch(`http://127.0.0.1:${serverPort}/`).catch(() => null);
-    return response?.ok;
-  }, 10000, () => `server failed to start\n${serverLog}`);
+  await waitFor(
+    async () => {
+      const response = await fetch(`http://127.0.0.1:${serverPort}/`).catch(() => null);
+      return response?.ok;
+    },
+    10000,
+    () => `server failed to start\n${serverLog}`,
+  );
 
   const stylePath = path.join(webRoot, "style.css");
   const originalStyle = await readFile(stylePath, "utf8");
@@ -89,15 +108,27 @@ try {
 
   const bundledPort = await freePort();
   let bundledLog = "";
-  bundledServer = spawn(serverPath, ["--config", "/dev/null", "--auth=false", "--port", String(bundledPort)], {
-    stdio: ["ignore", "pipe", "pipe"],
+  bundledServer = spawn(
+    serverPath,
+    ["--config", "/dev/null", "--auth=false", "--port", String(bundledPort)],
+    {
+      stdio: ["ignore", "pipe", "pipe"],
+    },
+  );
+  bundledServer.stdout.on("data", (data) => {
+    bundledLog += data;
   });
-  bundledServer.stdout.on("data", data => { bundledLog += data; });
-  bundledServer.stderr.on("data", data => { bundledLog += data; });
-  await waitFor(async () => {
-    const response = await fetch(`http://127.0.0.1:${bundledPort}/`).catch(() => null);
-    return response?.ok;
-  }, 10000, () => `bundled server failed to start\n${bundledLog}`);
+  bundledServer.stderr.on("data", (data) => {
+    bundledLog += data;
+  });
+  await waitFor(
+    async () => {
+      const response = await fetch(`http://127.0.0.1:${bundledPort}/`).catch(() => null);
+      return response?.ok;
+    },
+    10000,
+    () => `bundled server failed to start\n${bundledLog}`,
+  );
   const bundledResponses = await Promise.all([
     fetch(`http://127.0.0.1:${bundledPort}/`),
     fetch(`http://127.0.0.1:${bundledPort}/client.js`),
@@ -106,27 +137,28 @@ try {
     fetch(`http://127.0.0.1:${bundledPort}/fonts/OFL.txt`),
     fetch(`http://127.0.0.1:${bundledPort}/fonts/NotoEmoji-Regular.woff2`),
   ]);
-  const [
-    bundledIndex,
-    bundledClient,
-    bundledFzstd,
-    bundledWasm,
-    bundledLicense,
-    bundledEmojiFont,
-  ] = bundledResponses;
+  const [bundledIndex, bundledClient, bundledFzstd, bundledWasm, bundledLicense, bundledEmojiFont] =
+    bundledResponses;
   for (const response of bundledResponses) {
     assert.ok(response.ok, `bundled request failed: ${response.status}`);
     assert.equal(response.headers.get("cache-control"), cacheControl);
     assert.match(response.headers.get("etag") || "", validEtag);
   }
   assert.match(bundledIndex.headers.get("content-type") || "", /^text\/html(?:;|$)/);
-  assert.match(bundledClient.headers.get("content-type") || "", /^(?:text\/javascript|application\/javascript)(?:;|$)/);
-  assert.match(bundledFzstd.headers.get("content-type") || "", /^(?:text\/javascript|application\/javascript)(?:;|$)/);
+  assert.match(
+    bundledClient.headers.get("content-type") || "",
+    /^(?:text\/javascript|application\/javascript)(?:;|$)/,
+  );
+  assert.match(
+    bundledFzstd.headers.get("content-type") || "",
+    /^(?:text\/javascript|application\/javascript)(?:;|$)/,
+  );
   assert.match(bundledWasm.headers.get("content-type") || "", /^application\/wasm(?:;|$)/);
   assert.match(bundledLicense.headers.get("content-type") || "", /^text\/plain(?:;|$)/);
   assert.match(bundledEmojiFont.headers.get("content-type") || "", /^font\/woff2(?:;|$)/);
   const bundledCsp = bundledIndex.headers.get("content-security-policy") || "";
-  const cspDirective = name => bundledCsp.match(new RegExp(`(?:^|;)\\s*${name}\\s+([^;]+)`))?.[1].trim();
+  const cspDirective = (name) =>
+    bundledCsp.match(new RegExp(`(?:^|;)\\s*${name}\\s+([^;]+)`))?.[1].trim();
   assert.equal(cspDirective("style-src"), "'self'");
   assert.equal(cspDirective("font-src"), "'self'");
   assert.doesNotMatch(bundledCsp, /(?:^|;)\s*(?:style-src|font-src)\s+[^;]*https:(?:\s|;|$)/);
@@ -134,7 +166,10 @@ try {
   assert.match(bundledIndexText, /bcwebmux/);
   assert.doesNotMatch(bundledIndexText, /fonts\.googleapis\.com|Fira\+Code/);
   assert.equal(await bundledClient.text(), await readFile(path.join(webRoot, "client.js"), "utf8"));
-  assert.equal(await bundledFzstd.text(), await readFile(path.join("..", "node_modules", "fzstd", "esm", "index.mjs"), "utf8"));
+  assert.equal(
+    await bundledFzstd.text(),
+    await readFile(path.join("..", "node_modules", "fzstd", "esm", "index.mjs"), "utf8"),
+  );
   assert.deepEqual(
     Buffer.from(await bundledWasm.arrayBuffer()),
     await readFile(path.join(webRoot, "terminal.wasm")),
@@ -143,55 +178,80 @@ try {
     headers: { "if-none-match": bundledClient.headers.get("etag") || "" },
   });
   assert.equal(cachedBundledClient.status, 304);
-  assert.equal(cachedBundledClient.headers.get("cache-control"), bundledClient.headers.get("cache-control"));
+  assert.equal(
+    cachedBundledClient.headers.get("cache-control"),
+    bundledClient.headers.get("cache-control"),
+  );
   assert.equal(cachedBundledClient.headers.get("etag"), bundledClient.headers.get("etag"));
   assert.equal(await cachedBundledClient.text(), "");
   await terminateProcess(bundledServer);
   bundledServer = null;
 
-  chromium = spawn(process.env.CHROMIUM || "chromium", [
-    "--headless=new",
-    "--force-device-scale-factor=1.25",
-    "--window-size=1024,720",
-    "--no-sandbox",
-    "--disable-dev-shm-usage",
-    "--enable-unsafe-webgpu",
-    "--use-angle=vulkan",
-    "--ignore-gpu-blocklist",
-    "--enable-features=Vulkan",
-    "--disable-background-networking",
-    `--remote-debugging-port=${debugPort}`,
-    `--user-data-dir=${profile}`,
-    `http://127.0.0.1:${serverPort}/${pageQuery}`,
-  ], { stdio: ["ignore", "ignore", "pipe"] });
+  chromium = spawn(
+    process.env.CHROMIUM || "chromium",
+    [
+      "--headless=new",
+      "--force-device-scale-factor=1.25",
+      "--window-size=1024,720",
+      "--no-sandbox",
+      "--disable-dev-shm-usage",
+      "--enable-unsafe-webgpu",
+      "--use-angle=vulkan",
+      "--ignore-gpu-blocklist",
+      "--enable-features=Vulkan",
+      "--disable-background-networking",
+      `--remote-debugging-port=${debugPort}`,
+      `--user-data-dir=${profile}`,
+      `http://127.0.0.1:${serverPort}/${pageQuery}`,
+    ],
+    { stdio: ["ignore", "ignore", "pipe"] },
+  );
   let chromiumLog = "";
-  chromium.stderr.on("data", data => { chromiumLog += data; });
+  chromium.stderr.on("data", (data) => {
+    chromiumLog += data;
+  });
 
-  const target = await waitFor(async () => {
-    const response = await fetch(`http://127.0.0.1:${debugPort}/json/list`).catch(() => null);
-    if (!response?.ok) return null;
-    const targets = await response.json();
-    return targets.find(item => item.type === "page" && item.url.startsWith(`http://127.0.0.1:${serverPort}/${pageQuery}`));
-  }, 15000, () => `Chromium failed to expose the page\n${chromiumLog}`);
+  const target = await waitFor(
+    async () => {
+      const response = await fetch(`http://127.0.0.1:${debugPort}/json/list`).catch(() => null);
+      if (!response?.ok) return null;
+      const targets = await response.json();
+      return targets.find(
+        (item) =>
+          item.type === "page" &&
+          item.url.startsWith(`http://127.0.0.1:${serverPort}/${pageQuery}`),
+      );
+    },
+    15000,
+    () => `Chromium failed to expose the page\n${chromiumLog}`,
+  );
 
   const version = await (await fetch(`http://127.0.0.1:${debugPort}/json/version`)).json();
   browserCdp = await Cdp.connect(version.webSocketDebuggerUrl);
   const system = await browserCdp.call("SystemInfo.getInfo");
   const gpuDeviceText = [
-    ...(system.gpu?.devices || []).flatMap(device => [device.vendorString, device.deviceString]),
+    ...(system.gpu?.devices || []).flatMap((device) => [device.vendorString, device.deviceString]),
     system.gpu?.auxAttributes?.glRenderer,
     system.gpu?.auxAttributes?.glVendor,
-  ].filter(Boolean).join(" ");
+  ]
+    .filter(Boolean)
+    .join(" ");
   assert.ok(gpuDeviceText, "Chromium did not report a GPU device");
   assert.doesNotMatch(gpuDeviceText, /swiftshader|llvmpipe|software rasterizer/i, gpuDeviceText);
 
   pageCdp = await Cdp.connect(target.webSocketDebuggerUrl);
   await pageCdp.call("Runtime.enable");
   await pageCdp.call("Page.enable");
-  await waitFor(async () => {
-    const response = await pageCdp.call("Runtime.evaluate", { expression: "document.readyState", returnByValue: true }).catch(() => null);
-    return response?.result?.value === "complete";
-  }, 10000, () => "page failed to become ready");
+  await waitFor(
+    async () => {
+      const response = await pageCdp
+        .call("Runtime.evaluate", { expression: "document.readyState", returnByValue: true })
+        .catch(() => null);
+      return response?.result?.value === "complete";
+    },
+    10000,
+    () => "page failed to become ready",
+  );
 
   const expression = `(async () => {
     const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -719,11 +779,21 @@ try {
     };
   })()`;
 
-  const response = await pageCdp.call("Runtime.evaluate", { expression, awaitPromise: true, returnByValue: true });
+  const response = await pageCdp.call("Runtime.evaluate", {
+    expression,
+    awaitPromise: true,
+    returnByValue: true,
+  });
   if (response.exceptionDetails) {
-    const runtimeExceptions = pageCdp.events.filter(event => event.method === "Runtime.exceptionThrown");
-    const consoleErrors = pageCdp.events.filter(event => event.method === "Runtime.consoleAPICalled" && event.params?.type === "error");
-    throw new Error(`${response.exceptionDetails.exception?.description || "browser evaluation failed"}\nRuntime exceptions: ${JSON.stringify(runtimeExceptions)}\nConsole errors: ${JSON.stringify(consoleErrors)}`);
+    const runtimeExceptions = pageCdp.events.filter(
+      (event) => event.method === "Runtime.exceptionThrown",
+    );
+    const consoleErrors = pageCdp.events.filter(
+      (event) => event.method === "Runtime.consoleAPICalled" && event.params?.type === "error",
+    );
+    throw new Error(
+      `${response.exceptionDetails.exception?.description || "browser evaluation failed"}\nRuntime exceptions: ${JSON.stringify(runtimeExceptions)}\nConsole errors: ${JSON.stringify(consoleErrors)}`,
+    );
   }
   const value = response.result.value;
   const viewportResponse = await pageCdp.call("Runtime.evaluate", {
@@ -735,7 +805,10 @@ try {
     expression: `window.bcwebmux.write(${JSON.stringify("printf '\\033]0;GPU TEST\\007'; sleep 10\n")})`,
   });
   if (titleCommandResponse.exceptionDetails) {
-    throw new Error(titleCommandResponse.exceptionDetails.exception?.description || "terminal title command evaluation failed");
+    throw new Error(
+      titleCommandResponse.exceptionDetails.exception?.description ||
+        "terminal title command evaluation failed",
+    );
   }
   const titleResponse = await pageCdp.call("Runtime.evaluate", {
     expression: `((async () => {
@@ -750,13 +823,18 @@ try {
     returnByValue: true,
   });
   if (titleResponse.exceptionDetails) {
-    throw new Error(titleResponse.exceptionDetails.exception?.description || "terminal title did not appear");
+    throw new Error(
+      titleResponse.exceptionDetails.exception?.description || "terminal title did not appear",
+    );
   }
   const interruptResponse = await pageCdp.call("Runtime.evaluate", {
     expression: `window.bcwebmux.write(${JSON.stringify("\u0003")})`,
   });
   if (interruptResponse.exceptionDetails) {
-    throw new Error(interruptResponse.exceptionDetails.exception?.description || "failed to interrupt temporary terminal sleep");
+    throw new Error(
+      interruptResponse.exceptionDetails.exception?.description ||
+        "failed to interrupt temporary terminal sleep",
+    );
   }
   const longTitle = "BCWEBMUX-LONG-TITLE-" + "0123456789".repeat(12);
   const longTitleLayoutResponse = await pageCdp.call("Runtime.evaluate", {
@@ -816,7 +894,10 @@ try {
     returnByValue: true,
   });
   if (longTitleLayoutResponse.exceptionDetails) {
-    throw new Error(longTitleLayoutResponse.exceptionDetails.exception?.description || "long title layout evaluation failed");
+    throw new Error(
+      longTitleLayoutResponse.exceptionDetails.exception?.description ||
+        "long title layout evaluation failed",
+    );
   }
   const longTitleLayout = longTitleLayoutResponse.result.value;
   const controlsLayout = longTitleLayout["terminal-controls"].rect;
@@ -824,37 +905,66 @@ try {
   const actionsLayout = longTitleLayout["terminal-actions"].rect;
   const primaryLayout = longTitleLayout["terminal-identity-primary"];
   const indicatorsLayout = longTitleLayout["terminal-indicators"].rect;
-  const center = rect => ({ x: (rect.left + rect.right) / 2, y: (rect.top + rect.bottom) / 2 });
+  const center = (rect) => ({ x: (rect.left + rect.right) / 2, y: (rect.top + rect.bottom) / 2 });
   const controlsCenter = center(controlsLayout);
   const identityCenter = center(identityLayout);
-  assert.ok(Math.abs(identityCenter.x - controlsCenter.x) <= 1 && Math.abs(identityCenter.y - controlsCenter.y) <= 1, `long title identity/control centers differ: ${JSON.stringify(longTitleLayout)}`);
-  assert.ok(primaryLayout.scrollWidth > primaryLayout.clientWidth, `long title did not overflow: ${JSON.stringify(primaryLayout)}`);
+  assert.ok(
+    Math.abs(identityCenter.x - controlsCenter.x) <= 1 &&
+      Math.abs(identityCenter.y - controlsCenter.y) <= 1,
+    `long title identity/control centers differ: ${JSON.stringify(longTitleLayout)}`,
+  );
+  assert.ok(
+    primaryLayout.scrollWidth > primaryLayout.clientWidth,
+    `long title did not overflow: ${JSON.stringify(primaryLayout)}`,
+  );
   assert.equal(primaryLayout.style.overflow, "hidden");
   assert.equal(primaryLayout.style.textOverflow, "clip");
   assert.equal(primaryLayout.style.whiteSpace, "nowrap");
   for (const edge of ["left", "right", "top", "bottom"]) {
-    assert.ok(Math.abs(identityLayout[edge] - controlsLayout[edge]) <= 1, `long title identity ${edge} does not match controls: ${JSON.stringify(longTitleLayout)}`);
+    assert.ok(
+      Math.abs(identityLayout[edge] - controlsLayout[edge]) <= 1,
+      `long title identity ${edge} does not match controls: ${JSON.stringify(longTitleLayout)}`,
+    );
   }
-  assert.ok(actionsLayout.right < indicatorsLayout.left, `long title actions do not precede indicators: ${JSON.stringify(longTitleLayout)}`);
-  assert.ok(Number(longTitleLayout["terminal-actions"].style.zIndex) > Number(longTitleLayout["terminal-identity"].style.zIndex));
-  assert.ok(Number(longTitleLayout["terminal-indicators"].style.zIndex) > Number(longTitleLayout["terminal-identity"].style.zIndex));
+  assert.ok(
+    actionsLayout.right < indicatorsLayout.left,
+    `long title actions do not precede indicators: ${JSON.stringify(longTitleLayout)}`,
+  );
+  assert.ok(
+    Number(longTitleLayout["terminal-actions"].style.zIndex) >
+      Number(longTitleLayout["terminal-identity"].style.zIndex),
+  );
+  assert.ok(
+    Number(longTitleLayout["terminal-indicators"].style.zIndex) >
+      Number(longTitleLayout["terminal-identity"].style.zIndex),
+  );
   for (const name of ["actions", "indicators"]) {
     assert.match(longTitleLayout.fades[name].backgroundImage, /linear-gradient/);
     assert.ok(longTitleLayout.fades[name].width >= 20);
   }
   for (const id of ["status", "settings-button"]) {
     const item = longTitleLayout[id].rect;
-    assert.ok(item.left >= controlsLayout.left && item.right <= controlsLayout.right &&
-      item.top >= controlsLayout.top && item.bottom <= controlsLayout.bottom,
-    `long title ${id} is outside controls: ${JSON.stringify(longTitleLayout)}`);
+    assert.ok(
+      item.left >= controlsLayout.left &&
+        item.right <= controlsLayout.right &&
+        item.top >= controlsLayout.top &&
+        item.bottom <= controlsLayout.bottom,
+      `long title ${id} is outside controls: ${JSON.stringify(longTitleLayout)}`,
+    );
   }
   const state = value.state;
   const { nativeViewport } = value;
   assert.ok(nativeViewport.devicePixelRatio > 1);
   assert.ok(nativeViewport.width > nativeViewport.clientWidth);
   assert.ok(nativeViewport.height > nativeViewport.clientHeight);
-  assert.equal(nativeViewport.width, Math.round(nativeViewport.clientWidth * nativeViewport.devicePixelRatio));
-  assert.equal(nativeViewport.height, Math.round(nativeViewport.clientHeight * nativeViewport.devicePixelRatio));
+  assert.equal(
+    nativeViewport.width,
+    Math.round(nativeViewport.clientWidth * nativeViewport.devicePixelRatio),
+  );
+  assert.equal(
+    nativeViewport.height,
+    Math.round(nativeViewport.clientHeight * nativeViewport.devicePixelRatio),
+  );
   assert.equal(state.viewportWidth, nativeViewport.width);
   assert.equal(state.viewportHeight, nativeViewport.height);
   for (const name of ["physicalCellWidth", "physicalCellHeight", "physicalFontSize"]) {
@@ -862,11 +972,25 @@ try {
   }
   assert.ok(state.cols * state.physicalCellWidth <= state.viewportWidth);
   assert.ok(state.rows * state.physicalCellHeight <= state.viewportHeight);
-  assert.ok(Math.abs(state.pixelScaleX - nativeViewport.width / nativeViewport.clientWidth) <= 0.01);
-  assert.ok(Math.abs(state.pixelScaleY - nativeViewport.height / nativeViewport.clientHeight) <= 0.01);
+  assert.ok(
+    Math.abs(state.pixelScaleX - nativeViewport.width / nativeViewport.clientWidth) <= 0.01,
+  );
+  assert.ok(
+    Math.abs(state.pixelScaleY - nativeViewport.height / nativeViewport.clientHeight) <= 0.01,
+  );
   assert.ok(Number.isFinite(state.rxWireBytes) && state.rxWireBytes > 0);
   assert.ok(Number.isFinite(state.rxBytes) && state.rxBytes > 0);
-  for (const name of ["wasmParseMs", "wasmFrameMs", "rxLatencyMs", "inputLatencyMs", "frameMs", "presentationOpportunityMs", "wsRttLatestMs", "wsRttMedianMs", "wsRttP95Ms"]) {
+  for (const name of [
+    "wasmParseMs",
+    "wasmFrameMs",
+    "rxLatencyMs",
+    "inputLatencyMs",
+    "frameMs",
+    "presentationOpportunityMs",
+    "wsRttLatestMs",
+    "wsRttMedianMs",
+    "wsRttP95Ms",
+  ]) {
     assert.equal(typeof state[name], "number", `${name} is missing`);
     assert.ok(Number.isFinite(state[name]) && state[name] >= 0, `${name} is invalid`);
   }
@@ -877,7 +1001,10 @@ try {
   assert.equal(state.gpuFallbackAdapter, false);
   assert.ok(state.gpuFrames >= 5);
   assert.ok(state.rasterPasses >= 5);
-  assert.ok(Number.isInteger(state.atlasRequiredSlots) && state.atlasRequiredSlots >= state.cols * state.rows);
+  assert.ok(
+    Number.isInteger(state.atlasRequiredSlots) &&
+      state.atlasRequiredSlots >= state.cols * state.rows,
+  );
   assert.ok(state.atlasCapacity >= state.atlasRequiredSlots);
   assert.ok(state.glyphSlotsUsed >= 1 && state.glyphSlotsUsed <= state.atlasCapacity);
   if (["kb-stb", "canvas"].includes(state.textRenderer)) {
@@ -903,7 +1030,8 @@ try {
   assert.ok(value.elapsed < 3000, `GPU E2E took ${value.elapsed}ms`);
   await pageCdp.call("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 5 });
   await pageCdp.call("Runtime.evaluate", {
-    expression: "new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))",
+    expression:
+      "new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))",
     awaitPromise: true,
   });
   await pageCdp.call("Runtime.evaluate", {
@@ -934,7 +1062,10 @@ try {
     returnByValue: true,
   });
   if (longScrollbackResponse.exceptionDetails) {
-    throw new Error(longScrollbackResponse.exceptionDetails.exception?.description || "long scrollback setup failed");
+    throw new Error(
+      longScrollbackResponse.exceptionDetails.exception?.description ||
+        "long scrollback setup failed",
+    );
   }
   const mobileRowsBeforeResponse = await pageCdp.call("Runtime.evaluate", {
     expression: `((async () => {
@@ -964,7 +1095,10 @@ try {
     returnByValue: true,
   });
   if (mobileRowsBeforeResponse.exceptionDetails) {
-    throw new Error(mobileRowsBeforeResponse.exceptionDetails.exception?.description || "mobile resize setup failed");
+    throw new Error(
+      mobileRowsBeforeResponse.exceptionDetails.exception?.description ||
+        "mobile resize setup failed",
+    );
   }
   const mobileRowsBefore = mobileRowsBeforeResponse.result.value;
   await pageCdp.call("Emulation.setDeviceMetricsOverride", {
@@ -998,7 +1132,9 @@ try {
     returnByValue: true,
   });
   if (mobileResizeResponse.exceptionDetails) {
-    throw new Error(mobileResizeResponse.exceptionDetails.exception?.description || "mobile resize failed");
+    throw new Error(
+      mobileResizeResponse.exceptionDetails.exception?.description || "mobile resize failed",
+    );
   }
   const mobileResize = mobileResizeResponse.result.value;
   assert.ok(mobileResize.rows < mobileRowsBefore, "mobile resize did not decrease rows");
@@ -1042,7 +1178,9 @@ try {
     returnByValue: true,
   });
   if (mobileGrowResponse.exceptionDetails) {
-    throw new Error(mobileGrowResponse.exceptionDetails.exception?.description || "mobile grow failed");
+    throw new Error(
+      mobileGrowResponse.exceptionDetails.exception?.description || "mobile grow failed",
+    );
   }
   const mobileGrow = mobileGrowResponse.result.value;
   assert.ok(mobileGrow.rows > mobileResize.rows, "mobile grow did not increase rows");
@@ -1055,7 +1193,8 @@ try {
     mobile: true,
   });
   await pageCdp.call("Runtime.evaluate", {
-    expression: "new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))",
+    expression:
+      "new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))",
     awaitPromise: true,
   });
   const mobileInputResponse = await pageCdp.call("Runtime.evaluate", {
@@ -1132,7 +1271,10 @@ try {
     returnByValue: true,
   });
   if (mobileInputResponse.exceptionDetails) {
-    throw new Error(mobileInputResponse.exceptionDetails.exception?.description || "mobile input diagnostics failed");
+    throw new Error(
+      mobileInputResponse.exceptionDetails.exception?.description ||
+        "mobile input diagnostics failed",
+    );
   }
   const mobileInput = mobileInputResponse.result.value;
   assert.equal(mobileInput.coarse, true);
@@ -1147,17 +1289,23 @@ try {
   assert.equal(mobileInput.textViewParentId, "surface");
   assert.equal(mobileInput.surfaceParentId, "terminal-viewport");
   for (const edge of ["left", "top", "right", "bottom", "width", "height"]) {
-    assert.ok(Math.abs(mobileInput.inputRect[edge] - mobileInput.screenRect[edge]) <= 1, `${edge} does not match screen ${JSON.stringify(mobileInput)}`);
+    assert.ok(
+      Math.abs(mobileInput.inputRect[edge] - mobileInput.screenRect[edge]) <= 1,
+      `${edge} does not match screen ${JSON.stringify(mobileInput)}`,
+    );
   }
   for (const edge of ["left", "top", "bottom"]) {
-    assert.ok(Math.abs(mobileInput.inputRect[edge] - mobileInput.viewportRect[edge]) <= 1, `${edge} does not match viewport ${JSON.stringify(mobileInput)}`);
+    assert.ok(
+      Math.abs(mobileInput.inputRect[edge] - mobileInput.viewportRect[edge]) <= 1,
+      `${edge} does not match viewport ${JSON.stringify(mobileInput)}`,
+    );
   }
   assert.equal(mobileInput.centerTextViewId, null);
   const mobileControlsCenter = center(mobileInput.controlsRect);
   const mobileIdentityCenter = center(mobileInput.identityRect);
   assert.ok(
     Math.abs(mobileIdentityCenter.x - mobileControlsCenter.x) <= 1 &&
-    Math.abs(mobileIdentityCenter.y - mobileControlsCenter.y) <= 1,
+      Math.abs(mobileIdentityCenter.y - mobileControlsCenter.y) <= 1,
     `mobile title identity/control centers differ: ${JSON.stringify(mobileInput)}`,
   );
   for (const edge of ["left", "right", "top", "bottom"]) {
@@ -1174,9 +1322,9 @@ try {
     const item = mobileInput[name];
     assert.ok(
       item.left >= mobileInput.controlsRect.left &&
-      item.right <= mobileInput.controlsRect.right &&
-      item.top >= mobileInput.controlsRect.top &&
-      item.bottom <= mobileInput.controlsRect.bottom,
+        item.right <= mobileInput.controlsRect.right &&
+        item.top >= mobileInput.controlsRect.top &&
+        item.bottom <= mobileInput.controlsRect.bottom,
       `mobile ${name} is outside controls: ${JSON.stringify(mobileInput)}`,
     );
   }
@@ -1214,12 +1362,15 @@ try {
     returnByValue: true,
   });
   if (clientErrorResponse.exceptionDetails) {
-    throw new Error(clientErrorResponse.exceptionDetails.exception?.description || "client error path evaluation failed");
+    throw new Error(
+      clientErrorResponse.exceptionDetails.exception?.description ||
+        "client error path evaluation failed",
+    );
   }
   if (clientErrorResponse.result.value !== true) {
     throw new Error("client error path evaluation did not return true");
   }
-  const exceptions = pageCdp.events.filter(event => event.method === "Runtime.exceptionThrown");
+  const exceptions = pageCdp.events.filter((event) => event.method === "Runtime.exceptionThrown");
   assert.deepEqual(exceptions, [], JSON.stringify(exceptions));
   console.log(JSON.stringify({ ...value, longTitleLayout, gpuDevice: gpuDeviceText, mobileInput }));
 } finally {

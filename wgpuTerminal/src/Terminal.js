@@ -53,7 +53,8 @@ function createEmitter() {
 
 export class Terminal {
   constructor(options = {}) {
-    if (!options || typeof options !== "object") throw new TypeError("terminal options must be an object");
+    if (!options || typeof options !== "object")
+      throw new TypeError("terminal options must be an object");
     this.options = {
       wasmUrl: options.wasmUrl || "/terminal.wasm",
       wasmFontUrls: options.wasmFontUrls,
@@ -62,7 +63,9 @@ export class Terminal {
       powerPreference: normalizePowerPreference(options.powerPreference),
       font: normalizeFont(options.font),
       theme: options.theme || DEFAULT_THEME,
-      grainStrength: Number.isFinite(Number(options.grainStrength)) ? Number(options.grainStrength) : 4,
+      grainStrength: Number.isFinite(Number(options.grainStrength))
+        ? Number(options.grainStrength)
+        : 4,
       glyphCacheMaxBytes: normalizeByteLimit(
         options.glyphCacheMaxBytes,
         ABSOLUTE_GLYPH_CACHE_MAX_BYTES,
@@ -132,34 +135,74 @@ export class Terminal {
     this._errorEmitter = createEmitter();
   }
 
-  get element() { return this._view?.viewport; }
-  get screenElement() { return this._view?.screen; }
-  get textarea() { return this._view?.input; }
-  get core() { return this._core; }
-  get coreCount() { return this._cores.size; }
-  get cols() { return this._state.cols; }
-  get rows() { return this._state.rows; }
-  get selectionMode() { return this._selectionMode; }
-  get softModifiers() { return this._softModifiers; }
-  get isComposing() {
-    return Boolean(this._inputController?.isComposing || this._inputController?.isSendingComposition);
+  get element() {
+    return this._view?.viewport;
   }
-  get inputTrace() { return this._inputController?.trace || ""; }
+  get screenElement() {
+    return this._view?.screen;
+  }
+  get textarea() {
+    return this._view?.input;
+  }
+  get core() {
+    return this._core;
+  }
+  get coreCount() {
+    return this._cores.size;
+  }
+  get cols() {
+    return this._state.cols;
+  }
+  get rows() {
+    return this._state.rows;
+  }
+  get selectionMode() {
+    return this._selectionMode;
+  }
+  get softModifiers() {
+    return this._softModifiers;
+  }
+  get isComposing() {
+    return Boolean(
+      this._inputController?.isComposing || this._inputController?.isSendingComposition,
+    );
+  }
+  get inputTrace() {
+    return this._inputController?.trace || "";
+  }
   get state() {
     const snapshot = this._renderer?.initialized ? this._renderer.stats : {};
     Object.assign(snapshot, this._core?.state || {}, this._state);
     return snapshot;
   }
 
-  onData(listener) { return this._dataEmitter.event(listener); }
-  onResize(listener) { return this._resizeEmitter.event(listener); }
-  onSelectionModeChange(listener) { return this._selectionModeEmitter.event(listener); }
-  onSoftModifiersChange(listener) { return this._softModifiersEmitter.event(listener); }
-  onTitleChange(listener) { return this._titleEmitter.event(listener); }
-  onBell(listener) { return this._bellEmitter.event(listener); }
-  onNotification(listener) { return this._notificationEmitter.event(listener); }
-  onLinkActivate(listener) { return this._linkEmitter.event(listener); }
-  onError(listener) { return this._errorEmitter.event(listener); }
+  onData(listener) {
+    return this._dataEmitter.event(listener);
+  }
+  onResize(listener) {
+    return this._resizeEmitter.event(listener);
+  }
+  onSelectionModeChange(listener) {
+    return this._selectionModeEmitter.event(listener);
+  }
+  onSoftModifiersChange(listener) {
+    return this._softModifiersEmitter.event(listener);
+  }
+  onTitleChange(listener) {
+    return this._titleEmitter.event(listener);
+  }
+  onBell(listener) {
+    return this._bellEmitter.event(listener);
+  }
+  onNotification(listener) {
+    return this._notificationEmitter.event(listener);
+  }
+  onLinkActivate(listener) {
+    return this._linkEmitter.event(listener);
+  }
+  onError(listener) {
+    return this._errorEmitter.event(listener);
+  }
 
   loadAddon(addon) {
     if (!addon || typeof addon.activate !== "function" || typeof addon.dispose !== "function") {
@@ -198,7 +241,8 @@ export class Terminal {
   }
 
   async _open(parent) {
-    if (!(parent instanceof HTMLElement)) throw new TypeError("terminal parent element is required");
+    if (!(parent instanceof HTMLElement))
+      throw new TypeError("terminal parent element is required");
     this._view = this.options.elements
       ? TerminalView.hydrate(this.options.elements)
       : TerminalView.create(parent);
@@ -216,14 +260,26 @@ export class Terminal {
       scrollbar: this._view.scrollbar,
       scrollbarThumb: this._view.scrollbarThumb,
       screen: this._view.screen,
-      isReady: () => Boolean(this._core && this._renderer && !this._renderer.error &&
-        this._renderer.available !== false && !this._recovering),
+      isReady: () =>
+        Boolean(
+          this._core &&
+          this._renderer &&
+          !this._renderer.error &&
+          this._renderer.available !== false &&
+          !this._recovering,
+        ),
       scrollBottom: () => this._core?.scrollBottom() === 1,
       scrollRow: (row) => this._core?.scrollRow(row) === 1,
       scrollDelta: (delta) => this._core?.scrollDelta(delta) === 1,
-      inputRows: (rows, context) => [null, "viewport", "mouse", "keys"][
-        this._core?.scrollInput(rows, modifierBits(context?.modifiers ?? {}), context?.x ?? 0, context?.y ?? 0)
-      ],
+      inputRows: (rows, context) =>
+        [null, "viewport", "mouse", "keys"][
+          this._core?.scrollInput(
+            rows,
+            modifierBits(context?.modifiers ?? {}),
+            context?.x ?? 0,
+            context?.y ?? 0,
+          )
+        ],
       getInputController: () => this._inputController,
       resizeTerminal: (layout, pixels) => this._configureMetrics(layout, pixels),
       onResize: ({ cols, rows }) => {
@@ -242,7 +298,8 @@ export class Terminal {
       ...initialLayout,
       generation: ++this._metricGeneration,
     });
-    this._renderer = await acquireRenderBackend(this,
+    this._renderer = await acquireRenderBackend(
+      this,
       this._view.screen,
       initialPixelViewport,
       this.options.renderer,
@@ -305,8 +362,10 @@ export class Terminal {
       coarsePointer: this._coarsePointer,
       getRenderer: () => this._renderer,
       getState: () => this._state,
-      getCellMetrics: () => ({ width: this._renderMetrics.cellWidth / this._renderMetrics.scaleX,
-        height: this._renderMetrics.cellHeight / this._renderMetrics.scaleY }),
+      getCellMetrics: () => ({
+        width: this._renderMetrics.cellWidth / this._renderMetrics.scaleX,
+        height: this._renderMetrics.cellHeight / this._renderMetrics.scaleY,
+      }),
       sendCommittedInput: (text) => this._sendCommittedInput(text),
       sendKey: (event, action) => this._sendKey(event, action),
       sendSoftKey: (code, key) => this.sendKey(code, key),
@@ -326,11 +385,17 @@ export class Terminal {
       surface: this._view.surface,
       screen: this._view.screen,
       getMetrics: () => this._renderMetrics,
-      mouse: (action, button, modifiers, x, y, pressed) => this._core?.mouse(
-        ["press", "release", "move"].indexOf(action),
-        { left: 1, right: 2, middle: 3, none: 255 }[button], modifierBits(modifiers), x, y, pressed ? 1 : 0) === 1,
-      selection: (action, x, y) => this._core?.selection(
-        ["start", "end", "extend", "cancel"].indexOf(action), x, y) === 1,
+      mouse: (action, button, modifiers, x, y, pressed) =>
+        this._core?.mouse(
+          ["press", "release", "move"].indexOf(action),
+          { left: 1, right: 2, middle: 3, none: 255 }[button],
+          modifierBits(modifiers),
+          x,
+          y,
+          pressed ? 1 : 0,
+        ) === 1,
+      selection: (action, x, y) =>
+        this._core?.selection(["start", "end", "extend", "cancel"].indexOf(action), x, y) === 1,
       hyperlinkAt: (x, y) => this._core?.hyperlinkAt(x, y),
       getSelectionMode: () => this._selectionMode,
       enterSelectionMode: (clientX, clientY, x, y) => {
@@ -369,7 +434,11 @@ export class Terminal {
 
   _registerTerminal(core, layout) {
     const visibleCells = layout.cols * layout.rows;
-    if (!Number.isSafeInteger(visibleCells) || visibleCells <= 0 || visibleCells > TERMINAL_CELL_PROTOCOL_LIMIT) {
+    if (
+      !Number.isSafeInteger(visibleCells) ||
+      visibleCells <= 0 ||
+      visibleCells > TERMINAL_CELL_PROTOCOL_LIMIT
+    ) {
       throw new RangeError("terminal viewport cell count is invalid");
     }
     const plan = this._presenter.registerTerminal(core, visibleCells, layout.cols);
@@ -379,7 +448,11 @@ export class Terminal {
   }
 
   _prepareTerminalFrame(core, visibleCells) {
-    if (!Number.isSafeInteger(visibleCells) || visibleCells <= 0 || visibleCells > TERMINAL_CELL_PROTOCOL_LIMIT) {
+    if (
+      !Number.isSafeInteger(visibleCells) ||
+      visibleCells <= 0 ||
+      visibleCells > TERMINAL_CELL_PROTOCOL_LIMIT
+    ) {
       throw new RangeError("terminal viewport cell count is invalid");
     }
     this._presenter.resizeTerminalPartition(core, visibleCells);
@@ -427,8 +500,13 @@ export class Terminal {
 
   _configureMetrics(layout, pixels) {
     const config = Object.freeze({ ...layout, generation: ++this._metricGeneration });
-    this._renderer.setPhysicalCellMetrics(config.cellWidth, config.cellHeight, config.fontSize,
-      config.cols, config.cols * config.rows);
+    this._renderer.setPhysicalCellMetrics(
+      config.cellWidth,
+      config.cellHeight,
+      config.fontSize,
+      config.cols,
+      config.cols * config.rows,
+    );
     this._renderer.resize(pixels.width, pixels.height);
     this._resizeActiveCore(config);
     this._renderMetrics = config;
@@ -445,8 +523,12 @@ export class Terminal {
     };
     backend.onFailure = suspend;
     backend.onContextLost = suspend;
-    backend.onDeviceLost = () => { if (suspend()) this._recoverBackend(backend); };
-    backend.onContextRestored = () => { if (suspend()) this._recoverBackend(backend); };
+    backend.onDeviceLost = () => {
+      if (suspend()) this._recoverBackend(backend);
+    };
+    backend.onContextRestored = () => {
+      if (suspend()) this._recoverBackend(backend);
+    };
   }
 
   _recoverBackend(previous) {
@@ -460,15 +542,29 @@ export class Terminal {
         if (!current()) return false;
         releaseRenderBackend(this, previous);
         const pixels = this._viewportController.latestPixelViewport;
-        backend = await acquireRenderBackend(this, this._view.screen, pixels,
-          this._activeTextRenderer, previous.stats.backend, this.options.glyphCacheMaxBytes,
-          this.options.powerPreference);
-        if (!current()) { releaseRenderBackend(this, backend); return false; }
+        backend = await acquireRenderBackend(
+          this,
+          this._view.screen,
+          pixels,
+          this._activeTextRenderer,
+          previous.stats.backend,
+          this.options.glyphCacheMaxBytes,
+          this.options.powerPreference,
+        );
+        if (!current()) {
+          releaseRenderBackend(this, backend);
+          return false;
+        }
         this._renderer = backend;
         this._bindBackendLifecycle(backend);
         this._presenter = new FramePresenter(this, backend);
         const metrics = this._renderMetrics;
-        backend.setPhysicalCellMetrics(metrics.cellWidth, metrics.cellHeight, metrics.fontSize, metrics.cols);
+        backend.setPhysicalCellMetrics(
+          metrics.cellWidth,
+          metrics.cellHeight,
+          metrics.fontSize,
+          metrics.cols,
+        );
         backend.setGrainStrength(this.options.grainStrength);
         let capacity = metrics.cols * metrics.rows;
         for (const core of this._cores) {
@@ -478,14 +574,18 @@ export class Terminal {
           capacity = Math.max(capacity, cells);
         }
         await backend.initialize(capacity);
-        if (!current()) { releaseRenderBackend(this, backend); return false; }
+        if (!current()) {
+          releaseRenderBackend(this, backend);
+          return false;
+        }
         this._installGlyphPartitions();
         this._reloadRendererFont();
         this._presenter.selectTerminal(this._core);
-        for (const core of this._cores) if (core.ready) {
-          core.setRenderMetrics(metrics);
-          core.invalidateFrame();
-        }
+        for (const core of this._cores)
+          if (core.ready) {
+            core.setRenderMetrics(metrics);
+            core.invalidateFrame();
+          }
         if (backend.error) throw new Error(backend.error);
         return true;
       } catch (error) {
@@ -493,13 +593,15 @@ export class Terminal {
           if (backend) releaseRenderBackend(this, backend);
           this._renderer.error = "renderer recovery failed";
           this._scheduler?.suspend();
-          this._errorEmitter.emit(new Error(`Renderer recovery failed: ${String(error?.message ?? error).slice(0, 256)}`));
+          this._errorEmitter.emit(
+            new Error(`Renderer recovery failed: ${String(error?.message ?? error).slice(0, 256)}`),
+          );
         }
         return false;
       }
     });
     this._recovering = task;
-    task.then(ok => {
+    task.then((ok) => {
       if (this._recovering !== task) return;
       this._recovering = null;
       if (ok && current()) {
@@ -511,8 +613,7 @@ export class Terminal {
           this._scheduler?.suspend();
           this._errorEmitter.emit(new Error(String(error?.message ?? error).slice(0, 256)));
         }
-      }
-      else if (current()) this._scheduler?.suspend();
+      } else if (current()) this._scheduler?.suspend();
     });
     return task;
   }
@@ -622,9 +723,8 @@ export class Terminal {
     const result = core.renderFrame();
     const elapsed = performance.now() - startedAt;
     if (Number.isFinite(elapsed)) {
-      core._state.wasmFrameMs = core._state.wasmFrameMs == null
-        ? elapsed
-        : core._state.wasmFrameMs * 0.8 + elapsed * 0.2;
+      core._state.wasmFrameMs =
+        core._state.wasmFrameMs == null ? elapsed : core._state.wasmFrameMs * 0.8 + elapsed * 0.2;
     }
     return result;
   }
@@ -686,7 +786,7 @@ export class Terminal {
       await Promise.all(loadTerminalFonts(font));
       await document.fonts.ready;
       if (generation !== this._fontChangeGeneration || !this._core?.ready) return;
-      if (this._recovering && !await this._recovering) {
+      if (this._recovering && !(await this._recovering)) {
         if (generation === this._fontChangeGeneration) {
           ++this._fontChangeGeneration;
           this._applyCssFont(previousFont);
@@ -732,16 +832,20 @@ export class Terminal {
     if (this._recovering || this._renderer.error) throw new Error("renderer unavailable");
     const recoveryGeneration = this._recoveryGeneration;
     const cores = [...this._cores];
-    await Promise.all(cores.map(core => core._prepareRenderer(normalized)));
+    await Promise.all(cores.map((core) => core._prepareRenderer(normalized)));
     this._assertMutable();
     if (this._disposed) throw new Error("terminal is disposed");
     if (generation !== this._rendererChangeGeneration) return this.options.renderer;
-    if (this._recovering || this._renderer.error || recoveryGeneration !== this._recoveryGeneration) {
+    if (
+      this._recovering ||
+      this._renderer.error ||
+      recoveryGeneration !== this._recoveryGeneration
+    ) {
       throw new Error("renderer changed during text renderer preparation");
     }
     validateRendererFont(normalized, this.options.font);
     if (this._pendingFont) validateRendererFont(normalized, this._pendingFont);
-    if ([...this._cores].some(core => !cores.includes(core))) {
+    if ([...this._cores].some((core) => !cores.includes(core))) {
       throw new Error("terminal cores changed during text renderer preparation");
     }
     for (const core of this._cores) validateRendererFont(normalized, core.options.font);
@@ -844,7 +948,7 @@ export class Terminal {
     const code = eventCode(event);
     let key = event.key || "";
     const mods = modifierBits(event) | this._softModifiers;
-    if ((this._softModifiers & 1) && /^[a-z]$/.test(key)) key = key.toUpperCase();
+    if (this._softModifiers & 1 && /^[a-z]$/.test(key)) key = key.toUpperCase();
     const codepoint = key.codePointAt(0);
     const printable = codepoint !== undefined && key.length === (codepoint > 0xffff ? 2 : 1);
     if (this._inputController?.diagnostics.enabled) {
@@ -857,7 +961,7 @@ export class Terminal {
         modifiers: mods,
       });
     }
-    const result = this._sendEncodedKey(code, key, action, mods, printable && (mods & 1));
+    const result = this._sendEncodedKey(code, key, action, mods, printable && mods & 1);
     if (action === 0 && !/^(Alt|Control|Meta|Shift)/.test(code)) this.clearSoftModifiers();
     return result;
   }
@@ -887,11 +991,12 @@ export class Terminal {
   sendKey(code, key, modifiers = this._softModifiers) {
     if (!this._core?.ready) return 0;
     let effectiveKey = key;
-    if ((modifiers & 1) && /^[a-z]$/.test(effectiveKey)) effectiveKey = effectiveKey.toUpperCase();
+    if (modifiers & 1 && /^[a-z]$/.test(effectiveKey)) effectiveKey = effectiveKey.toUpperCase();
     const codepoint = effectiveKey.codePointAt(0);
-    const printable = codepoint !== undefined && effectiveKey.length === (codepoint > 0xffff ? 2 : 1);
-    const down = this._sendEncodedKey(code, effectiveKey, 1, modifiers, printable && (modifiers & 1));
-    const up = this._sendEncodedKey(code, effectiveKey, 0, modifiers, printable && (modifiers & 1));
+    const printable =
+      codepoint !== undefined && effectiveKey.length === (codepoint > 0xffff ? 2 : 1);
+    const down = this._sendEncodedKey(code, effectiveKey, 1, modifiers, printable && modifiers & 1);
+    const up = this._sendEncodedKey(code, effectiveKey, 0, modifiers, printable && modifiers & 1);
     this.clearSoftModifiers();
     return down && up;
   }
@@ -913,10 +1018,10 @@ export class Terminal {
     const firstLength = codepoint > 0xffff ? 2 : 1;
     let first = text.slice(0, firstLength);
     const mods = this._softModifiers;
-    if ((mods & 1) && /^[a-z]$/.test(first)) first = first.toUpperCase();
+    if (mods & 1 && /^[a-z]$/.test(first)) first = first.toUpperCase();
     const printable = first.length === (first.codePointAt(0) > 0xffff ? 2 : 1);
-    this._sendEncodedKey(characterCode(first), first, 1, mods, printable && (mods & 1));
-    this._sendEncodedKey(characterCode(first), first, 0, mods, printable && (mods & 1));
+    this._sendEncodedKey(characterCode(first), first, 1, mods, printable && mods & 1);
+    this._sendEncodedKey(characterCode(first), first, 0, mods, printable && mods & 1);
     this.clearSoftModifiers();
     if (text.length > firstLength) this.input(text.slice(firstLength));
   }
@@ -983,17 +1088,22 @@ export class Terminal {
     return true;
   }
 
-  focus() { this._focusController?.focus(); }
+  focus() {
+    this._focusController?.focus();
+  }
   blur() {
     this._view?.input?.blur();
     if (this._core?.ready) this._core.focus(false);
   }
   commitComposition() {
-    if (!this._inputController?.isComposing && !this._inputController?.isSendingComposition) return false;
+    if (!this._inputController?.isComposing && !this._inputController?.isSendingComposition)
+      return false;
     this._inputController.commit(true);
     return true;
   }
-  suspendFocus() { this._focusController?.suspend(); }
+  suspendFocus() {
+    this._focusController?.suspend();
+  }
   resumeFocus({ focus = false } = {}) {
     this._focusController?.resume();
     if (focus) this._focusController?.focus();
@@ -1030,7 +1140,13 @@ export class Terminal {
   async readGlyphAtlas() {
     this._assertMutable();
     const renderer = this._renderer;
-    if (this._disposed || !renderer?.atlas?.texture || renderer.error || renderer.available === false || this._recovering) {
+    if (
+      this._disposed ||
+      !renderer?.atlas?.texture ||
+      renderer.error ||
+      renderer.available === false ||
+      this._recovering
+    ) {
       throw new Error("Glyph texture is unavailable");
     }
     if (this._glyphAtlasReadPending) throw new Error("Glyph texture readback is already pending");
@@ -1038,8 +1154,14 @@ export class Terminal {
     this._glyphAtlasReadPending = true;
     try {
       const snapshot = await renderer.readGlyphAtlas();
-      if (this._disposed || this._renderer !== renderer || this._recovering || renderer.error ||
-          renderer.available === false || renderer.atlas.texture !== texture) {
+      if (
+        this._disposed ||
+        this._renderer !== renderer ||
+        this._recovering ||
+        renderer.error ||
+        renderer.available === false ||
+        renderer.atlas.texture !== texture
+      ) {
         throw new Error("Glyph texture changed during readback; refresh to retry");
       }
       return snapshot;
@@ -1053,16 +1175,27 @@ export class Terminal {
     if (this._disposed) return;
     this._disposed = true;
     for (const addon of [...this._addons].reverse()) {
-      try { addon.dispose(); } catch (error) { console.error("terminal addon disposal failed", error); }
+      try {
+        addon.dispose();
+      } catch (error) {
+        console.error("terminal addon disposal failed", error);
+      }
     }
     this._addons.clear();
     this._activeAddons.clear();
     this._disposeRuntime();
     for (const emitter of [
-      this._dataEmitter, this._resizeEmitter, this._selectionModeEmitter, this._softModifiersEmitter,
-      this._titleEmitter, this._bellEmitter, this._notificationEmitter, this._linkEmitter,
+      this._dataEmitter,
+      this._resizeEmitter,
+      this._selectionModeEmitter,
+      this._softModifiersEmitter,
+      this._titleEmitter,
+      this._bellEmitter,
+      this._notificationEmitter,
+      this._linkEmitter,
       this._errorEmitter,
-    ]) emitter.dispose();
+    ])
+      emitter.dispose();
   }
 
   _disposeRuntime() {

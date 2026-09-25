@@ -6,7 +6,8 @@ import { GlyphAtlas } from "/wgpuTerminal/src/browser/render/webgpu/GlyphAtlas.j
 import { WebGlGlyphAtlas } from "/wgpuTerminal/src/browser/render/webgl/WebGlGlyphAtlas.js";
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-const nextFrame = () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+const nextFrame = () =>
+  new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
 
 async function pixels(terminal) {
   await nextFrame();
@@ -30,13 +31,14 @@ function averageCell(image, terminal, x, y) {
   let g = 0;
   let b = 0;
   let count = 0;
-  for (let py = y0; py < y1; py += 1) for (let px = x0; px < x1; px += 1) {
-    const offset = (py * image.width + px) * 4;
-    r += image.data[offset + red];
-    g += image.data[offset + 1];
-    b += image.data[offset + blue];
-    count += 1;
-  }
+  for (let py = y0; py < y1; py += 1)
+    for (let px = x0; px < x1; px += 1) {
+      const offset = (py * image.width + px) * 4;
+      r += image.data[offset + red];
+      g += image.data[offset + 1];
+      b += image.data[offset + blue];
+      count += 1;
+    }
   return [r / count, g / count, b / count];
 }
 
@@ -53,18 +55,20 @@ function redGlyphPixels(image, terminal, row, columns) {
   const red = bgra ? 2 : 0;
   const blue = bgra ? 0 : 2;
   let count = 0;
-  for (let y = y0; y < y1; y += 1) for (let x = 0; x < x1; x += 1) {
-    const offset = (y * image.width + x) * 4;
-    const r = image.data[offset + red];
-    const g = image.data[offset + 1];
-    const b = image.data[offset + blue];
-    if (r > 100 && r > g * 1.35 && r > b * 1.35) count += 1;
-  }
+  for (let y = y0; y < y1; y += 1)
+    for (let x = 0; x < x1; x += 1) {
+      const offset = (y * image.width + x) * 4;
+      const r = image.data[offset + red];
+      const g = image.data[offset + 1];
+      const b = image.data[offset + blue];
+      if (r > 100 && r > g * 1.35 && r > b * 1.35) count += 1;
+    }
   return count;
 }
 
 function selectedText(core) {
-  if (!core.setSelectionRange({ row: 0, col: 0 }, { row: core.rows - 1, col: core.cols })) return "";
+  if (!core.setSelectionRange({ row: 0, col: 0 }, { row: core.rows - 1, col: core.cols }))
+    return "";
   const text = core.getSelection() || "";
   core.clearSelection();
   return text;
@@ -86,7 +90,9 @@ async function run() {
   if (new URLSearchParams(location.search).get("recovery") === "1") {
     const previous = terminal._renderer;
     let recoveryError;
-    const listener = terminal.onError(error => { recoveryError = error.message; });
+    const listener = terminal.onError((error) => {
+      recoveryError = error.message;
+    });
     if (requestedBackend === "webgl2") {
       const loss = previous.gl.getExtension("WEBGL_lose_context");
       if (!loss) throw new Error("context loss extension unavailable");
@@ -94,12 +100,21 @@ async function run() {
       await sleep(100);
       loss.restoreContext();
     } else previous.device.destroy();
-    for (let attempt = 0; attempt < 200 &&
-      (terminal._renderer === previous || terminal._recovering || !terminal._presenter.valid); attempt++) {
+    for (
+      let attempt = 0;
+      attempt < 200 &&
+      (terminal._renderer === previous || terminal._recovering || !terminal._presenter.valid);
+      attempt++
+    ) {
       await sleep(25);
     }
     listener.dispose();
-    if (terminal._renderer === previous || terminal._recovering || !terminal._presenter.valid || terminal.core !== coreA) {
+    if (
+      terminal._renderer === previous ||
+      terminal._recovering ||
+      !terminal._presenter.valid ||
+      terminal.core !== coreA
+    ) {
       throw new Error(`backend recovery failed: ${recoveryError ?? terminal._renderer.error}`);
     }
   }
@@ -121,7 +136,8 @@ async function run() {
   } catch (error) {
     budgetError = error;
   }
-  const budgetRollback = budgetError?.code === "ERR_GLYPH_ATLAS_CAPACITY" &&
+  const budgetRollback =
+    budgetError?.code === "ERR_GLYPH_ATLAS_CAPACITY" &&
     renderer.atlas.texture === atlasTextureBeforeBudgetFailure &&
     terminal.options.glyphCacheMaxBytes === glyphCacheMaxBytesBefore;
   if (!budgetRollback) throw new Error("glyph cache budget failure was not transactional");
@@ -130,7 +146,10 @@ async function run() {
   if (!surface || !scrollbar) throw new Error("semantic viewport elements were not found");
   const assertActive = (label) => {
     const state = terminal.state;
-    if (state.viewportMode !== "active" || state.scrollOffset + state.scrollLength !== state.scrollTotal) {
+    if (
+      state.viewportMode !== "active" ||
+      state.scrollOffset + state.scrollLength !== state.scrollTotal
+    ) {
       throw new Error(`${label}: active viewport was not at semantic bottom`);
     }
   };
@@ -139,10 +158,14 @@ async function run() {
     await nextFrame();
     await nextFrame();
   };
-  if (getComputedStyle(surface).overflowY !== "hidden" || surface.scrollHeight !== surface.clientHeight) {
+  if (
+    getComputedStyle(surface).overflowY !== "hidden" ||
+    surface.scrollHeight !== surface.clientHeight
+  ) {
     throw new Error("terminal surface is a DOM scroll container");
   }
-  if (terminal.state.scrollTotal <= terminal.state.scrollLength) throw new Error("core A did not create scrollback");
+  if (terminal.state.scrollTotal <= terminal.state.scrollLength)
+    throw new Error("core A did not create scrollback");
   if (scrollbar.hidden) throw new Error("semantic scrollbar is hidden with scrollback");
   assertActive("initial frame");
   const initialRows = coreA.rows;
@@ -170,22 +193,28 @@ async function run() {
   coreA.write("\r\nA-WROTE-IN-MIDDLE");
   await nextFrame();
   await nextFrame();
-  if (terminal.state.viewportMode !== "pinned") throw new Error("writing in the middle changed viewport mode");
-  if (terminal.state.scrollOffset !== pinnedOffset) throw new Error("writing in the middle changed scroll offset");
+  if (terminal.state.viewportMode !== "pinned")
+    throw new Error("writing in the middle changed viewport mode");
+  if (terminal.state.scrollOffset !== pinnedOffset)
+    throw new Error("writing in the middle changed scroll offset");
   for (let batch = 0; batch < 12; batch += 1) {
     let output = "";
     for (let row = 0; row < 8; row += 1) output += `A-SUSTAINED-${batch}-${row}\r\n`;
     coreA.write(output);
     await nextFrame();
-    if (terminal.state.viewportMode !== "pinned") throw new Error("sustained output changed viewport mode");
-    if (terminal.state.scrollOffset !== pinnedOffset) throw new Error("sustained output moved the pinned viewport");
+    if (terminal.state.viewportMode !== "pinned")
+      throw new Error("sustained output changed viewport mode");
+    if (terminal.state.scrollOffset !== pinnedOffset)
+      throw new Error("sustained output moved the pinned viewport");
   }
   pinnedOffset = terminal.state.scrollOffset;
   root.style.height = "60%";
   await nextFrame();
   await nextFrame();
-  if (terminal.state.viewportMode !== "pinned") throw new Error("pinned middle viewport mode changed during resize");
-  if (terminal.state.scrollOffset !== pinnedOffset) throw new Error("pinned middle viewport offset changed during resize");
+  if (terminal.state.viewportMode !== "pinned")
+    throw new Error("pinned middle viewport mode changed during resize");
+  if (terminal.state.scrollOffset !== pinnedOffset)
+    throw new Error("pinned middle viewport offset changed during resize");
   await scrollKey("End");
   assertActive("End");
   root.style.height = "100%";
@@ -200,11 +229,17 @@ async function run() {
   terminal.attachCore(coreB);
   const imageB = await pixels(terminal);
   const partitionB = renderer.glyphPartitions.get(coreB);
-  if (!partitionB || partitionA.baseSlot + partitionA.slotCapacity > partitionB.baseSlot &&
-      partitionB.baseSlot + partitionB.slotCapacity > partitionA.baseSlot) {
+  if (
+    !partitionB ||
+    (partitionA.baseSlot + partitionA.slotCapacity > partitionB.baseSlot &&
+      partitionB.baseSlot + partitionB.slotCapacity > partitionA.baseSlot)
+  ) {
     throw new Error("core glyph partitions overlap");
   }
-  if (renderer.glyphPartitions.reservedSlots !== partitionA.slotCapacity + partitionB.slotCapacity) {
+  if (
+    renderer.glyphPartitions.reservedSlots !==
+    partitionA.slotCapacity + partitionB.slotCapacity
+  ) {
     throw new Error("shared atlas required slot count mismatch");
   }
   const coreBMemoryAfterRender = coreB.memoryBytes;
@@ -236,9 +271,11 @@ async function run() {
   }
   terminal.attachCore(coreA);
   await nextFrame();
-  if (renderer.atlas.texture !== atlasTextureBeforeSwitches) throw new Error("core switches replaced the atlas texture");
+  if (renderer.atlas.texture !== atlasTextureBeforeSwitches)
+    throw new Error("core switches replaced the atlas texture");
   if (terminal.state.cacheHits <= 0) throw new Error("core switches did not hit the shared cache");
-  if (terminal.state.fontReloads !== fontReloads) throw new Error("core switches reloaded the font");
+  if (terminal.state.fontReloads !== fontReloads)
+    throw new Error("core switches reloaded the font");
   const textA = selectedText(coreA);
   if (!textA.includes("A-SUSTAINED-11-7") || textA.includes("CORE-B-ACTIVE")) {
     throw new Error(`core A state leaked: ${JSON.stringify(textA)}`);
@@ -248,18 +285,28 @@ async function run() {
   let replies = "";
   let userData = "";
   let hostData = "";
-  const hostDataListener = terminal.onData((view) => { hostData += new TextDecoder().decode(view); });
-  const replyListener = coreB.onReply((view) => { replies += new TextDecoder().decode(view); });
-  const dataListener = coreB.onData((view) => { userData += new TextDecoder().decode(view); });
+  const hostDataListener = terminal.onData((view) => {
+    hostData += new TextDecoder().decode(view);
+  });
+  const replyListener = coreB.onReply((view) => {
+    replies += new TextDecoder().decode(view);
+  });
+  const dataListener = coreB.onData((view) => {
+    userData += new TextDecoder().decode(view);
+  });
   coreB.setReplayMode(true);
   coreB.write("\x1b[5n");
-  if (replies !== "") throw new Error(`replay reply was not suppressed: ${JSON.stringify(replies)}`);
+  if (replies !== "")
+    throw new Error(`replay reply was not suppressed: ${JSON.stringify(replies)}`);
   coreB.setReplayMode(false);
   coreB.write("\x1b[5n");
   coreB.input("u");
-  if (replies !== "\x1b[0n") throw new Error(`parser reply separation failed: ${JSON.stringify(replies)}`);
-  if (userData !== "u") throw new Error(`user input separation failed: ${JSON.stringify(userData)}`);
-  if (hostData !== "u") throw new Error(`host input separation failed: ${JSON.stringify(hostData)}`);
+  if (replies !== "\x1b[0n")
+    throw new Error(`parser reply separation failed: ${JSON.stringify(replies)}`);
+  if (userData !== "u")
+    throw new Error(`user input separation failed: ${JSON.stringify(userData)}`);
+  if (hostData !== "u")
+    throw new Error(`host input separation failed: ${JSON.stringify(hostData)}`);
   hostDataListener.dispose();
   replyListener.dispose();
   dataListener.dispose();
@@ -276,10 +323,14 @@ async function run() {
   temporary.write("\x1b[5n");
   if (disposeReplies !== 1) throw new Error(`temporary reply count mismatch: ${disposeReplies}`);
   if (!temporary.disposed) throw new Error("temporary core was not disposed");
-  if (terminal.coreCount !== 2) throw new Error(`temporary core count mismatch: ${terminal.coreCount}`);
-  if (renderer.glyphPartitions.size !== 2) throw new Error("temporary glyph partition was not released");
-  if (renderer.atlas.texture !== temporaryAtlasTexture ||
-      renderer.atlas.capacity !== temporaryAtlasCapacity) {
+  if (terminal.coreCount !== 2)
+    throw new Error(`temporary core count mismatch: ${terminal.coreCount}`);
+  if (renderer.glyphPartitions.size !== 2)
+    throw new Error("temporary glyph partition was not released");
+  if (
+    renderer.atlas.texture !== temporaryAtlasTexture ||
+    renderer.atlas.capacity !== temporaryAtlasCapacity
+  ) {
     throw new Error("temporary core disposal shrank or replaced the shared atlas");
   }
   const replacement = await terminal.createCore();
@@ -299,11 +350,15 @@ async function run() {
   terminal.attachCore(coreB);
   const snapshotImage = await pixels(terminal);
   const snapshotText = selectedText(coreB);
-  if (!snapshotText.includes("ALTERNATE SNAPSHOT READY") || !snapshotText.includes("SNAPSHOT-CONTINUATION")) {
+  if (
+    !snapshotText.includes("ALTERNATE SNAPSHOT READY") ||
+    !snapshotText.includes("SNAPSHOT-CONTINUATION")
+  ) {
     throw new Error(`snapshot state missing: ${JSON.stringify(snapshotText)}`);
   }
   const redPixels = redGlyphPixels(snapshotImage, terminal, 2, 24);
-  if (redPixels < 4) throw new Error(`snapshot parser continuation did not preserve red SGR: ${redPixels}`);
+  if (redPixels < 4)
+    throw new Error(`snapshot parser continuation did not preserve red SGR: ${redPixels}`);
   coreB.write("\x1b[?1049l");
   await nextFrame();
   const primaryText = selectedText(coreB);
@@ -312,7 +367,8 @@ async function run() {
   }
 
   const utf8Response = await fetch("/terminal-core/fixtures/terminal-core-utf8.snapshot");
-  if (!utf8Response.ok) throw new Error(`UTF-8 snapshot fixture fetch failed: ${utf8Response.status}`);
+  if (!utf8Response.ok)
+    throw new Error(`UTF-8 snapshot fixture fetch failed: ${utf8Response.status}`);
   terminal.restoreSnapshot(await utf8Response.arrayBuffer(), coreA);
   coreA.write(new Uint8Array([0x98, 0x84]));
   coreA.write(" UTF8-CONTINUATION");
@@ -323,7 +379,8 @@ async function run() {
     throw new Error(`UTF-8 snapshot state missing: ${JSON.stringify(utf8Text)}`);
   }
 
-  if (document.querySelectorAll("canvas").length !== 1) throw new Error("multiple canvases were created");
+  if (document.querySelectorAll("canvas").length !== 1)
+    throw new Error("multiple canvases were created");
   if (terminal.coreCount !== 2) throw new Error(`unexpected core count: ${terminal.coreCount}`);
   if (terminal.state.gpuError !== null) throw new Error(`GPU error: ${terminal.state.gpuError}`);
 
@@ -343,7 +400,10 @@ async function run() {
       coreA: { base: partitionA.baseSlot, capacity: partitionA.slotCapacity },
       coreB: { base: partitionB.baseSlot, capacity: partitionB.slotCapacity },
       temporary: { base: temporaryPartition.baseSlot, capacity: temporaryPartition.slotCapacity },
-      replacement: { base: replacementPartition.baseSlot, capacity: replacementPartition.slotCapacity },
+      replacement: {
+        base: replacementPartition.baseSlot,
+        capacity: replacementPartition.slotCapacity,
+      },
     },
     atlas: {
       requiredSlots: renderer.glyphPartitions.reservedSlots,
@@ -371,24 +431,40 @@ async function run() {
   };
   await terminal.setRenderer("canvas");
   const originalFont = terminal.options.font;
-  await terminal.setFont({ cssFamily: "Canvas Late Font Test", canvasOnly: true, fallbacks: ["monospace"] });
+  await terminal.setFont({
+    cssFamily: "Canvas Late Font Test",
+    canvasOnly: true,
+    fallbacks: ["monospace"],
+  });
   terminal.write("\x1b[2J\x1b[H\x1b[?25l\x1b[31mCanvas late font\x1b[0m");
   const beforeFont = await pixels(terminal);
   let refusedStb = false;
-  try { await terminal.setRenderer("kb-stb"); } catch { refusedStb = true; }
-  if (!refusedStb || terminal.options.renderer !== "canvas") throw new Error("Canvas-only font switched to STB");
-  const lateFont = new FontFace("Canvas Late Font Test", "url(/fonts/JetBrainsMonoNerdFontMono-BoldItalic.ttf)");
+  try {
+    await terminal.setRenderer("kb-stb");
+  } catch {
+    refusedStb = true;
+  }
+  if (!refusedStb || terminal.options.renderer !== "canvas")
+    throw new Error("Canvas-only font switched to STB");
+  const lateFont = new FontFace(
+    "Canvas Late Font Test",
+    "url(/fonts/JetBrainsMonoNerdFontMono-BoldItalic.ttf)",
+  );
   document.fonts.add(lateFont);
   await document.fonts.load(`${originalFont.size}px "Canvas Late Font Test"`);
   await document.fonts.ready;
   const afterFont = await pixels(terminal);
-  if (beforeFont.width === afterFont.width && beforeFont.height === afterFont.height &&
-      beforeFont.data.every((value, i) => value === afterFont.data[i])) {
+  if (
+    beforeFont.width === afterFont.width &&
+    beforeFont.height === afterFont.height &&
+    beforeFont.data.every((value, i) => value === afterFont.data[i])
+  ) {
     throw new Error("late web font left cached fallback masks unchanged");
   }
   terminal.attachCore(coreB);
   await pixels(terminal);
-  if (coreB.options.renderer !== "canvas" || terminal.state.gpuError) throw new Error("inactive core did not adopt Canvas fonts");
+  if (coreB.options.renderer !== "canvas" || terminal.state.gpuError)
+    throw new Error("inactive core did not adopt Canvas fonts");
   await terminal.setFont({ ...originalFont, canvasOnly: false });
   await terminal.setRenderer("kb-stb");
   await pixels(terminal);
@@ -397,14 +473,22 @@ async function run() {
   await pixels(terminal);
   result.canvasFontLifecycle = true;
   const debugBackend = terminal._renderer;
-  const atlasPixels = debugBackend.atlas.capacity * debugBackend.atlas.tileWidth * debugBackend.atlas.tileHeight;
+  const atlasPixels =
+    debugBackend.atlas.capacity * debugBackend.atlas.tileWidth * debugBackend.atlas.tileHeight;
   if (atlasPixels <= 16 * 1024 * 1024) {
     const atlasSnapshot = await terminal.readGlyphAtlas();
-    if (atlasSnapshot.data.length !== atlasSnapshot.width * atlasSnapshot.height ||
-        !atlasSnapshot.data.some(value => value > 0)) throw new Error("glyph atlas snapshot is empty");
+    if (
+      atlasSnapshot.data.length !== atlasSnapshot.width * atlasSnapshot.height ||
+      !atlasSnapshot.data.some((value) => value > 0)
+    )
+      throw new Error("glyph atlas snapshot is empty");
   } else {
     let bounded = false;
-    try { await terminal.readGlyphAtlas(); } catch (error) { bounded = error.message.includes("debug limit"); }
+    try {
+      await terminal.readGlyphAtlas();
+    } catch (error) {
+      bounded = error.message.includes("debug limit");
+    }
     if (!bounded) throw new Error("oversized glyph atlas readback was not bounded");
   }
   const debugAtlas = debugBackend.gl
@@ -413,11 +497,20 @@ async function run() {
   const pattern = new Uint8Array([0, 17, 255, 240, 50, 1]);
   try {
     if (debugBackend.gl) debugAtlas.uploadBitmap(0, 1, pattern, 0, 3);
-    else debugBackend.device.queue.writeTexture({ texture: debugAtlas.texture }, pattern,
-      { bytesPerRow: 3 }, [3, 2, 1]);
+    else
+      debugBackend.device.queue.writeTexture(
+        { texture: debugAtlas.texture },
+        pattern,
+        { bytesPerRow: 3 },
+        [3, 2, 1],
+      );
     const snapshot = await debugAtlas.readPixels();
-    if (snapshot.width !== 3 || snapshot.height !== 2 || snapshot.format !== "r8unorm" ||
-        snapshot.data.some((value, i) => value !== pattern[i])) {
+    if (
+      snapshot.width !== 3 ||
+      snapshot.height !== 2 ||
+      snapshot.format !== "r8unorm" ||
+      snapshot.data.some((value, i) => value !== pattern[i])
+    ) {
       throw new Error("glyph atlas readback changed orientation, channels or row padding");
     }
   } finally {

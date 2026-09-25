@@ -2,11 +2,7 @@
 // Copyright (c) 2026 Cheng Cao
 
 import { decompress } from "./fzstd.js";
-import {
-  COMPRESSED_FLAG,
-  readUint32LE,
-  readUint64LE,
-} from "./protocol.js";
+import { COMPRESSED_FLAG, readUint32LE, readUint64LE } from "./protocol.js";
 import { crc32c, equalBytes } from "./SessionWire.js";
 
 const MAX_CHECKPOINT_BYTES = 16 * 1024 * 1024;
@@ -15,8 +11,11 @@ const MAX_CHECKPOINT_BYTES = 16 * 1024 * 1024;
 // WebCrypto itself cannot be canceled, but its eventual result has no authority.
 function cancellable(start, signals, pool, discard = () => {}) {
   return new Promise((resolve, reject) => {
-    let canceled = false, running = false;
-    const cleanup = () => { for (const signal of signals) signal.removeEventListener("abort", abort); };
+    let canceled = false,
+      running = false;
+    const cleanup = () => {
+      for (const signal of signals) signal.removeEventListener("abort", abort);
+    };
     const abort = () => {
       canceled = true;
       cleanup();
@@ -38,18 +37,30 @@ function cancellable(start, signals, pool, discard = () => {}) {
       running = true;
       if (pool) pool.active++;
       let promise;
-      try { promise = Promise.resolve(start()); }
-      catch (error) { complete(); reject(error); return; }
-      promise.then(value => {
-        // Cancellation settles the JS waiter, not this actual-job slot.
-        try { if (canceled) discard(value); else resolve(value); }
-        finally { complete(); }
-      }, error => {
-        if (!canceled) reject(error);
+      try {
+        promise = Promise.resolve(start());
+      } catch (error) {
         complete();
-      });
+        reject(error);
+        return;
+      }
+      promise.then(
+        (value) => {
+          // Cancellation settles the JS waiter, not this actual-job slot.
+          try {
+            if (canceled) discard(value);
+            else resolve(value);
+          } finally {
+            complete();
+          }
+        },
+        (error) => {
+          if (!canceled) reject(error);
+          complete();
+        },
+      );
     };
-    if (signals.some(signal => signal.aborted)) return abort();
+    if (signals.some((signal) => signal.aborted)) return abort();
     for (const signal of signals) signal.addEventListener("abort", abort, { once: true });
     if (pool && pool.active >= 2) pool.waiters.push(run);
     else run();
@@ -67,11 +78,18 @@ export async function ensureShadow(terminal, records, record, onData) {
   const attempt = record.attempt;
   const transaction = record.transaction;
   const originalCore = record.core;
-  const shadow = await cancellable(() => terminal.createCore(), cancellationSignals(record), record.restoreJobs?.core, core => core.dispose());
+  const shadow = await cancellable(
+    () => terminal.createCore(),
+    cancellationSignals(record),
+    record.restoreJobs?.core,
+    (core) => core.dispose(),
+  );
   if (!shadow) return false;
   if (
     !record.active ||
-    attempt?.retired || record.attempt !== attempt || record.transaction !== transaction ||
+    attempt?.retired ||
+    record.attempt !== attempt ||
+    record.transaction !== transaction ||
     records.get(key) !== record ||
     record.attachmentId.toString() !== key ||
     record.epoch !== epoch ||
@@ -160,7 +178,11 @@ export function appendCheckpoint(record, frame) {
 }
 
 export async function finishCheckpoint(record, frame) {
-  if (!record.checkpoint || frame.payload.byteLength !== 32 || record.checkpointOffset !== record.checkpoint.byteLength) {
+  if (
+    !record.checkpoint ||
+    frame.payload.byteLength !== 32 ||
+    record.checkpointOffset !== record.checkpoint.byteLength
+  ) {
     throw new Error("incomplete checkpoint");
   }
   const epoch = record.epoch;
@@ -169,13 +191,26 @@ export async function finishCheckpoint(record, frame) {
   const checkpoint = record.checkpoint;
   let resultDigest;
   try {
-    resultDigest = await cancellable(() => crypto.subtle.digest("SHA-256", checkpoint), cancellationSignals(record), record.restoreJobs?.digest);
+    resultDigest = await cancellable(
+      () => crypto.subtle.digest("SHA-256", checkpoint),
+      cancellationSignals(record),
+      record.restoreJobs?.digest,
+    );
   } catch (cause) {
     const error = new Error("checkpoint digest operation failed", { cause });
     error.checkpointOperation = true;
     throw error;
   }
-  if (!resultDigest || !record.active || attempt?.retired || record.attempt !== attempt || record.transaction !== transaction || record.epoch !== epoch || record.checkpoint !== checkpoint) return null;
+  if (
+    !resultDigest ||
+    !record.active ||
+    attempt?.retired ||
+    record.attempt !== attempt ||
+    record.transaction !== transaction ||
+    record.epoch !== epoch ||
+    record.checkpoint !== checkpoint
+  )
+    return null;
   const digest = new Uint8Array(resultDigest);
   if (!equalBytes(digest, record.checkpointHash) || !equalBytes(digest, frame.payload)) {
     throw new Error("checkpoint hash mismatch");

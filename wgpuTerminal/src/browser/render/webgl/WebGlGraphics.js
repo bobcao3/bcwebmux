@@ -41,14 +41,23 @@ export function initWebGlGraphics(renderer) {
     gl.attachShader(program, vertex);
     gl.attachShader(program, fragment);
     gl.linkProgram(program);
-    if (!gl.getProgramParameter(program, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(program));
-  } catch (error) { gl.deleteProgram(program); throw error; }
-  finally { gl.deleteShader(vertex); gl.deleteShader(fragment); }
+    if (!gl.getProgramParameter(program, gl.LINK_STATUS))
+      throw new Error(gl.getProgramInfoLog(program));
+  } catch (error) {
+    gl.deleteProgram(program);
+    throw error;
+  } finally {
+    gl.deleteShader(vertex);
+    gl.deleteShader(fragment);
+  }
   renderer.graphicsProgram = program;
   renderer.graphicsVertexArray = gl.createVertexArray();
-  renderer.graphicsUniforms = Object.fromEntries(["rect", "source", "viewport", "image"].map(name => [
-    name, gl.getUniformLocation(program, `u_${name}`),
-  ]));
+  renderer.graphicsUniforms = Object.fromEntries(
+    ["rect", "source", "viewport", "image"].map((name) => [
+      name,
+      gl.getUniformLocation(program, `u_${name}`),
+    ]),
+  );
 }
 
 export function createWebGlGraphicsTexture(renderer, width, height, data) {
@@ -64,7 +73,10 @@ export function createWebGlGraphicsTexture(renderer, width, height, data) {
   gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
   gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
   gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, width, height, 0, gl.RGBA, gl.UNSIGNED_BYTE, data);
-  if (gl.getError() !== gl.NO_ERROR) { gl.deleteTexture(texture); throw new Error("graphics texture upload failed"); }
+  if (gl.getError() !== gl.NO_ERROR) {
+    gl.deleteTexture(texture);
+    throw new Error("graphics texture upload failed");
+  }
   return texture;
 }
 
@@ -80,14 +92,24 @@ export function drawWebGlGraphics(renderer, behindText) {
   gl.uniform2f(renderer.graphicsUniforms.viewport, renderer.canvas.width, renderer.canvas.height);
   let drawn = false;
   for (const draw of renderer.graphicsScene.draws) {
-    if ((draw.z < 0) !== behindText) continue;
+    if (draw.z < 0 !== behindText) continue;
     const resource = renderer.graphicsScene.sources.get(draw.key);
     if (!resource?.texture) continue;
     gl.bindTexture(gl.TEXTURE_2D, resource.texture);
-    gl.uniform4f(renderer.graphicsUniforms.rect, draw.x * renderer.physicalCellWidth + draw.offsetX,
-      draw.y * renderer.physicalCellHeight + draw.offsetY, draw.width, draw.height);
-    gl.uniform4f(renderer.graphicsUniforms.source, draw.sourceX / resource.width, draw.sourceY / resource.height,
-      draw.sourceWidth / resource.width, draw.sourceHeight / resource.height);
+    gl.uniform4f(
+      renderer.graphicsUniforms.rect,
+      draw.x * renderer.physicalCellWidth + draw.offsetX,
+      draw.y * renderer.physicalCellHeight + draw.offsetY,
+      draw.width,
+      draw.height,
+    );
+    gl.uniform4f(
+      renderer.graphicsUniforms.source,
+      draw.sourceX / resource.width,
+      draw.sourceY / resource.height,
+      draw.sourceWidth / resource.width,
+      draw.sourceHeight / resource.height,
+    );
     gl.drawArrays(gl.TRIANGLES, 0, 6);
     drawn = true;
   }

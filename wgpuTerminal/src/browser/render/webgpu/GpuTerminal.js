@@ -18,7 +18,6 @@ import {
   setTextRenderer as setTextRendererGlyphAtlas,
 } from "../GlyphAtlasRuntime.js";
 
-
 import { generateGrain, GRAIN_SIZE } from "../Grain.js";
 import { CELL_SIZE, STYLE_SIZE } from "../FrameSchema.js";
 
@@ -26,11 +25,20 @@ const UNIFORM_BUFFER_SIZE = 68;
 
 // JS drives WebGPU, but WASM owns the data-driven frame/cell/bitmap buffers shared across this boundary. CSS/DPR is converted once to integer raw-pixel font/cell metrics, which are then the single source of truth for both WASM rasterization and GPU uniforms.
 export class GpuTerminal {
-  static async create(canvas, pixelViewport, textRenderer, glyphCacheMaxBytes, powerPreference, isCurrent = () => true) {
-    if (!navigator.gpu) throw new Error("WebGPU is unavailable; use an HTTPS or loopback origin with WebGPU support");
-    const adapter = powerPreference === undefined
-      ? await navigator.gpu.requestAdapter()
-      : await navigator.gpu.requestAdapter({ powerPreference });
+  static async create(
+    canvas,
+    pixelViewport,
+    textRenderer,
+    glyphCacheMaxBytes,
+    powerPreference,
+    isCurrent = () => true,
+  ) {
+    if (!navigator.gpu)
+      throw new Error("WebGPU is unavailable; use an HTTPS or loopback origin with WebGPU support");
+    const adapter =
+      powerPreference === undefined
+        ? await navigator.gpu.requestAdapter()
+        : await navigator.gpu.requestAdapter({ powerPreference });
     if (!isCurrent()) throw new Error("render backend acquisition cancelled");
     if (!adapter) throw new Error("WebGPU adapter unavailable");
     const shaderF16 = adapter.features.has("shader-f16");
@@ -43,7 +51,14 @@ export class GpuTerminal {
     }
     let terminal = null;
     try {
-      terminal = new GpuTerminal(canvas, device, adapter, textRenderer, shaderF16, glyphCacheMaxBytes);
+      terminal = new GpuTerminal(
+        canvas,
+        device,
+        adapter,
+        textRenderer,
+        shaderF16,
+        glyphCacheMaxBytes,
+      );
       terminal.resize(pixelViewport.width, pixelViewport.height);
       return terminal;
     } catch (error) {
@@ -119,11 +134,17 @@ export class GpuTerminal {
     this.indirectData = new Uint32Array([6, 0, 0, 0]);
     this.error = null;
     this.initialized = false;
-    this.device.lost.then(info => {
-      if (!this.disposed) { this.error = `WebGPU device lost: ${info.message}`; this.onDeviceLost?.(this.error); }
+    this.device.lost.then((info) => {
+      if (!this.disposed) {
+        this.error = `WebGPU device lost: ${info.message}`;
+        this.onDeviceLost?.(this.error);
+      }
     });
-    this.onUncapturedError = event => {
-      if (!this.disposed && this.error === null) { this.error = event.error.message; this.onFailure?.(this.error); }
+    this.onUncapturedError = (event) => {
+      if (!this.disposed && this.error === null) {
+        this.error = event.error.message;
+        this.onFailure?.(this.error);
+      }
     };
     this.device.addEventListener("uncapturederror", this.onUncapturedError);
   }
@@ -139,8 +160,16 @@ export class GpuTerminal {
     if (!response.ok) throw new Error(`cell shader load failed: ${response.status}`);
     const cellSource = await response.text();
     if (this.disposed) throw new Error("WebGPU renderer disposed during initialization");
-    return initializeResources(this, cellSource, generateGrain(), GRAIN_SIZE,
-      maxCells, Math.min(65536, maxCells + 1), STYLE_SIZE, CELL_SIZE);
+    return initializeResources(
+      this,
+      cellSource,
+      generateGrain(),
+      GRAIN_SIZE,
+      maxCells,
+      Math.min(65536, maxCells + 1),
+      STYLE_SIZE,
+      CELL_SIZE,
+    );
   }
 
   createGlyphAtlas(geometry, metrics) {
@@ -160,20 +189,28 @@ export class GpuTerminal {
       this.rebuildCellBundle();
     } catch (error) {
       this.error = error.message;
-        this.onFailure?.(this.error);
+      this.onFailure?.(this.error);
       throw error;
     }
   }
 
+  ensureFrameCapacity(cellCapacity) {
+    return ensureFrameCapacityResources(this, cellCapacity);
+  }
 
-  ensureFrameCapacity(cellCapacity) { return ensureFrameCapacityResources(this, cellCapacity); }
+  reconfigureGlyphAtlas(metrics, textRenderer, fontFamily, activeVisibleSlots) {
+    return reconfigureGlyphAtlasGlyphAtlas(
+      this,
+      metrics,
+      textRenderer,
+      fontFamily,
+      activeVisibleSlots,
+    );
+  }
 
-
-
-
-  reconfigureGlyphAtlas(metrics, textRenderer, fontFamily, activeVisibleSlots) { return reconfigureGlyphAtlasGlyphAtlas(this, metrics, textRenderer, fontFamily, activeVisibleSlots); }
-
-  rebuildCellBundle() { return rebuildCellBundleResources(this); }
+  rebuildCellBundle() {
+    return rebuildCellBundleResources(this);
+  }
 
   ensureFrameUploadCapacity(size) {
     if (size <= this.frameUploadCapacity) return;
@@ -199,14 +236,17 @@ export class GpuTerminal {
   }
 
   setPhysicalCellMetrics(width, height, fontSize, columns, activeVisibleSlots) {
-    if (![width, height, fontSize, columns].every(value => Number.isInteger(value) && value > 0)) {
+    if (
+      ![width, height, fontSize, columns].every((value) => Number.isInteger(value) && value > 0)
+    ) {
       throw new Error("physical cell metrics and columns must be positive integers");
     }
     if (
-      this.physicalCellWidth === width
-      && this.physicalCellHeight === height
-      && this.physicalFontSize === fontSize
-    ) return null;
+      this.physicalCellWidth === width &&
+      this.physicalCellHeight === height &&
+      this.physicalFontSize === fontSize
+    )
+      return null;
     return reconfigureGlyphAtlasGlyphAtlas(
       this,
       { width, height, fontSize, columns },
@@ -216,9 +256,13 @@ export class GpuTerminal {
     );
   }
 
-  setGrainStrength(value) { return setGrainStrengthResources(this, value); }
+  setGrainStrength(value) {
+    return setGrainStrengthResources(this, value);
+  }
 
-  resize(widthValue, heightValue) { return resizeResources(this, widthValue, heightValue); }
+  resize(widthValue, heightValue) {
+    return resizeResources(this, widthValue, heightValue);
+  }
 
   flushAtlasGrowthCopies() {
     const copies = this.atlas.takePendingTextureCopies();
@@ -226,11 +270,11 @@ export class GpuTerminal {
     try {
       const encoder = this.device.createCommandEncoder();
       for (const copy of copies) {
-        encoder.copyTextureToTexture(
-          { texture: copy.source },
-          { texture: copy.destination },
-          [copy.width, copy.height, 1],
-        );
+        encoder.copyTextureToTexture({ texture: copy.source }, { texture: copy.destination }, [
+          copy.width,
+          copy.height,
+          1,
+        ]);
       }
       this.device.queue.submit([encoder.finish()]);
     } catch (error) {
@@ -257,8 +301,9 @@ export class GpuTerminal {
     return plan;
   }
 
-
-  setTextRenderer(textRenderer) { return setTextRendererGlyphAtlas(this, textRenderer); }
+  setTextRenderer(textRenderer) {
+    return setTextRendererGlyphAtlas(this, textRenderer);
+  }
 
   get atlasColumns() {
     if (!this.initialized) throw new Error("GPU terminal is not initialized");
@@ -267,23 +312,31 @@ export class GpuTerminal {
 
   uploadBitmap(firstSlot, slotCount, pixels, pixelOffset, bytesPerRow) {
     this.flushAtlasGrowthCopies();
-    this.device.queue.writeTexture({ texture: this.atlas.texture, origin: [
-      (firstSlot % this.atlas.columns) * this.atlas.tileWidth,
-      Math.floor(firstSlot / this.atlas.columns) * this.atlas.tileHeight, 0,
-    ] }, pixels, { offset: pixelOffset, bytesPerRow, rowsPerImage: this.atlas.tileHeight },
-    [slotCount * this.atlas.tileWidth, this.atlas.tileHeight, 1]);
+    this.device.queue.writeTexture(
+      {
+        texture: this.atlas.texture,
+        origin: [
+          (firstSlot % this.atlas.columns) * this.atlas.tileWidth,
+          Math.floor(firstSlot / this.atlas.columns) * this.atlas.tileHeight,
+          0,
+        ],
+      },
+      pixels,
+      { offset: pixelOffset, bytesPerRow, rowsPerImage: this.atlas.tileHeight },
+      [slotCount * this.atlas.tileWidth, this.atlas.tileHeight, 1],
+    );
     this.atlas.nextSlot = Math.max(this.atlas.nextSlot, firstSlot + slotCount);
   }
 
   uploadStyles(first, styles, bytes) {
-    if (bytes.byteLength) this.device.queue.writeBuffer(this.styleBuffer, first * this.styleSize, bytes);
+    if (bytes.byteLength)
+      this.device.queue.writeBuffer(this.styleBuffer, first * this.styleSize, bytes);
   }
 
   uploadCells(firstRow, rowCount, cells, selections) {
     this.device.queue.writeBuffer(this.cellBuffer, firstRow * this.cols * this.cellSize, cells);
     this.device.queue.writeBuffer(this.selectionBuffer, firstRow * 4, selections);
   }
-
 
   presentCurrentState(blinkOn = true) {
     if (this.disposed || !this.offscreen || !this.rows || this.error) return;
@@ -311,28 +364,48 @@ export class GpuTerminal {
     this.ensureFrameUploadCapacity(stagingSize);
     const staging = this.frameUploadBytes;
     staging.set(new Uint8Array(this.uniformData), 0);
-    if (indirectOffset !== null) staging.set(new Uint8Array(this.indirectData.buffer), indirectOffset);
+    if (indirectOffset !== null)
+      staging.set(new Uint8Array(this.indirectData.buffer), indirectOffset);
     const queue = this.device.queue;
     queue.writeBuffer(this.frameUploadBuffer, 0, this.frameUploadData, 0, stagingSize);
     const encoder = this.device.createCommandEncoder();
-    encoder.copyBufferToBuffer(this.frameUploadBuffer, 0, this.uniformBuffer, 0, UNIFORM_BUFFER_SIZE);
+    encoder.copyBufferToBuffer(
+      this.frameUploadBuffer,
+      0,
+      this.uniformBuffer,
+      0,
+      UNIFORM_BUFFER_SIZE,
+    );
     if (indirectOffset !== null) {
-      encoder.copyBufferToBuffer(this.frameUploadBuffer, indirectOffset, this.drawIndirectBuffer, 0, 16);
+      encoder.copyBufferToBuffer(
+        this.frameUploadBuffer,
+        indirectOffset,
+        this.drawIndirectBuffer,
+        0,
+        16,
+      );
       this.indirectDirty = false;
     }
     const textureCopies = this.atlas.takePendingTextureCopies();
     for (const copy of textureCopies) {
-      encoder.copyTextureToTexture(
-        { texture: copy.source },
-        { texture: copy.destination },
-        [copy.width, copy.height, 1],
-      );
+      encoder.copyTextureToTexture({ texture: copy.source }, { texture: copy.destination }, [
+        copy.width,
+        copy.height,
+        1,
+      ]);
     }
-    const r = (this.background >> 16 & 255) / 255;
-    const g = (this.background >> 8 & 255) / 255;
+    const r = ((this.background >> 16) & 255) / 255;
+    const g = ((this.background >> 8) & 255) / 255;
     const b = (this.background & 255) / 255;
     const offscreen = encoder.beginRenderPass({
-      colorAttachments: [{ view: this.offscreenView, clearValue: { r, g, b, a: 1 }, loadOp: "clear", storeOp: "store" }],
+      colorAttachments: [
+        {
+          view: this.offscreenView,
+          clearValue: { r, g, b, a: 1 },
+          loadOp: "clear",
+          storeOp: "store",
+        },
+      ],
     });
     offscreen.executeBundles([this.cellBundle]);
     if (drawGpuGraphics(this, offscreen, true)) {
@@ -356,35 +429,46 @@ export class GpuTerminal {
     if (!this.queueProbePending && now - this.lastQueueProbeAt >= 1000) {
       this.queueProbePending = true;
       this.lastQueueProbeAt = now;
-      queue.onSubmittedWorkDone().then(() => {
-        if (this.disposed) return;
-        this.queueProbePending = false;
-        const queueDrainMs = performance.now() - now;
-        this.gpuFrameMs = this.gpuFrameMs === null ? queueDrainMs : this.gpuFrameMs * 0.8 + queueDrainMs * 0.2;
-      }).catch(error => {
-        if (this.disposed) return;
-        this.queueProbePending = false;
-        this.error = error.message;
-        this.onFailure?.(this.error);
-      });
+      queue
+        .onSubmittedWorkDone()
+        .then(() => {
+          if (this.disposed) return;
+          this.queueProbePending = false;
+          const queueDrainMs = performance.now() - now;
+          this.gpuFrameMs =
+            this.gpuFrameMs === null ? queueDrainMs : this.gpuFrameMs * 0.8 + queueDrainMs * 0.2;
+        })
+        .catch((error) => {
+          if (this.disposed) return;
+          this.queueProbePending = false;
+          this.error = error.message;
+          this.onFailure?.(this.error);
+        });
     }
     this.frames += 1;
     this.bundleExecutions += 1;
     this.rasterPasses += 1;
   }
 
-  readGlyphAtlas() { return this.atlas.readPixels(); }
+  readGlyphAtlas() {
+    return this.atlas.readPixels();
+  }
 
   createGraphicsTexture(width, height, data) {
     return createGpuGraphicsTexture(this, width, height, data);
   }
 
-  destroyGraphicsTexture(texture) { texture.destroy(); }
+  destroyGraphicsTexture(texture) {
+    texture.destroy();
+  }
 
-  async readPixels() { return readPixelsResources(this); }
+  async readPixels() {
+    return readPixelsResources(this);
+  }
 
-
-  dispose() { return disposeResources(this); }
+  dispose() {
+    return disposeResources(this);
+  }
 
   get stats() {
     return {
@@ -419,5 +503,4 @@ export class GpuTerminal {
       gpuError: this.error,
     };
   }
-
 }

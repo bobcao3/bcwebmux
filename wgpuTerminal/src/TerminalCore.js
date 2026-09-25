@@ -41,7 +41,8 @@ function compiledModule(url) {
 
 export class TerminalCore {
   constructor(options = {}) {
-    if (!options || typeof options !== "object") throw new TypeError("terminal core options must be an object");
+    if (!options || typeof options !== "object")
+      throw new TypeError("terminal core options must be an object");
     const wasmUrl = options.wasmUrl || "/terminal.wasm";
     this.options = {
       wasmUrl,
@@ -84,20 +85,46 @@ export class TerminalCore {
     this._errorEmitter = createEmitter();
   }
 
-  get ready() { return this._wasm !== null; }
-  get memoryBytes() { return this._wasm?.memory.buffer.byteLength ?? 0; }
-  get opened() { return this._opened; }
-  get disposed() { return this._disposed; }
-  get cols() { return this._state.cols; }
-  get rows() { return this._state.rows; }
-  get state() { return this._state; }
+  get ready() {
+    return this._wasm !== null;
+  }
+  get memoryBytes() {
+    return this._wasm?.memory.buffer.byteLength ?? 0;
+  }
+  get opened() {
+    return this._opened;
+  }
+  get disposed() {
+    return this._disposed;
+  }
+  get cols() {
+    return this._state.cols;
+  }
+  get rows() {
+    return this._state.rows;
+  }
+  get state() {
+    return this._state;
+  }
 
-  onData(listener) { return this._dataEmitter.event(listener); }
-  onReply(listener) { return this._replyEmitter.event(listener); }
-  onTitleChange(listener) { return this._titleEmitter.event(listener); }
-  onBell(listener) { return this._bellEmitter.event(listener); }
-  onNotification(listener) { return this._notificationEmitter.event(listener); }
-  onError(listener) { return this._errorEmitter.event(listener); }
+  onData(listener) {
+    return this._dataEmitter.event(listener);
+  }
+  onReply(listener) {
+    return this._replyEmitter.event(listener);
+  }
+  onTitleChange(listener) {
+    return this._titleEmitter.event(listener);
+  }
+  onBell(listener) {
+    return this._bellEmitter.event(listener);
+  }
+  onNotification(listener) {
+    return this._notificationEmitter.event(listener);
+  }
+  onError(listener) {
+    return this._errorEmitter.event(listener);
+  }
 
   async open(options = {}) {
     this.assertMutable();
@@ -135,7 +162,8 @@ export class TerminalCore {
     const instance = await WebAssembly.instantiate(module, this._createWasmImports());
     this._wasm = instance.exports;
     this._invoke("term_bootstrap");
-    if (this._invoke("term_init", cols, rows) !== 1) throw new Error("terminal core initialization failed");
+    if (this._invoke("term_init", cols, rows) !== 1)
+      throw new Error("terminal core initialization failed");
     if ((this._host?._installGlyphPartition(this) ?? 1) !== 1) {
       throw new Error("terminal glyph partition installation failed");
     }
@@ -182,13 +210,22 @@ export class TerminalCore {
           console[method]("terminal WASM:", message);
         },
         font_size: (style) => {
-          if (!Number.isInteger(style) || style < 0 || style >= (this._fontFaces?.length ?? 0)) return 0;
+          if (!Number.isInteger(style) || style < 0 || style >= (this._fontFaces?.length ?? 0))
+            return 0;
           return this._fontFaces[style]?.byteLength ?? 0;
         },
         font_copy: (style, ptr, len) => {
-          if (!Number.isInteger(style) || style < 0 || style >= (this._fontFaces?.length ?? 0)) return 0;
+          if (!Number.isInteger(style) || style < 0 || style >= (this._fontFaces?.length ?? 0))
+            return 0;
           const face = this._fontFaces[style];
-          if (!face || !Number.isInteger(ptr) || !Number.isInteger(len) || ptr < 0 || len !== face.byteLength) return 0;
+          if (
+            !face ||
+            !Number.isInteger(ptr) ||
+            !Number.isInteger(len) ||
+            ptr < 0 ||
+            len !== face.byteLength
+          )
+            return 0;
           const memory = this._wasm?.memory?.buffer;
           if (!memory || ptr > memory.byteLength - len) return 0;
           new Uint8Array(memory, ptr, len).set(face);
@@ -220,7 +257,8 @@ export class TerminalCore {
   }
 
   _clipboardWrite(location, ptr, len) {
-    const writer = this.options.clipboardWrite || navigator.clipboard?.writeText?.bind(navigator.clipboard);
+    const writer =
+      this.options.clipboardWrite || navigator.clipboard?.writeText?.bind(navigator.clipboard);
     if (location !== 0 || typeof writer !== "function") return 2;
     let text;
     try {
@@ -236,7 +274,8 @@ export class TerminalCore {
 
   _setHost(host) {
     this.assertMutable();
-    if (this._host && this._host !== host) throw new Error("terminal core already belongs to another host");
+    if (this._host && this._host !== host)
+      throw new Error("terminal core already belongs to another host");
     this._host = host;
   }
 
@@ -255,15 +294,17 @@ export class TerminalCore {
   }
 
   assertMutable() {
-    if (this._borrow || this._inWasm) throw new Error("terminal mutation during live frame borrow or reentrant operation");
+    if (this._borrow || this._inWasm)
+      throw new Error("terminal mutation during live frame borrow or reentrant operation");
   }
 
   _invoke(name, ...args) {
     this.assertMutable();
     if (!this._wasm) return 0;
     this._inWasm = true;
-    try { return this._wasm[name](...args); }
-    finally {
+    try {
+      return this._wasm[name](...args);
+    } finally {
       this._inWasm = false;
       if (this._disposeRequested) {
         this._disposeRequested = false;
@@ -321,7 +362,13 @@ export class TerminalCore {
 
   setGlyphPartition(partition, atlasColumns) {
     this.assertMutable();
-    const result = this._invoke("term_set_glyph_partition", partition.baseSlot, partition.slotCapacity, atlasColumns, partition.generation);
+    const result = this._invoke(
+      "term_set_glyph_partition",
+      partition.baseSlot,
+      partition.slotCapacity,
+      atlasColumns,
+      partition.generation,
+    );
     if (result === 1) {
       this._partition = { ...partition };
       this._partitionAtlasColumns = atlasColumns;
@@ -329,17 +376,39 @@ export class TerminalCore {
     return result;
   }
 
-  invalidateFrame() { return this._invoke("term_invalidate_frame_cache", 1); }
-  invalidateTextView() { return this._invoke("term_invalidate_text_view"); }
-  setTextViewEnabled(enabled) { return this._invoke("term_set_text_view_enabled", enabled ? 1 : 0); }
-  scrollBottom() { return this._invoke("term_scroll_bottom"); }
-  scrollRow(row) { return this._invoke("term_scroll_row", row); }
-  scrollDelta(rows) { return this._invoke("term_scroll_delta", rows); }
-  scrollInput(rows, mods, x, y) { return this._invoke("term_scroll_input", rows, mods, x, y); }
-  mouse(action, button, mods, x, y, pressed) { return this._invoke("term_mouse", action, button, mods, x, y, pressed); }
-  selection(action, x, y) { return this._invoke("term_selection", action, x, y); }
-  selectWord(x, y) { return this._invoke("term_selection_word", x, y); }
-  focus(focused) { return this._invoke("term_focus", focused ? 1 : 0); }
+  invalidateFrame() {
+    return this._invoke("term_invalidate_frame_cache", 1);
+  }
+  invalidateTextView() {
+    return this._invoke("term_invalidate_text_view");
+  }
+  setTextViewEnabled(enabled) {
+    return this._invoke("term_set_text_view_enabled", enabled ? 1 : 0);
+  }
+  scrollBottom() {
+    return this._invoke("term_scroll_bottom");
+  }
+  scrollRow(row) {
+    return this._invoke("term_scroll_row", row);
+  }
+  scrollDelta(rows) {
+    return this._invoke("term_scroll_delta", rows);
+  }
+  scrollInput(rows, mods, x, y) {
+    return this._invoke("term_scroll_input", rows, mods, x, y);
+  }
+  mouse(action, button, mods, x, y, pressed) {
+    return this._invoke("term_mouse", action, button, mods, x, y, pressed);
+  }
+  selection(action, x, y) {
+    return this._invoke("term_selection", action, x, y);
+  }
+  selectWord(x, y) {
+    return this._invoke("term_selection_word", x, y);
+  }
+  focus(focused) {
+    return this._invoke("term_focus", focused ? 1 : 0);
+  }
 
   hyperlinkAt(x, y) {
     this.assertMutable();
@@ -347,9 +416,16 @@ export class TerminalCore {
     if (status < 0) throw new Error(`WASM hyperlink lookup failed: ${status}`);
     if (status !== 1) return null;
     try {
-      return strictDecoder.decode(new Uint8Array(this._wasm.memory.buffer,
-        this._invoke("term_hyperlink_ptr"), this._invoke("term_hyperlink_len")));
-    } catch { return null; }
+      return strictDecoder.decode(
+        new Uint8Array(
+          this._wasm.memory.buffer,
+          this._invoke("term_hyperlink_ptr"),
+          this._invoke("term_hyperlink_len"),
+        ),
+      );
+    } catch {
+      return null;
+    }
   }
 
   frameSubmitted() {
@@ -368,7 +444,8 @@ export class TerminalCore {
       const length = Math.min(WASM_STAGING_CAPACITY, bytes.length - offset);
       const ptr = this._invoke("term_reserve", length);
       if (!ptr) throw new Error("WASM receive buffer exhausted");
-      const chunk = offset === 0 && length === bytes.length ? bytes : bytes.subarray(offset, offset + length);
+      const chunk =
+        offset === 0 && length === bytes.length ? bytes : bytes.subarray(offset, offset + length);
       new Uint8Array(this._wasm.memory.buffer, ptr, length).set(chunk);
       if (this._invoke("term_feed", length) !== 1) throw new Error("WASM terminal feed failed");
       if (this._disposed) return;
@@ -417,7 +494,14 @@ export class TerminalCore {
     if (codeResult.read !== code.length) return 0;
     const textResult = encoder.encodeInto(text, buffer.subarray(codeResult.written));
     if (textResult.read !== text.length) return 0;
-    const result = this._invoke("term_key", action, modifiers, consumed ? 1 : 0, codeResult.written, textResult.written);
+    const result = this._invoke(
+      "term_key",
+      action,
+      modifiers,
+      consumed ? 1 : 0,
+      codeResult.written,
+      textResult.written,
+    );
     if (result === 1) this._schedule(true);
     return result;
   }
@@ -425,7 +509,8 @@ export class TerminalCore {
   resize(layout) {
     this.assertMutable();
     if (!this._wasm) return 0;
-    const result = this._invoke("term_resize",
+    const result = this._invoke(
+      "term_resize",
       layout.cols,
       layout.rows,
       layout.cellWidth,
@@ -445,14 +530,16 @@ export class TerminalCore {
   setRenderMetrics(layout) {
     this.assertMutable();
     if (!this._wasm) throw new Error("terminal core is not open");
-    const result = this._invoke("term_set_render_metrics",
+    const result = this._invoke(
+      "term_set_render_metrics",
       layout.cellWidth,
       layout.cellHeight,
       layout.cellWidth,
       layout.cellHeight,
       layout.fontSize,
     );
-    if (result === 1) this._renderLayout = Object.isFrozen(layout) ? layout : Object.freeze({ ...layout });
+    if (result === 1)
+      this._renderLayout = Object.isFrozen(layout) ? layout : Object.freeze({ ...layout });
     return result;
   }
 
@@ -465,7 +552,8 @@ export class TerminalCore {
       throw new TypeError("terminal core dimensions must be positive integers");
     }
     this._host?._prepareTerminalFrame(this, cols * rows);
-    const result = this._invoke("term_resize_canonical",
+    const result = this._invoke(
+      "term_resize_canonical",
       cols,
       rows,
       geometry?.cellWidthPx ?? 8,
@@ -506,11 +594,21 @@ export class TerminalCore {
     const previous = this.options.font;
     const font = normalizeFont({ ...this.options.font, ...(fontOptions || {}) });
     validateRendererFont(this.options.renderer, font);
-    const changed = previous.cssFamily !== font.cssFamily || previous.size !== font.size ||
-      previous.ligatures !== font.ligatures || previous.wasmId !== font.wasmId ||
+    const changed =
+      previous.cssFamily !== font.cssFamily ||
+      previous.size !== font.size ||
+      previous.ligatures !== font.ligatures ||
+      previous.wasmId !== font.wasmId ||
       previous.fallbacks.length !== font.fallbacks.length ||
       previous.fallbacks.some((value, index) => value !== font.fallbacks[index]);
-    if (this._wasm && this._invoke("term_set_font", this.options.renderer === "canvas" ? 0 : font.wasmId, font.ligatures ? 1 : 0) !== 1) {
+    if (
+      this._wasm &&
+      this._invoke(
+        "term_set_font",
+        this.options.renderer === "canvas" ? 0 : font.wasmId,
+        font.ligatures ? 1 : 0,
+      ) !== 1
+    ) {
       throw new Error("WASM font configuration failed");
     }
     this.options.font = font;
@@ -562,7 +660,8 @@ export class TerminalCore {
     const ptr = this._invoke("term_snapshot_reserve", bytes.length);
     if (!ptr) throw new Error("terminal snapshot exceeds the WASM restore limit");
     new Uint8Array(this._wasm.memory.buffer, ptr, bytes.length).set(bytes);
-    if (this._invoke("term_snapshot_restore", bytes.length) !== 1) throw new Error("terminal snapshot restore failed");
+    if (this._invoke("term_snapshot_restore", bytes.length) !== 1)
+      throw new Error("terminal snapshot restore failed");
     this._pendingRxAt = 0;
     this._invoke("term_invalidate_frame_cache");
     if (this._host) this._host._coreRestored(this);
@@ -598,7 +697,10 @@ export class TerminalCore {
 
   setSelectionRange(start, end) {
     this.assertMutable();
-    return Boolean(this._wasm && this._invoke("term_selection_set_range", start.row, start.col, end.row, end.col) === 1);
+    return Boolean(
+      this._wasm &&
+      this._invoke("term_selection_set_range", start.row, start.col, end.row, end.col) === 1,
+    );
   }
 
   reset() {
@@ -606,9 +708,13 @@ export class TerminalCore {
     this._host?._assertMutable();
     if (!this._wasm) return false;
     this._invoke("term_deinit");
-    if (this._invoke("term_init", this._state.cols, this._state.rows) !== 1) throw new Error("terminal core reset failed");
-    const installed = this._host ? this._host._installGlyphPartition(this)
-      : this._partition ? this.setGlyphPartition(this._partition, this._partitionAtlasColumns) : 1;
+    if (this._invoke("term_init", this._state.cols, this._state.rows) !== 1)
+      throw new Error("terminal core reset failed");
+    const installed = this._host
+      ? this._host._installGlyphPartition(this)
+      : this._partition
+        ? this.setGlyphPartition(this._partition, this._partitionAtlasColumns)
+        : 1;
     if (installed !== 1) {
       throw new Error("terminal glyph partition installation failed");
     }
@@ -647,6 +753,7 @@ export class TerminalCore {
       this._bellEmitter,
       this._notificationEmitter,
       this._errorEmitter,
-    ]) emitter.dispose();
+    ])
+      emitter.dispose();
   }
 }

@@ -35,7 +35,8 @@ async function readError(response) {
     if (error && typeof error === "object") {
       return {
         code: typeof error.code === "string" ? error.code : "request_failed",
-        message: typeof error.message === "string" ? error.message : `request failed (${response.status})`,
+        message:
+          typeof error.message === "string" ? error.message : `request failed (${response.status})`,
       };
     }
   } catch {}
@@ -60,7 +61,9 @@ export async function requestJSON(path, options = {}) {
       cache: "no-store",
     });
   } catch (error) {
-    throw new AuthError(error?.message || "the server could not be reached", { code: "network_error" });
+    throw new AuthError(error?.message || "the server could not be reached", {
+      code: "network_error",
+    });
   }
   if (response.status === 204) return null;
   if (!response.ok) {
@@ -70,7 +73,10 @@ export async function requestJSON(path, options = {}) {
   try {
     return await response.json();
   } catch {
-    throw new AuthError("the server returned an invalid response", { code: "invalid_response", status: response.status });
+    throw new AuthError("the server returned an invalid response", {
+      code: "invalid_response",
+      status: response.status,
+    });
   }
 }
 
@@ -79,7 +85,7 @@ export function creationOptions(publicKey) {
     ...publicKey,
     challenge: decodeBase64url(publicKey.challenge),
     user: { ...publicKey.user, id: decodeBase64url(publicKey.user.id) },
-    excludeCredentials: (publicKey.excludeCredentials ?? []).map(descriptor => ({
+    excludeCredentials: (publicKey.excludeCredentials ?? []).map((descriptor) => ({
       ...descriptor,
       id: decodeBase64url(descriptor.id),
     })),
@@ -90,7 +96,7 @@ export function requestOptions(publicKey) {
   return {
     ...publicKey,
     challenge: decodeBase64url(publicKey.challenge),
-    allowCredentials: (publicKey.allowCredentials ?? []).map(descriptor => ({
+    allowCredentials: (publicKey.allowCredentials ?? []).map((descriptor) => ({
       ...descriptor,
       id: decodeBase64url(descriptor.id),
     })),
@@ -129,8 +135,10 @@ export function supported() {
 }
 
 export function unsupportedReason() {
-  if (typeof window.PublicKeyCredential !== "function") return "this browser does not support security keys (WebAuthn)";
-  if (!window.isSecureContext) return "security keys need a secure context; open this page over HTTPS or on localhost";
+  if (typeof window.PublicKeyCredential !== "function")
+    return "this browser does not support security keys (WebAuthn)";
+  if (!window.isSecureContext)
+    return "security keys need a secure context; open this page over HTTPS or on localhost";
   return "";
 }
 
