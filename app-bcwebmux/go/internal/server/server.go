@@ -85,7 +85,7 @@ func New(cfg Config) (*Server, error) {
 	if len(cfg.origins()) == 0 {
 		for _, host := range hosts {
 			if !HostIsLoopback(host) {
-				return nil, fmt.Errorf("--origin is required for resolved non-loopback address %s", host)
+				return nil, fmt.Errorf("--origin is required for non-loopback %s (browser-facing scheme://host[:port])", host)
 			}
 		}
 	}

@@ -26,6 +26,9 @@ pub fn add(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builti
     cc.root_module.addOptions("config", options);
     const driver = hostTool(b, "bcwebmux-go", "toolchains/go.zig");
     const provision = b.addRunArtifact(hostTool(b, "bcwebmux-provision-go", "toolchains/provision.zig"));
+    // Zig 0.16 displays any successful run's stderr as a "failed command".
+    // Save normal download progress, but still report it when the run fails.
+    _ = provision.captureStdErr(.{});
     provision.addArg("--manifest");
     provision.addFileArg(b.path("toolchains/go-manifest.json"));
     provision.addArg("--output");
@@ -34,6 +37,7 @@ pub fn add(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builti
     // Explicit dependency maintenance using the same pinned compiler.
     for ([_][]const u8{ "deps", "fmt" }) |command| {
         const maintenance = b.addRunArtifact(driver);
+        _ = maintenance.captureStdErr(.{});
         maintenance.addDirectoryArg(toolchain);
         maintenance.addArtifactArg(cc);
         maintenance.addFileArg(b.path("include/bcwebmux.h"));
@@ -56,6 +60,7 @@ pub fn add(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builti
     var runs: [2]*std.Build.Step.Run = undefined;
     for (&runs, [_][]const u8{ "build", "test" }) |*slot, command| {
         const run = b.addRunArtifact(driver);
+        _ = run.captureStdErr(.{});
         run.addDirectoryArg(toolchain);
         run.addArtifactArg(cc);
         run.addFileArg(b.path("include/bcwebmux.h"));

@@ -20,7 +20,6 @@ import (
 
 const (
 	DefaultHost        = "127.0.0.1"
-	DefaultPort        = 8080
 	DefaultMaxSessions = 16
 	MaxRequestBytes    = native.MaxRequestBytes
 	MaxHeaderBytes     = 16 * 1024
@@ -66,11 +65,10 @@ func ParseConfig(args []string) (Config, bool, error) {
 // for the authentication subcommands, which only need the state file location
 // and must keep working when this machine's addresses changed.
 func parseConfig(args []string, validateListeners bool) (Config, bool, error) {
-	cfg := Config{Port: DefaultPort, MaxSessions: DefaultMaxSessions, Term: "xterm-ghostty", KittyGraphics: true, AuthEnabled: true}
+	// Port stays -1 until the listeners or origins name one.
+	cfg := Config{Port: -1, MaxSessions: DefaultMaxSessions, Term: "xterm-ghostty", KittyGraphics: true, AuthEnabled: true}
 	flags := flag.NewFlagSet("bcwebmux-server", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
-	flags.StringVar(&cfg.Host, "host", cfg.Host, "bind host")
-	flags.IntVar(&cfg.Port, "port", cfg.Port, "bind port")
 	flags.StringVar(&cfg.WebRoot, "web-root", "", "asset directory")
 	flags.StringVar(&cfg.Shell, "shell", "", "shell")
 	flags.StringVar(&cfg.Term, "term", cfg.Term, "TERM for session shells")
@@ -81,7 +79,7 @@ func parseConfig(args []string, validateListeners bool) (Config, bool, error) {
 	var origins, listens []string
 	var configPath string
 	flags.StringVar(&configPath, "config", "", "TOML config file")
-	flags.Func("listen", "repeatable bind host/IP/CIDR", func(v string) error {
+	flags.Func("listen", "repeatable bind HOST[:PORT] | IP | CIDR", func(v string) error {
 		if v == "" {
 			return errors.New("empty listen")
 		}
@@ -124,11 +122,6 @@ func parseConfig(args []string, validateListeners bool) (Config, bool, error) {
 	}
 	flags.Visit(func(f *flag.Flag) {
 		switch f.Name {
-		case "host":
-			cfg.Host = cli.Host
-			cfg.Listen = nil
-		case "port":
-			cfg.Port = cli.Port
 		case "web-root":
 			cfg.WebRoot = cli.WebRoot
 		case "shell":
@@ -161,6 +154,28 @@ func parseConfig(args []string, validateListeners bool) (Config, bool, error) {
 	if len(origins) > 0 {
 		cfg.Origin = origins[0]
 		cfg.Origins = origins[1:]
+	}
+	// The bind port is the one --listen names, else the browser-facing port the
+	// origins name, else the default.
+	if len(cfg.Listen) > 0 {
+		hosts, port, err := listenTargets(cfg.Listen)
+		if err != nil {
+			return Config{}, false, err
+		}
+		cfg.Listen = hosts
+		if port >= 0 {
+			cfg.Port = port
+		}
+	}
+	if cfg.Port < 0 {
+		port, ok, err := originPort(cfg.origins())
+		if err != nil {
+			return Config{}, false, err
+		}
+		if !ok {
+			return Config{}, false, errors.New("no port: pass --listen HOST:PORT or an origin with a port")
+		}
+		cfg.Port = port
 	}
 	if cfg.Port < 0 || cfg.Port > 65535 {
 		return Config{}, false, fmt.Errorf("invalid port %d", cfg.Port)
@@ -270,8 +285,125 @@ func OriginFor(host string, port int, tlsEnabled bool) string {
 	return scheme + "://" + net.JoinHostPort(host, strconv.Itoa(port))
 }
 
+// splitListenTarget splits a HOST[:PORT] bind target, where HOST is a hostname,
+// IP literal, or CIDR. IPv6 literals and ranges must be bracketed to carry a
+// port. The port is -1 when the target names none.
+func splitListenTarget(value string) (string, int, error) {
+	if value == "" {
+		return "", -1, errors.New("empty listen")
+	}
+	host, portText := value, ""
+	switch {
+	case strings.HasPrefix(value, "["):
+		end := strings.LastIndex(value, "]")
+		if end < 0 {
+			return "", -1, fmt.Errorf("invalid listen %q", value)
+		}
+		host, portText = value[1:end], value[end+1:]
+	case strings.Contains(value, "/"):
+		if colon := strings.LastIndex(value, ":"); colon >= 0 {
+			if _, err := strconv.Atoi(value[colon+1:]); err == nil {
+				host, portText = value[:colon], value[colon:]
+			}
+		}
+	case strings.Count(value, ":") == 1:
+		before, after, _ := strings.Cut(value, ":")
+		host, portText = before, ":"+after
+	}
+	if portText == "" {
+		return host, -1, nil
+	}
+	if !strings.HasPrefix(portText, ":") {
+		return "", -1, fmt.Errorf("invalid listen %q", value)
+	}
+	port, err := strconv.Atoi(portText[1:])
+	if err != nil || port < 0 || port > 65535 {
+		return "", -1, fmt.Errorf("invalid listen port in %q", value)
+	}
+	return host, port, nil
+}
+
+// listenTargets normalizes bind targets into bare hosts and the one port every
+// target names.
+func listenTargets(specs []string) ([]string, int, error) {
+	hosts := make([]string, 0, len(specs))
+	port := -1
+	for _, spec := range specs {
+		host, target, err := splitListenTarget(spec)
+		if err != nil {
+			return nil, -1, err
+		}
+		if host == "" {
+			return nil, -1, fmt.Errorf("invalid listen %q", spec)
+		}
+		if target < 0 {
+			return nil, -1, fmt.Errorf("listen %q needs a port, e.g. %s:8443", spec, spec)
+		}
+		if port >= 0 && port != target {
+			return nil, -1, fmt.Errorf("--listen ports must agree (got %d and %d)", port, target)
+		}
+		port = target
+		hosts = append(hosts, host)
+	}
+	return hosts, port, nil
+}
+
+// originPort returns the browser-facing port the origins agree on, falling back
+// to the scheme default (443/80) when an origin omits it. It reports false when
+// no origin is configured.
+func originPort(origins []string) (int, bool, error) {
+	if len(origins) == 0 {
+		return 0, false, nil
+	}
+	port := 0
+	for _, origin := range origins {
+		parsed, err := url.Parse(origin)
+		if err != nil || parsed.Host == "" {
+			return 0, false, fmt.Errorf("invalid origin %q", origin)
+		}
+		current := 80
+		if parsed.Scheme == "https" {
+			current = 443
+		}
+		if text := parsed.Port(); text != "" {
+			current, err = strconv.Atoi(text)
+			if err != nil {
+				return 0, false, fmt.Errorf("invalid origin port %q", text)
+			}
+		}
+		if port != 0 && port != current {
+			return 0, false, fmt.Errorf("origins must share one port when --port is not set (got %d and %d)", port, current)
+		}
+		port = current
+	}
+	return port, true, nil
+}
+
 func Usage(program string) string {
-	return fmt.Sprintf("usage: %s [options]\n  --config FILE (otherwise XDG/HOME discovery)\n  --listen HOST/IP/CIDR (repeatable; defaults to origin hostnames when host/listen omitted)\n  --host HOST (legacy single listener)\n  --port PORT\n  --web-root DIR\n  --shell SHELL\n  --term TERM (default xterm-ghostty)\n  --kitty-graphics[=false] (advertise Kitty graphics; default true)\n  --origin ORIGIN (repeatable exact allowlist)\n  --max-sessions N\n  --tls-cert FILE\n  --tls-key FILE\n  --http3\n  --worker FILE\n  --auth[=false] (require a sign-in once a factor is enrolled; default true)\n  --auth-file FILE (default $XDG_STATE_HOME/bcwebmux/auth.json)\n  --auth-session-ttl DURATION (browser login lifetime; default 168h)\n\n  %s auth totp [--rotate] [--no-qr] [--account LABEL] [options]\n                                              enroll the authenticator app (baseline factor)\n  %s auth list [options]                      list enrolled factors\n  %s auth remove --totp|--id ID|--all [options]\n                                              remove an enrolled factor\n", program, program, program, program)
+	return fmt.Sprintf("usage: %s [options]\n"+
+		"  --origin URL (repeatable; required for any non-loopback address; scheme://host[:port])\n"+
+		"  --listen TARGET (optional, repeatable; overrides the bound address)\n"+
+		"                  TARGET is HOST:PORT, IP:PORT, or CIDR:PORT\n"+
+		"  --web-root DIR\n"+
+		"  --shell SHELL\n"+
+		"  --term TERM (default xterm-ghostty)\n"+
+		"  --kitty-graphics[=false] (default true)\n"+
+		"  --max-sessions N\n"+
+		"  --tls-cert FILE\n"+
+		"  --tls-key FILE\n"+
+		"  --http3\n"+
+		"  --worker FILE\n"+
+		"  --auth[=false] (default true)\n"+
+		"  --auth-file FILE (default $XDG_STATE_HOME/bcwebmux/auth.json)\n"+
+		"  --auth-session-ttl DURATION (default 168h)\n"+
+		"  --config FILE (otherwise XDG/HOME discovery)\n"+
+		"\n"+
+		"  %s auth totp [--rotate] [--no-qr] [--account LABEL] [options]\n"+
+		"                                              enroll the authenticator app (baseline factor)\n"+
+		"  %s auth list [options]                      list enrolled factors\n"+
+		"  %s auth remove --totp|--id ID|--all [options]\n"+
+		"                                              remove an enrolled factor\n",
+		program, program, program, program)
 }
 
 // defaultAuthFile is the per-user authentication state file, following the

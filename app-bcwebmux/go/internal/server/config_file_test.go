@@ -35,16 +35,15 @@ func TestConfigDiscoveryAndOverrides(t *testing.T) {
 		}
 		return c
 	}
-	if c := parse(); c.Port != DefaultPort || c.Term != "xterm-ghostty" || !c.KittyGraphics {
-		t.Fatal(c)
+	if _, _, err := ParseConfig(nil); err == nil {
+		t.Fatal("parse accepted a run with no port")
 	}
-	putConfig(t, filepath.Join(home, ".bcwebmux.toml"), "port = 8101\n")
-	if c := parse(); c.Port != 8101 {
+	putConfig(t, filepath.Join(home, ".bcwebmux.toml"), "listen = [\"127.0.0.1:8101\"]\n")
+	if c := parse(); c.Port != 8101 || c.Term != "xterm-ghostty" || !c.KittyGraphics {
 		t.Fatal(c)
 	}
 	path := filepath.Join(xdg, "bcwebmux", "config.toml")
-	putConfig(t, path, `port = 8102
-listen = ["127.0.0.1", "127.0.0.2"]
+	putConfig(t, path, `listen = ["127.0.0.1:8102", "127.0.0.2:8102"]
 origins = ["https://one.example", "https://two.example"]
 http3 = true
 tls-cert = "cert"
@@ -56,11 +55,12 @@ kitty-graphics = false
 	if c := parse(); c.Port != 8102 || !c.HTTP3 || len(c.Listen) != 2 || len(c.Origins) != 2 || c.Term != "xterm-256color" || c.KittyGraphics {
 		t.Fatal(c)
 	}
-	c := parse("--port=8103", "--http3=false", "--listen=127.0.0.3", "--listen=127.0.0.4", "--origin=https://cli.example", "--term=screen-256color", "--kitty-graphics=true")
+	c := parse("--http3=false", "--listen=127.0.0.3:8103", "--listen=127.0.0.4:8103", "--origin=https://cli.example", "--term=screen-256color", "--kitty-graphics=true")
 	if c.Port != 8103 || c.HTTP3 || c.Term != "screen-256color" || !c.KittyGraphics || !reflect.DeepEqual(c.Listen, []string{"127.0.0.3", "127.0.0.4"}) || !reflect.DeepEqual(c.origins(), []string{"https://cli.example"}) {
 		t.Fatal(c)
 	}
-	if c := parse("--host=127.0.0.5"); len(c.Listen) != 0 || c.Host != "127.0.0.5" {
+	putConfig(t, path, "host = \"127.0.0.5\"\norigins = [\"http://127.0.0.5:8104\"]\n")
+	if c := parse(); c.Host != "127.0.0.5" || len(c.Listen) != 0 || c.Port != 8104 {
 		t.Fatal(c)
 	}
 	if c := parse("--config", filepath.Join(home, ".bcwebmux.toml")); c.Port != 8101 {
@@ -76,7 +76,7 @@ kitty-graphics = false
 	if _, help, err := ParseConfig([]string{"--config", path, "--help"}); err != nil || !help {
 		t.Fatalf("help with config: %v", err)
 	}
-	for _, body := range []string{"bad = [", "unknown = true", "port = 'wrong'", "port = 1\nport = 2", "listen = []", "listen = ['100.64.0.0/10']", "origins = ['*']", "origins = ['']"} {
+	for _, body := range []string{"bad = [", "unknown = true", "listen = 'x'", "listen = ['127.0.0.1']", "listen = ['127.0.0.1:70000']", "listen = ['127.0.0.1:8080', '127.0.0.2:8081']", "listen = []", "listen = ['100.64.0.0/10:8443']", "origins = ['*']", "origins = ['']"} {
 		putConfig(t, path, body)
 		if _, _, err := ParseConfig(nil); err == nil {
 			t.Errorf("accepted %q", body)
@@ -85,9 +85,9 @@ kitty-graphics = false
 }
 func TestConfigXDGHomeFallback(t *testing.T) {
 	home, xdg := configHome(t)
-	putConfig(t, filepath.Join(home, ".bcwebmux.toml"), "port = 8101")
+	putConfig(t, filepath.Join(home, ".bcwebmux.toml"), "listen = [\"127.0.0.1:8101\"]")
 	alternate := os.Getenv("XDG_HOME")
-	putConfig(t, filepath.Join(alternate, "bcwebmux", "config.toml"), "port = 8102")
+	putConfig(t, filepath.Join(alternate, "bcwebmux", "config.toml"), "listen = [\"127.0.0.1:8102\"]")
 	c, _, err := ParseConfig(nil)
 	if err != nil || c.Port != 8101 {
 		t.Fatalf("standard must win: %+v %v", c, err)
@@ -98,7 +98,7 @@ func TestConfigXDGHomeFallback(t *testing.T) {
 		t.Fatalf("fallback: %+v %v", c, err)
 	}
 	t.Setenv("XDG_HOME", "")
-	putConfig(t, filepath.Join(home, ".config", "bcwebmux", "config.toml"), "port = 8103")
+	putConfig(t, filepath.Join(home, ".config", "bcwebmux", "config.toml"), "listen = [\"127.0.0.1:8103\"]")
 	c, _, err = ParseConfig(nil)
 	if err != nil || c.Port != 8103 {
 		t.Fatalf("home config: %+v %v (%s)", c, err, xdg)

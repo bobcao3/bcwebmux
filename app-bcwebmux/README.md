@@ -28,11 +28,11 @@ toolchain is required.
 npm install
 cd app-bcwebmux
 zig build -Doptimize=ReleaseSmall
-./zig-out/bin/bcwebmux-server
+./zig-out/bin/bcwebmux-server --origin http://localhost:8080
 ```
 
 Open <http://localhost:8080>. Use `--help` for server options. Remote use needs
-explicit host/origin options and either an enrolled FIDO2 security key (see
+an explicit `--origin` and either an enrolled FIDO2 security key (see
 [Authentication](#authentication)) or authenticated TLS in front of the service.
 
 To install on a phone, open the app on a **trusted HTTPS** origin (not plain
@@ -113,8 +113,7 @@ Example `~/.config/bcwebmux/config.toml` (replace addresses, origins, and TLS
 paths with your own; omit any range not present on this machine):
 
 ```toml
-listen = ["100.64.0.0/10", "192.168.1.0/24", "127.0.0.1"]
-port = 8443
+listen = ["100.64.0.0/10:8443", "192.168.1.0/24:8443", "127.0.0.1:8443"]
 origins = ["https://terminal.example.ts.net:8443", "https://192.168.1.20:8443", "https://localhost:8443"]
 tls-cert = "/path/to/fullchain.pem"
 tls-key = "/path/to/key.pem"
@@ -135,32 +134,33 @@ New shells default to `TERM=xterm-ghostty` with Kitty graphics advertised.
 Override with `--term` / `term`, or opt out of the Kitty hint with
 `--kitty-graphics=false` / `kitty-graphics = false`.
 
-`listen` accepts hostnames, IP literals, or CIDRs, all on the shared `port`.
-Repeat `--listen` to replace the entire file list. Explicit `--host` clears the
-file list for legacy single-host use; if both CLI options appear, `--listen`
-wins. CIDRs select **only assigned local addresses**, never a wildcard socket.
+`listen` takes `HOST:PORT`, `IP:PORT`, or `CIDR:PORT`; every entry must name the
+same port, which is the one all sockets share. IPv6 literals and ranges are
+bracketed to carry a port (`[::1]:8443`). Repeat `--listen` to replace the entire
+file list. CIDRs select **only assigned local addresses**, never a wildcard
+socket.
 Overlapping ranges and duplicate resolved addresses are deduplicated; each
 unmatched range is an error. DNS and interfaces are resolved at startup, not
 watched: restart after address changes. All TCP and (when enabled) UDP/HTTP3
 sockets must bind successfully or startup rolls them all back. Port zero chooses
 one shared ephemeral port.
 
-When neither `listen` nor legacy `host` is provided, hostnames in `origins` are
-resolved at startup and all resolved IPv4/IPv6 addresses assigned locally are
-bound and deduplicated. Wildcard or remote-only results are rejected, and
-startup fails if any hostname has no locally assigned address. Without
-`origins`, `listen`, or `host`, the default remains `127.0.0.1`. Explicit
-`listen` or `host` overrides this automatic resolution, which is needed for
-reverse proxies whose public hostname is not locally assigned. Automatic
-resolution uses the configured port, not origin ports, and is startup-only;
-restart after address changes. The exact origin allowlist is unchanged, and IP
-aliases are not auto-trusted.
+When `listen` is not provided, hostnames in `origins` are resolved at startup and
+all resolved IPv4/IPv6 addresses assigned locally are bound and deduplicated.
+Wildcard or remote-only results are rejected, and startup fails if any hostname
+has no locally assigned address. The legacy `host` config key names one host and
+takes its port from the origins. Explicit `listen` overrides this automatic
+resolution, which is needed for reverse proxies whose public hostname is not
+locally assigned. There is no default port: the bind port is the one `listen`
+names, or the browser-facing port the origins name (their scheme default, 443 or
+80, when a port is omitted), and startup fails when neither supplies one.
+Automatic resolution is startup-only; restart after address changes. The exact
+origin allowlist is unchanged, and IP aliases are not auto-trusted.
 
 For example:
 
 ```toml
 origins = ["https://terminal.example.ts.net:3443"]
-port = 3443
 # Configure tls-cert and tls-key as shown above.
 ```
 

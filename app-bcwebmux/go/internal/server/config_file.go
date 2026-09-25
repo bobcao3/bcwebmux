@@ -43,7 +43,6 @@ func loadConfig(cfg *Config, explicit string) error {
 		var file struct {
 			Host           *string  `toml:"host"`
 			Listen         []string `toml:"listen"`
-			Port           *int     `toml:"port"`
 			WebRoot        *string  `toml:"web-root"`
 			Shell          *string  `toml:"shell"`
 			Term           *string  `toml:"term"`
@@ -77,9 +76,6 @@ func loadConfig(cfg *Config, explicit string) error {
 				return fmt.Errorf("config %s: listen must not be empty", path)
 			}
 			cfg.Listen = file.Listen
-		}
-		if file.Port != nil {
-			cfg.Port = *file.Port
 		}
 		if file.WebRoot != nil {
 			cfg.WebRoot = *file.WebRoot
@@ -234,7 +230,7 @@ func validateBindings(cfg Config) error {
 			return err
 		}
 		if !loopback && len(cfg.origins()) == 0 {
-			return fmt.Errorf("--origin is required when binding a non-loopback host or range")
+			return fmt.Errorf("--origin is required when binding non-loopback %q (browser-facing scheme://host[:port], e.g. --origin https://%s:3443)", host, host)
 		}
 	}
 	return nil

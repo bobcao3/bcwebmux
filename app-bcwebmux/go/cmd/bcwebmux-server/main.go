@@ -33,7 +33,7 @@ func main() {
 	}
 	cfg, help, err := server.ParseConfig(os.Args[1:])
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "%s: %v\n%s", os.Args[0], err, "usage: "+os.Args[0]+" [options]\n")
+		fmt.Fprintf(os.Stderr, "%s: %v (see %s --help)\n", os.Args[0], err, os.Args[0])
 		os.Exit(2)
 	}
 	if help {
