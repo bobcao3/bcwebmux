@@ -30,11 +30,11 @@ func RunAuth(program string, args []string, logger *slog.Logger) error {
 	subcommand, rest := args[0], args[1:]
 	switch subcommand {
 	case "totp":
-		return runAuthTOTP(rest, logger)
+		return runAuthTOTP(program, rest, logger)
 	case "list":
-		return runAuthList(rest, logger)
+		return runAuthList(program, rest, logger)
 	case "remove":
-		return runAuthRemove(rest, logger)
+		return runAuthRemove(program, rest, logger)
 	case "help", "-h", "--help":
 		fmt.Print(Usage(program))
 		return nil
@@ -45,7 +45,7 @@ func RunAuth(program string, args []string, logger *slog.Logger) error {
 
 // Everything happens over the terminal, and nothing is stored until a code
 // from the new secret proves the app was set up correctly.
-func runAuthTOTP(args []string, logger *slog.Logger) error {
+func runAuthTOTP(program string, args []string, logger *slog.Logger) error {
 	rotate := false
 	showQR := true
 	account := ""
@@ -86,7 +86,7 @@ func runAuthTOTP(args []string, logger *slog.Logger) error {
 		return err
 	}
 	if help {
-		fmt.Print(Usage("bcwebmux-server"))
+		fmt.Print(Usage(program))
 		return nil
 	}
 	manager, err := newAuthManager(cfg.AuthFile, authSessionTTLDefault, nil, logger)
@@ -134,7 +134,7 @@ func runAuthTOTP(args []string, logger *slog.Logger) error {
 	fmt.Printf("Enrolled. Every address this server answers on now requires a code from that app.\n")
 	fmt.Printf("Keep the secret safe: without it and without shell access there is no way in.\n")
 	fmt.Printf("Add security keys from Settings → SECURITY in the browser, one per device.\n")
-	fmt.Printf("Remove it with: bcwebmux-server auth remove --totp\n")
+	fmt.Printf("Remove it with: %s auth remove --totp\n", program)
 	return nil
 }
 
@@ -173,13 +173,13 @@ func hostName() string {
 }
 
 // runAuthList prints the enrolled credentials.
-func runAuthList(args []string, logger *slog.Logger) error {
+func runAuthList(program string, args []string, logger *slog.Logger) error {
 	cfg, help, err := parseConfig(args, false)
 	if err != nil {
 		return err
 	}
 	if help {
-		fmt.Print(Usage("bcwebmux-server"))
+		fmt.Print(Usage(program))
 		return nil
 	}
 	state, err := loadAuthState(cfg.AuthFile, logger)
@@ -188,7 +188,7 @@ func runAuthList(args []string, logger *slog.Logger) error {
 	}
 	if len(state.Credentials) == 0 && state.TOTP == nil {
 		fmt.Printf("No authenticator app or security key is enrolled in %s.\nThe service does not require a login until one is enrolled.\n", cfg.AuthFile)
-		fmt.Printf("Enroll the baseline factor with: bcwebmux-server auth totp\n")
+		fmt.Printf("Enroll the baseline factor with: %s auth totp\n", program)
 		return nil
 	}
 	factors := len(state.Credentials)
@@ -230,15 +230,15 @@ func runAuthList(args []string, logger *slog.Logger) error {
 			fmt.Printf("    transports  %s\n", strings.Join(transports, ","))
 		}
 	}
-	fmt.Printf("\nRemove a key with: bcwebmux-server auth remove --id <id>\n")
-	fmt.Printf("Remove the authenticator app with: bcwebmux-server auth remove --totp\n")
-	fmt.Printf("Remove every factor with: bcwebmux-server auth remove --all\n")
+	fmt.Printf("\nRemove a key with: %s auth remove --id <id>\n", program)
+	fmt.Printf("Remove the authenticator app with: %s auth remove --totp\n", program)
+	fmt.Printf("Remove every factor with: %s auth remove --all\n", program)
 	return nil
 }
 
 // runAuthRemove revokes credentials. Removing the last one returns the service
 // to its unauthenticated state and invalidates every issued session.
-func runAuthRemove(args []string, logger *slog.Logger) error {
+func runAuthRemove(program string, args []string, logger *slog.Logger) error {
 	var id string
 	var all bool
 	var totp bool
@@ -290,7 +290,7 @@ func runAuthRemove(args []string, logger *slog.Logger) error {
 		return err
 	}
 	if help {
-		fmt.Print(Usage("bcwebmux-server"))
+		fmt.Print(Usage(program))
 		return nil
 	}
 	manager, err := newAuthManager(cfg.AuthFile, authSessionTTLDefault, nil, logger)
@@ -307,7 +307,7 @@ func runAuthRemove(args []string, logger *slog.Logger) error {
 			return nil
 		}
 		fmt.Printf("Removed the authenticator app (%s).\n", removed.Name)
-		return warnIfEmpty(manager, cfg)
+		return warnIfEmpty(program, manager, cfg)
 	}
 	if all {
 		removed, err := manager.removeAll()
@@ -319,11 +319,11 @@ func runAuthRemove(args []string, logger *slog.Logger) error {
 			return nil
 		}
 		fmt.Printf("Removed %d security key(s): %s\n", len(removed), credentialLabel(removed))
-		return warnIfEmpty(manager, cfg)
+		return warnIfEmpty(program, manager, cfg)
 	}
 	target, ok := manager.lookupAny(id)
 	if !ok {
-		return fmt.Errorf("no enrolled security key matches %q; run `bcwebmux-server auth list`", id)
+		return fmt.Errorf("no enrolled security key matches %q; run `%s auth list`", id, program)
 	}
 	removed, found, err := manager.removeCredential(target.Credential.ID)
 	if err != nil {
@@ -333,17 +333,17 @@ func runAuthRemove(args []string, logger *slog.Logger) error {
 		return fmt.Errorf("no enrolled security key matches %q", id)
 	}
 	fmt.Printf("Removed %s (%s).\n", removed.Name, removed.RPID)
-	return warnIfEmpty(manager, cfg)
+	return warnIfEmpty(program, manager, cfg)
 }
 
 // Reports the unauthenticated state that removing the last factor produces.
-func warnIfEmpty(manager *authManager, cfg Config) error {
+func warnIfEmpty(program string, manager *authManager, cfg Config) error {
 	totp, keys := manager.factors()
 	if totp || keys != 0 {
 		return nil
 	}
 	fmt.Printf("No factors remain: %s was reset and the service no longer requires a login.\n", cfg.AuthFile)
-	fmt.Printf("Every issued browser session is invalid. Re-enroll with: bcwebmux-server auth totp\n")
+	fmt.Printf("Every issued browser session is invalid. Re-enroll with: %s auth totp\n", program)
 	return nil
 }
 

@@ -63,6 +63,11 @@ func loadConfig(cfg *Config, explicit string) error {
 			return fmt.Errorf("config %s: %w", path, err)
 		}
 		if unknown := meta.Undecoded(); len(unknown) != 0 {
+			for _, key := range unknown {
+				if key.String() == "port" {
+					return fmt.Errorf("config %s: `port` was removed; put the port in each `listen` entry or in `origins`", path)
+				}
+			}
 			return fmt.Errorf("config %s: unknown keys %v", path, unknown)
 		}
 		if file.Host != nil {

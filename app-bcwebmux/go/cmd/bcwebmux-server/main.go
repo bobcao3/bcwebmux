@@ -24,20 +24,29 @@ var embeddedAssets embed.FS
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	slog.SetDefault(logger)
+	// Report the program by name, never by the path it was launched from.
+	name := filepath.Base(os.Args[0])
 	if len(os.Args) > 1 && os.Args[1] == "auth" {
-		if err := server.RunAuth(os.Args[0], os.Args[2:], logger); err != nil {
-			fmt.Fprintf(os.Stderr, "%s: %v\n", os.Args[0], err)
+		if err := server.RunAuth(name, os.Args[2:], logger); err != nil {
+			fmt.Fprintf(os.Stderr, "%s: %v\n", name, err)
 			os.Exit(1)
 		}
 		return
 	}
 	cfg, help, err := server.ParseConfig(os.Args[1:])
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "%s: %v (see %s --help)\n", os.Args[0], err, os.Args[0])
+		fmt.Fprintf(os.Stderr, "%s: %v\n", name, err)
+		if len(os.Args) == 1 {
+			// A bare run that cannot start is usually a stale or missing config
+			// file; show the options rather than a single line of error.
+			fmt.Fprint(os.Stderr, server.Usage(name))
+		} else {
+			fmt.Fprintf(os.Stderr, "(see %s --help)\n", name)
+		}
 		os.Exit(2)
 	}
 	if help {
-		fmt.Print(server.Usage(os.Args[0]))
+		fmt.Print(server.Usage(name))
 		return
 	}
 	if cfg.Worker == "" {

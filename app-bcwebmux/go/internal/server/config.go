@@ -380,30 +380,48 @@ func originPort(origins []string) (int, bool, error) {
 }
 
 func Usage(program string) string {
-	return fmt.Sprintf("usage: %s [options]\n"+
-		"  --origin URL (repeatable; required for any non-loopback address; scheme://host[:port])\n"+
-		"  --listen TARGET (optional, repeatable; overrides the bound address)\n"+
-		"                  TARGET is HOST:PORT, IP:PORT, or CIDR:PORT\n"+
-		"  --web-root DIR\n"+
-		"  --shell SHELL\n"+
-		"  --term TERM (default xterm-ghostty)\n"+
-		"  --kitty-graphics[=false] (default true)\n"+
-		"  --max-sessions N\n"+
-		"  --tls-cert FILE\n"+
-		"  --tls-key FILE\n"+
-		"  --http3\n"+
-		"  --worker FILE\n"+
-		"  --auth[=false] (default true)\n"+
-		"  --auth-file FILE (default $XDG_STATE_HOME/bcwebmux/auth.json)\n"+
-		"  --auth-session-ttl DURATION (default 168h)\n"+
-		"  --config FILE (otherwise XDG/HOME discovery)\n"+
+	// Never print the path the binary happens to live at.
+	name := filepath.Base(program)
+	if name == "." || name == string(filepath.Separator) {
+		name = "bcwebmux-server"
+	}
+	return fmt.Sprintf("%s - remote terminal server for browsers\n"+
 		"\n"+
-		"  %s auth totp [--rotate] [--no-qr] [--account LABEL] [options]\n"+
-		"                                              enroll the authenticator app (baseline factor)\n"+
-		"  %s auth list [options]                      list enrolled factors\n"+
-		"  %s auth remove --totp|--id ID|--all [options]\n"+
-		"                                              remove an enrolled factor\n",
-		program, program, program, program)
+		"USAGE:\n"+
+		"  %s [OPTIONS]\n"+
+		"  %s auth <COMMAND> [OPTIONS]\n"+
+		"\n"+
+		"OPTIONS:\n"+
+		"  --origin URL                 browser-facing origin, scheme://host[:port];\n"+
+		"                               repeatable, required for any non-loopback\n"+
+		"                               address (also binds that host)\n"+
+		"  --listen TARGET              bind address override: HOST:PORT, IP:PORT,\n"+
+		"                               or CIDR:PORT; repeatable, one shared port\n"+
+		"  --config FILE                TOML config file (default: XDG/HOME discovery)\n"+
+		"  --web-root DIR               web assets directory\n"+
+		"  --shell SHELL                shell for new sessions\n"+
+		"  --term TERM                  TERM for new sessions (default: xterm-ghostty)\n"+
+		"  --max-sessions N             maximum live sessions (default: 16)\n"+
+		"  --tls-cert FILE              TLS certificate\n"+
+		"  --tls-key FILE               TLS key\n"+
+		"  --http3                      serve HTTPS over HTTP/3 too (requires TLS)\n"+
+		"  --auth[=false]               require a sign-in once a factor is enrolled\n"+
+		"                               (default: true)\n"+
+		"  --auth-file FILE             authentication state file\n"+
+		"                               (default: $XDG_STATE_HOME/bcwebmux/auth.json)\n"+
+		"  --auth-session-ttl DURATION  browser login lifetime (default: 168h)\n"+
+		"  --kitty-graphics[=false]     advertise Kitty graphics to session shells\n"+
+		"                               (default: true)\n"+
+		"  --worker FILE                PTY worker executable\n"+
+		"\n"+
+		"COMMANDS (each also accepts the options above):\n"+
+		"  auth totp [--rotate] [--no-qr] [--account LABEL]\n"+
+		"      enroll the authenticator app (baseline factor)\n"+
+		"  auth list\n"+
+		"      list enrolled factors\n"+
+		"  auth remove [--totp | --id ID | --all]\n"+
+		"      remove an enrolled factor\n",
+		name, name, name)
 }
 
 // defaultAuthFile is the per-user authentication state file, following the
