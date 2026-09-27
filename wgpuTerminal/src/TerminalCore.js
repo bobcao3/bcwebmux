@@ -662,6 +662,11 @@ export class TerminalCore {
     new Uint8Array(this._wasm.memory.buffer, ptr, bytes.length).set(bytes);
     if (this._invoke("term_snapshot_restore", bytes.length) !== 1)
       throw new Error("terminal snapshot restore failed");
+    // A remote checkpoint can be larger than this client's viewport. Reserve
+    // its actual geometry before restore callbacks or replay can render it.
+    this._state.cols = this._invoke("term_cols");
+    this._state.rows = this._invoke("term_rows");
+    this._host?._prepareTerminalFrame(this, this.cols * this.rows);
     this._pendingRxAt = 0;
     this._invoke("term_invalidate_frame_cache");
     if (this._host) this._host._coreRestored(this);

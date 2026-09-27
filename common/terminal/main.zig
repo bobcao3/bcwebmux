@@ -96,6 +96,14 @@ export fn term_snapshot_restore(len: u32) i32 {
     return terminal.term_snapshot_restore(len);
 }
 
+export fn term_cols() u16 {
+    return if (terminal.terminal) |*value| value.cols else 0;
+}
+
+export fn term_rows() u16 {
+    return if (terminal.terminal) |*value| value.rows else 0;
+}
+
 export fn term_reserve(len: u32) u32 {
     return terminal.term_reserve(len);
 }

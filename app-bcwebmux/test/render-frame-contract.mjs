@@ -55,6 +55,54 @@ const fontFaces = await Promise.all(
   ].map((name) => readFile(new URL(`fonts/${name}`, wasmUrl))),
 );
 
+// Restores must resize renderer admission before any active or inactive core
+// can be rendered; ATTACH_BEGIN's current geometry need not match the snapshot.
+for (const hosted of [false, true]) {
+  const core = new TerminalCore({ renderer: "canvas" });
+  Object.assign(core._state, { cols: 8, rows: 3 });
+  const calls = [];
+  let accepted = false;
+  core._wasm = {
+    memory: new WebAssembly.Memory({ initial: 1 }),
+    term_snapshot_reserve: () => 16,
+    term_snapshot_restore: () => Number(accepted),
+    term_cols: () => 113,
+    term_rows: () => 44,
+    term_invalidate_frame_cache: () => calls.push("invalidate"),
+  };
+  const checkGeometry = () => assert.deepEqual([core.cols, core.rows], [113, 44]);
+  core._schedule = () => {
+    checkGeometry();
+    calls.push("schedule");
+  };
+  if (hosted) {
+    core._host = {
+      _prepareTerminalFrame(restored, cells) {
+        assert.equal(restored, core);
+        checkGeometry();
+        assert.equal(cells, 4972);
+        calls.push("capacity");
+      },
+      _coreRestored(restored) {
+        assert.equal(restored, core);
+        checkGeometry();
+        assert.deepEqual(calls, ["capacity", "invalidate"]);
+        calls.push("restored");
+      },
+    };
+  }
+  assert.throws(() => core.restoreSnapshot(new Uint8Array([1])), /snapshot restore failed/);
+  assert.deepEqual([core.cols, core.rows], [8, 3]);
+  assert.deepEqual(calls, []);
+  accepted = true;
+  core.restoreSnapshot(new Uint8Array([1]));
+  checkGeometry();
+  assert.deepEqual(
+    calls,
+    hosted ? ["capacity", "invalidate", "restored"] : ["invalidate", "schedule"],
+  );
+}
+
 // Canvas opens and renders with unreachable WASM font URLs. Only a switch to STB loads them.
 {
   const previousFetch = globalThis.fetch;
@@ -136,7 +184,9 @@ for (const renderer of ["kb-stb", "canvas"]) {
   core._wasm = (await WebAssembly.instantiate(module, imports)).exports;
   const e = core._wasm;
   e.term_bootstrap();
+  assert.deepEqual([e.term_cols(), e.term_rows()], [0, 0]);
   assert.equal(e.term_init(8, 3), 1);
+  assert.deepEqual([e.term_cols(), e.term_rows()], [8, 3]);
   Object.assign(core._state, { cols: 8, rows: 3 });
   assert.equal(
     e.term_frame_prepare(),

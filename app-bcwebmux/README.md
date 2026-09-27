@@ -189,6 +189,8 @@ node --test test/network-relay.test.mjs test/network-recovery.test.mjs
 node test/visual-e2e.mjs ./zig-out/bin/bcwebmux-server ./zig-out/web
 node test/auth-e2e.mjs ./zig-out/bin/bcwebmux-server ./zig-out/web
 node test/auth-totp-e2e.mjs ./zig-out/bin/bcwebmux-server ./zig-out/web
+node test/session-multiclient-e2e.mjs ./zig-out/bin/bcwebmux-server ./zig-out/web webgl2
+node test/session-multiclient-e2e.mjs ./zig-out/bin/bcwebmux-server ./zig-out/web webgpu
 ```
 
 `zig build test` uses Zig's test runner only. `gotest` uses Go's test runner;
