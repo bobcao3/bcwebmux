@@ -122,7 +122,7 @@
     <header>
       <h1 id="link-dialog-title">[ OPEN LINK ]</h1>
     </header>
-    <p>Terminal text can disguise link destinations. Review the full destination before opening it. Only absolute HTTP and HTTPS destinations can be opened, so Open may be disabled for other links.</p>
+    <p>Terminal text can disguise link destinations. Review the full destination before opening it. Only absolute HTTP and HTTPS destinations can be opened, so Open may be disabled for other links. When a local file service is configured in Settings → LINKS, a file:// destination under its prefix also shows the address that service serves, below the original.</p>
     <p class="link-dialog-label">Full destination</p>
     <output id="link-dialog-uri"></output>
     <button id="link-dialog-cancel" type="button">CANCEL</button>
@@ -155,6 +155,7 @@
       <button id="settings-tab-color" type="button" role="tab" aria-selected="true" aria-controls="settings-panel-color" data-settings-tab="color">COLOR</button>
       <button id="settings-tab-font" type="button" role="tab" aria-selected="false" aria-controls="settings-panel-font" data-settings-tab="font">FONT</button>
       <button id="settings-tab-perf" type="button" role="tab" aria-selected="false" aria-controls="settings-panel-perf" data-settings-tab="perf">PERF</button>
+      <button id="settings-tab-links" type="button" role="tab" aria-selected="false" aria-controls="settings-panel-links" data-settings-tab="links">LINKS</button>
       <button id="settings-tab-auth" type="button" role="tab" aria-selected="false" aria-controls="settings-panel-auth" data-settings-tab="auth">SECURITY</button>
     </div>
     <section id="settings-panel-color" role="tabpanel" aria-labelledby="settings-tab-color">
@@ -234,6 +235,25 @@
         <p>Inspect a snapshot of the shared glyph texture, including unused cache slots.</p>
         <button id="glyph-atlas-open" type="button" aria-haspopup="dialog">VIEW GLYPH TEXTURE</button>
       </fieldset>
+    </section>
+    <section id="settings-panel-links" role="tabpanel" aria-labelledby="settings-tab-links" hidden>
+      <p>Configure a local file service (such as webdav, nginx, Copyparty, tmf, or similar) serving part of this machine to open matching file:// links in a new tab. Nothing is sent to the service until you open a link.</p>
+      <form id="file-service-form">
+        <label class="file-service-enable"><input type="checkbox" name="enabled"> Resolve file:// links through a local file service</label>
+        <label>Service URL
+          <input type="url" name="url" placeholder="https://files.example.com:7443" spellcheck="false" autocomplete="off" autocapitalize="off">
+          <small>Tokens: {host} is this page's hostname, {path} is the served path — e.g. https://{host}:7443{path}?v. Without tokens {path} is appended at the end.</small>
+        </label>
+        <label>Local path prefix
+          <input type="text" name="localPrefix" placeholder="/srv/files" spellcheck="false" autocomplete="off" autocapitalize="off">
+          <small>Only file:// paths under this directory resolve.</small>
+        </label>
+        <label>Served path prefix
+          <input type="text" name="servedPrefix" placeholder="/" spellcheck="false" autocomplete="off" autocapitalize="off">
+          <small>Where that directory appears on the service; / when the service root is the directory root.</small>
+        </label>
+      </form>
+      <output id="file-service-preview" role="status" aria-live="polite"></output>
     </section>
     <section id="settings-panel-auth" role="tabpanel" aria-labelledby="settings-tab-auth" hidden>
       <fieldset>

@@ -107,7 +107,8 @@ Malformed TOML, unknown keys, and unreadable discovered files are fatal;
 including `--http3=false`. Paths in TOML are relative to the process working
 directory; there is no shell or tilde expansion. Supported keys are shown below,
 plus legacy `host` and `origin` (single strings), `web-root`, `shell`, `term`,
-`kitty-graphics`, `worker`, `auth`, `auth-file`, and `auth-session-ttl`.
+`kitty-graphics`, `worker`, `auth`, `auth-file`, `auth-session-ttl`,
+`file-service-url`, and `file-service-prefix`.
 
 Example `~/.config/bcwebmux/config.toml` (replace addresses, origins, and TLS
 paths with your own; omit any range not present on this machine):
@@ -122,6 +123,9 @@ max-sessions = 16
 auth-session-ttl = "168h"
 # auth = false
 # auth-file = "/var/lib/bcwebmux/auth.json"
+# Serve the terminal's file:// links through a local file service:
+# file-service-url = "https://{host}:7443{path}?v"
+# file-service-prefix = "/"
 ```
 
 `auth = false` disables the authentication requirement. `auth-file` defaults to
@@ -136,26 +140,26 @@ Override with `--term` / `term`, or opt out of the Kitty hint with
 
 `listen` takes `HOST:PORT`, `IP:PORT`, or `CIDR:PORT`; every entry must name the
 same port, which is the one all sockets share. IPv6 literals and ranges are
-bracketed to carry a port (`[::1]:8443`). Repeat `--listen` to replace the entire
-file list. CIDRs select **only assigned local addresses**, never a wildcard
-socket.
-Overlapping ranges and duplicate resolved addresses are deduplicated; each
-unmatched range is an error. DNS and interfaces are resolved at startup, not
-watched: restart after address changes. All TCP and (when enabled) UDP/HTTP3
-sockets must bind successfully or startup rolls them all back. Port zero chooses
-one shared ephemeral port.
+bracketed to carry a port (`[::1]:8443`). Repeat `--listen` to replace the
+entire file list. CIDRs select **only assigned local addresses**, never a
+wildcard socket. Overlapping ranges and duplicate resolved addresses are
+deduplicated; each unmatched range is an error. DNS and interfaces are resolved
+at startup, not watched: restart after address changes. All TCP and (when
+enabled) UDP/HTTP3 sockets must bind successfully or startup rolls them all
+back. Port zero chooses one shared ephemeral port.
 
-When `listen` is not provided, hostnames in `origins` are resolved at startup and
-all resolved IPv4/IPv6 addresses assigned locally are bound and deduplicated.
-Wildcard or remote-only results are rejected, and startup fails if any hostname
-has no locally assigned address. The legacy `host` config key names one host and
-takes its port from the origins. Explicit `listen` overrides this automatic
-resolution, which is needed for reverse proxies whose public hostname is not
-locally assigned. There is no default port: the bind port is the one `listen`
-names, or the browser-facing port the origins name (their scheme default, 443 or
-80, when a port is omitted), and startup fails when neither supplies one.
-Automatic resolution is startup-only; restart after address changes. The exact
-origin allowlist is unchanged, and IP aliases are not auto-trusted.
+When `listen` is not provided, hostnames in `origins` are resolved at startup
+and all resolved IPv4/IPv6 addresses assigned locally are bound and
+deduplicated. Wildcard or remote-only results are rejected, and startup fails if
+any hostname has no locally assigned address. The legacy `host` config key names
+one host and takes its port from the origins. Explicit `listen` overrides this
+automatic resolution, which is needed for reverse proxies whose public hostname
+is not locally assigned. There is no default port: the bind port is the one
+`listen` names, or the browser-facing port the origins name (their scheme
+default, 443 or 80, when a port is omitted), and startup fails when neither
+supplies one. Automatic resolution is startup-only; restart after address
+changes. The exact origin allowlist is unchanged, and IP aliases are not
+auto-trusted.
 
 For example:
 
@@ -175,6 +179,60 @@ on their own: until `auth totp` has run, restrict access with tailnet/firewall
 policies or an authenticated TLS proxy. All listeners share one session engine
 and assets. The startup log lists every bound address, accepted origin, and the
 enrolled factors.
+
+## Local file service links
+
+Terminal applications print `file://` links that a browser cannot open. When a
+local file service such as WebDAV, nginx, Copyparty, or tmf serves part of the
+machine over HTTP, Settings → LINKS maps a local path prefix to that service.
+The link dialog shows the original link and, for a matching path, its resolved
+address:
+
+```text
+file:///home/you/share/reports/q3.pdf
+→ http://127.0.0.1:3923/reports/q3.pdf
+```
+
+Only `file://` paths under the configured prefix resolve. For everything else,
+the second line stays absent and OPEN stays disabled. OPEN SERVED LINK opens the
+resolved address in a new tab, with the original destination still visible.
+Nothing is requested from the service until a link is opened.
+
+The service URL is a small template. `{host}` is the hostname the application
+itself is being used on, and `{path}` is the served path, so one configuration
+answers on every name this machine is reached by — LAN, tailnet, or loopback —
+and can hand the service its own query:
+
+```toml
+file-service-url = "https://{host}:7443{path}?v"
+file-service-prefix = "/"
+```
+
+Without tokens the served path is appended to the URL instead, which is what
+`https://box:7443/dav` does. The served prefix, if any, is part of what `{path}`
+stands for. Both keys are required together and are validated at startup, so a
+mistyped template fails loudly rather than producing links that go nowhere.
+
+A browser that has configured its own file service in Settings → LINKS keeps it.
+Otherwise the browser adopts the server's configuration, which is how one
+setting on the machine covers every client, including phones that are not opened
+at a keyboard. The server publishes it at `GET /api/client-config`; browsers
+that never had a configuration of their own do not write the server's values
+into storage, so the server stays the owner of the default.
+
+Three layers keep a link from going anywhere but the configured service: the
+prefix check uses the decoded, traversal-free path; the served path is
+re-encoded segment by segment, so no byte of it reaches the URL as a separator,
+query marker, or fragment; and the template is refused unless the resolved
+address keeps the origin the template produces without the path — a template
+that would let `{path}` stand where the host is read is a startup error. See
+[web/FileServiceLinks.js](web/FileServiceLinks.js) for the rules, which the
+server mirrors in `file_service.go`.
+
+```sh
+node --test test/file-service-links.test.mjs
+node test/file-service-e2e.mjs ./zig-out/bin/bcwebmux-server ./zig-out/web
+```
 
 ## Develop
 

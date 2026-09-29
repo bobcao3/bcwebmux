@@ -9,6 +9,7 @@ import { SessionTransport } from "./SessionTransport.js";
 import { initializeSettings } from "./settings.js";
 import { initializeGlyphAtlasDialog } from "./GlyphAtlasDialog.js";
 import { initializeAuthSettings } from "./AuthSettings.js";
+import { resolveFileServiceLink } from "./FileServiceLinks.js";
 
 // Network-only worker: installation should not cache terminal output or authenticated assets.
 if ("serviceWorker" in navigator && isSecureContext) {
@@ -118,7 +119,7 @@ if (query.has("gpu-test")) document.querySelector("#session-toggle").hidden = tr
 
 let softkeysVisibilityOverride = null;
 let softkeysVisible = false;
-let pendingLinkUri = null;
+let pendingLinkTarget = null;
 let appReady = false;
 let startupRetryAt = null;
 let startupError = null;
@@ -360,26 +361,44 @@ function validatedWebLink(uri) {
   }
 }
 
+function renderLinkDestination(uri, served) {
+  linkDialogUri.replaceChildren(document.createTextNode(uri));
+  if (served) {
+    const detail = document.createElement("span");
+    detail.className = "link-dialog-resolved";
+    detail.textContent = `→ ${served.url}`;
+    detail.title = "Served address, opened in a new tab.";
+    linkDialogUri.append(document.createElement("br"), detail);
+  }
+}
+
 function showLinkConfirmation(uri) {
-  pendingLinkUri = uri;
-  linkDialogUri.textContent = uri;
-  const url = validatedWebLink(uri);
-  linkDialogOpen.disabled = !url;
-  linkDialogOpen.title = url ? "" : "Only absolute HTTP or HTTPS links can be opened.";
+  const webUrl = validatedWebLink(uri);
+  const served = webUrl
+    ? null
+    : resolveFileServiceLink(uri, settings.fileService, { pageHost: location.hostname });
+  const url = webUrl?.href ?? served?.url ?? null;
+  pendingLinkTarget = url ? { url, served } : null;
+  renderLinkDestination(uri, served);
+  linkDialogOpen.disabled = !pendingLinkTarget;
+  linkDialogOpen.textContent = pendingLinkTarget?.served ? "OPEN SERVED LINK" : "OPEN LINK";
+  linkDialogOpen.title = pendingLinkTarget
+    ? `Opens ${pendingLinkTarget.url} in a new tab.`
+    : "Only absolute HTTP or HTTPS destinations, or file:// destinations under the configured file service prefix, can be opened.";
   terminal.suspendFocus();
   linkDialog.showModal();
 }
 
 linkDialogCancel.addEventListener("click", () => linkDialog.close());
 linkDialogOpen.addEventListener("click", () => {
-  const url = validatedWebLink(pendingLinkUri);
-  if (!url) return;
-  window.open(url.href, "_blank", "noopener,noreferrer");
+  const target = pendingLinkTarget;
+  if (!target) return;
+  window.open(target.url, "_blank", "noopener,noreferrer");
   linkDialog.close();
 });
 linkDialog.addEventListener("close", () => {
-  pendingLinkUri = null;
-  linkDialogUri.textContent = "";
+  pendingLinkTarget = null;
+  linkDialogUri.replaceChildren();
   terminal.resumeFocus({ focus: true });
 });
 

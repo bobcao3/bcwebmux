@@ -84,6 +84,9 @@ func main() {
 	}
 	logger.Info("server listening", "addresses", instance.Addrs(), "origins", instance.Origins(), "http3", cfg.HTTP3)
 	logger.Info("authentication", "state", instance.AuthStatus(), "file", cfg.AuthFile)
+	if cfg.FileServiceURL != "" {
+		logger.Info("file service", "url", cfg.FileServiceURL, "prefix", cfg.FileServicePrefix)
+	}
 	for _, warning := range instance.AuthWarnings() {
 		logger.Warn("authentication origin unusable", "detail", warning)
 	}

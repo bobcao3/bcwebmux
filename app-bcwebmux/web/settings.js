@@ -3,8 +3,16 @@
 
 import { renderFontFamily } from "../../wgpuTerminal/src/TerminalOptions.js";
 export { renderFontFamily };
+import {
+  fileServiceReady,
+  normalizeFileServiceConfig,
+  resolveFileServiceLink,
+} from "./FileServiceLinks.js";
 
 const STORAGE_KEY = "bcwebmux.settings.v1";
+// The server publishes machine-local defaults there (the file service this machine runs);
+// use only as a seed for browsers that have not configured their own.
+const CLIENT_CONFIG_PATH = "/api/client-config";
 const DEFAULT_PROFILE = "github-dark-high-contrast";
 const COLOR_FIELDS = [
   "background",
@@ -259,6 +267,8 @@ function loadSettings() {
     ),
     selected: DEFAULT_PROFILE,
     custom: { ...DEFAULT_CUSTOM, ansi: [...DEFAULT_CUSTOM.ansi] },
+    fileService: normalizeFileServiceConfig(),
+    fileServiceTouched: false,
   };
   try {
     const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || "null");
@@ -305,6 +315,8 @@ function loadSettings() {
         return [id, migrateFontFallbacks ? migrateFontFamilies(fallbacks) : fallbacks];
       }),
     );
+    const fileService = normalizeFileServiceConfig(saved.fileService);
+    const fileServiceTouched = Object.hasOwn(saved, "fileService");
     return {
       fontFamily,
       fontSize,
@@ -317,6 +329,8 @@ function loadSettings() {
       fontFallbacks,
       selected,
       custom,
+      fileService,
+      fileServiceTouched,
     };
   } catch {
     return fallback;
@@ -342,6 +356,14 @@ function saveSettings(settings) {
         renderer: settings.renderer,
         selected: settings.selected,
         custom,
+        ...(settings.fileServiceTouched && {
+          fileService: {
+            enabled: Boolean(settings.fileService.enabled),
+            url: settings.fileService.url,
+            localPrefix: settings.fileService.localPrefix,
+            servedPrefix: settings.fileService.servedPrefix,
+          },
+        }),
       }),
     );
   } catch {
@@ -390,6 +412,8 @@ export function initializeSettings() {
   const fontSizeValue = document.querySelector("#font-size-value");
   const fontSizeDecrease = document.querySelector("#font-size-decrease");
   const fontSizeIncrease = document.querySelector("#font-size-increase");
+  const fileServiceForm = document.querySelector("#file-service-form");
+  const fileServicePreview = document.querySelector("#file-service-preview");
   const rendererStbOption =
     fontSettingsForm.elements.renderer.querySelector('option[value="kb-stb"]');
   const perfModeInputs = document.querySelectorAll('input[name="perfMode"]');
@@ -419,6 +443,52 @@ export function initializeSettings() {
     applyDocumentFont(font);
     saveSettings(settings);
     onFontChange(font);
+  };
+  const readFileServiceForm = () => ({
+    enabled: fileServiceForm.elements.enabled.checked,
+    url: fileServiceForm.elements.url.value,
+    localPrefix: fileServiceForm.elements.localPrefix.value,
+    servedPrefix: fileServiceForm.elements.servedPrefix.value,
+  });
+  // The preview resolves draft values with the switch forced on, so a half-typed
+  // configuration is testable before it is enabled.
+  const syncFileServicePreview = () => {
+    const draft = normalizeFileServiceConfig({ ...readFileServiceForm(), enabled: true });
+    const prefix = draft.localPrefix || "/home/you";
+    const example = `file://${prefix === "/" ? "" : prefix}/example.txt`;
+    const resolved = resolveFileServiceLink(example, draft, { pageHost: location.hostname });
+    if (resolved && fileServiceForm.elements.enabled.checked) {
+      fileServicePreview.dataset.tone = "ok";
+    } else {
+      delete fileServicePreview.dataset.tone;
+    }
+    fileServicePreview.textContent = resolved
+      ? `${example} → ${resolved.url}`
+      : fileServiceForm.elements.enabled.checked
+        ? "Enter an http:// or https:// service URL and the local path prefix it serves."
+        : "";
+  };
+  const syncFileServiceForm = () => {
+    fileServiceForm.elements.enabled.checked = settings.fileService.enabled;
+    fileServiceForm.elements.url.value = settings.fileService.url;
+    fileServiceForm.elements.localPrefix.value = settings.fileService.localPrefix;
+    fileServiceForm.elements.servedPrefix.value = settings.fileService.servedPrefix;
+    syncFileServicePreview();
+  };
+  const adoptServerFileService = async () => {
+    if (settings.fileServiceTouched) return;
+    // The server publishes its machine-local file service as a seed for browsers without their own.
+    try {
+      const response = await fetch(CLIENT_CONFIG_PATH, { credentials: "same-origin" });
+      if (!response.ok) return;
+      const payload = await response.json();
+      const config = normalizeFileServiceConfig({ ...payload?.fileService, enabled: true });
+      if (settings.fileServiceTouched || !fileServiceReady(config)) return;
+      settings.fileService = config;
+      syncFileServiceForm();
+    } catch {
+      // Older servers may not provide this endpoint.
+    }
   };
 
   const activate = (id, persist = true) => {
@@ -523,6 +593,7 @@ export function initializeSettings() {
     syncRendererControl();
     fontSettingsForm.elements.renderer.value = settings.renderer;
     for (const input of perfModeInputs) input.checked = input.value === settings.perfMode;
+    syncFileServiceForm();
     onOpen();
     dialog.showModal();
     dialog.querySelector('[role="tab"][aria-selected="true"]').focus();
@@ -592,6 +663,18 @@ export function initializeSettings() {
     syncFontSize();
     applyFontSettings();
   });
+  fileServiceForm.addEventListener("input", syncFileServicePreview);
+  fileServiceForm.addEventListener("change", () => {
+    settings.fileServiceTouched = true;
+    settings.fileService = normalizeFileServiceConfig(readFileServiceForm());
+    fileServiceForm.elements.url.value = settings.fileService.url;
+    fileServiceForm.elements.localPrefix.value = settings.fileService.localPrefix;
+    fileServiceForm.elements.servedPrefix.value = settings.fileService.servedPrefix;
+    saveSettings(settings);
+    syncFileServicePreview();
+  });
+  syncFileServiceForm();
+  adoptServerFileService();
   fontSettingsForm.addEventListener("change", async (event) => {
     const previousFontFamily = settings.fontFamily;
     const requestedRenderer = ["kb-stb", "canvas"].includes(
@@ -682,6 +765,9 @@ export function initializeSettings() {
     },
     get renderer() {
       return settings.renderer;
+    },
+    get fileService() {
+      return settings.fileService;
     },
     setOnChange(callback) {
       onChange = callback || (() => {});

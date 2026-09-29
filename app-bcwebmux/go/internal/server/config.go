@@ -44,6 +44,10 @@ type Config struct {
 	TLSKey        string
 	HTTP3         bool
 	Worker        string
+	// FileServiceURL and FileServicePrefix configure the local file service
+	// the browser resolves file:// links through.
+	FileServiceURL    string
+	FileServicePrefix string
 	// AuthEnabled keeps the browser surface behind a FIDO2 login whenever
 	// credentials are enrolled. AuthFile holds those credentials; whether a
 	// factor is enrolled, not this flag, decides if a login is required.
@@ -98,6 +102,8 @@ func parseConfig(args []string, validateListeners bool) (Config, bool, error) {
 	flags.StringVar(&cfg.TLSKey, "tls-key", "", "TLS key")
 	flags.BoolVar(&cfg.HTTP3, "http3", false, "enable HTTP/3 alongside HTTPS (requires TLS)")
 	flags.StringVar(&cfg.Worker, "worker", "", "worker executable")
+	flags.StringVar(&cfg.FileServiceURL, "file-service-url", "", "local file service URL or {host}/{path} template")
+	flags.StringVar(&cfg.FileServicePrefix, "file-service-prefix", "", "local path prefix the file service serves")
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return cfg, true, nil
@@ -146,6 +152,10 @@ func parseConfig(args []string, validateListeners bool) (Config, bool, error) {
 			cfg.HTTP3 = cli.HTTP3
 		case "worker":
 			cfg.Worker = cli.Worker
+		case "file-service-url":
+			cfg.FileServiceURL = cli.FileServiceURL
+		case "file-service-prefix":
+			cfg.FileServicePrefix = cli.FileServicePrefix
 		}
 	})
 	if len(listens) > 0 {
@@ -185,6 +195,9 @@ func parseConfig(args []string, validateListeners bool) (Config, bool, error) {
 	}
 	if cfg.Term == "" || len(cfg.Term) > 256 || strings.ContainsAny(cfg.Term, "\x00\r\n= \t") {
 		return Config{}, false, fmt.Errorf("invalid term %q", cfg.Term)
+	}
+	if err := validateFileService(cfg.FileServiceURL, cfg.FileServicePrefix); err != nil {
+		return Config{}, false, err
 	}
 	if (cfg.TLSCert == "") != (cfg.TLSKey == "") {
 		return Config{}, false, errors.New("--tls-cert and --tls-key must be supplied together")
@@ -413,6 +426,9 @@ func Usage(program string) string {
 		"  --kitty-graphics[=false]     advertise Kitty graphics to session shells\n"+
 		"                               (default: true)\n"+
 		"  --worker FILE                PTY worker executable\n"+
+		"  --file-service-url URL        local file service for file:// links, with\n"+
+		"                               {host} and {path} tokens\n"+
+		"  --file-service-prefix PATH    local path prefix that service serves\n"+
 		"\n"+
 		"COMMANDS (each also accepts the options above):\n"+
 		"  auth totp [--rotate] [--no-qr] [--account LABEL]\n"+

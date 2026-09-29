@@ -41,22 +41,24 @@ func loadConfig(cfg *Config, explicit string) error {
 			return fmt.Errorf("config %s: %w", path, err)
 		}
 		var file struct {
-			Host           *string  `toml:"host"`
-			Listen         []string `toml:"listen"`
-			WebRoot        *string  `toml:"web-root"`
-			Shell          *string  `toml:"shell"`
-			Term           *string  `toml:"term"`
-			KittyGraphics  *bool    `toml:"kitty-graphics"`
-			Origin         *string  `toml:"origin"`
-			Origins        []string `toml:"origins"`
-			MaxSessions    *uint64  `toml:"max-sessions"`
-			TLSCert        *string  `toml:"tls-cert"`
-			TLSKey         *string  `toml:"tls-key"`
-			HTTP3          *bool    `toml:"http3"`
-			Worker         *string  `toml:"worker"`
-			Auth           *bool    `toml:"auth"`
-			AuthFile       *string  `toml:"auth-file"`
-			AuthSessionTTL *string  `toml:"auth-session-ttl"`
+			Host              *string  `toml:"host"`
+			Listen            []string `toml:"listen"`
+			WebRoot           *string  `toml:"web-root"`
+			Shell             *string  `toml:"shell"`
+			Term              *string  `toml:"term"`
+			KittyGraphics     *bool    `toml:"kitty-graphics"`
+			Origin            *string  `toml:"origin"`
+			Origins           []string `toml:"origins"`
+			MaxSessions       *uint64  `toml:"max-sessions"`
+			TLSCert           *string  `toml:"tls-cert"`
+			TLSKey            *string  `toml:"tls-key"`
+			HTTP3             *bool    `toml:"http3"`
+			Worker            *string  `toml:"worker"`
+			Auth              *bool    `toml:"auth"`
+			AuthFile          *string  `toml:"auth-file"`
+			AuthSessionTTL    *string  `toml:"auth-session-ttl"`
+			FileServiceURL    *string  `toml:"file-service-url"`
+			FileServicePrefix *string  `toml:"file-service-prefix"`
 		}
 		meta, err := toml.Decode(string(data), &file)
 		if err != nil {
@@ -128,6 +130,12 @@ func loadConfig(cfg *Config, explicit string) error {
 				return fmt.Errorf("config %s: invalid auth-session-ttl %q", path, *file.AuthSessionTTL)
 			}
 			cfg.AuthSessionTTL = ttl
+		}
+		if file.FileServiceURL != nil {
+			cfg.FileServiceURL = *file.FileServiceURL
+		}
+		if file.FileServicePrefix != nil {
+			cfg.FileServicePrefix = *file.FileServicePrefix
 		}
 		return nil
 	}

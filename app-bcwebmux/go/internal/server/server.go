@@ -39,7 +39,10 @@ type Server struct {
 	origin     string
 	tls        bool
 	logger     *slog.Logger
-	nextConn   atomic.Uint64
+	// fileService is what GET /api/client-config publishes; it is empty when
+	// the machine configures none.
+	fileService fileServiceDefaults
+	nextConn    atomic.Uint64
 	// auth is nil when authentication is disabled by configuration.
 	auth *authManager
 	// tlsLeaf is the served certificate, used to report origins it cannot
@@ -164,8 +167,9 @@ func New(cfg Config) (*Server, error) {
 		engine: cfg.Engine, assets: assets, listener: listener,
 		http: httpServer, origin: origin, tls: tlsEnabled,
 		listeners: listeners, udps: udps, origins: make(map[string]bool),
-		logger: cfg.Logger,
-		ws:     make(map[*socketConn]struct{}), shutdownDone: make(chan struct{}),
+		logger:      cfg.Logger,
+		fileService: fileServiceDefaults{URL: cfg.FileServiceURL, LocalPrefix: cfg.FileServicePrefix},
+		ws:          make(map[*socketConn]struct{}), shutdownDone: make(chan struct{}),
 		auth: auth, authScopes: newAuthScopes(origins),
 	}
 	for _, origin := range origins {
@@ -418,6 +422,10 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.serveWebSocket(w, r)
 		return
 	}
+	if r.URL.Path == "/api/client-config" {
+		s.serveClientConfig(w, r)
+		return
+	}
 	if strings.HasPrefix(r.URL.Path, "/api/") {
 		s.serveREST(w, r)
 		return
@@ -501,13 +509,17 @@ func writeNativeResponse(w http.ResponseWriter, r *http.Request, response native
 }
 
 func writeJSONError(w http.ResponseWriter, status int, code, message string) {
+	writeJSON(w, status, map[string]any{"error": map[string]string{"code": code, "message": message}})
+}
+
+func writeJSON(w http.ResponseWriter, status int, payload any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Referrer-Policy", "no-referrer")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]string{"code": code, "message": message}})
+	_ = json.NewEncoder(w).Encode(payload)
 }
 
 func (s *Server) validOrigin(r *http.Request) bool {
