@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Cheng Cao
 
+import { loadFontCoverage } from "./browser/render/FontCoverage.js";
+
 export const encoder = new TextEncoder();
 export const decoder = new TextDecoder();
 export const strictDecoder = new TextDecoder("utf-8", { fatal: true });
@@ -115,12 +117,17 @@ export function normalizeFont(font) {
 }
 
 export function loadTerminalFonts(font) {
+  const fallback_family = renderFontFamily([font.cssFamily, ...font.fallbacks]);
   const loads = [
+    loadFontCoverage(),
     document.fonts.load(`normal 400 ${font.size}px "${font.cssFamily}"`),
     document.fonts.load(`normal 700 ${font.size}px "${font.cssFamily}"`),
     document.fonts.load(`italic 400 ${font.size}px "${font.cssFamily}"`),
     document.fonts.load(`italic 700 ${font.size}px "${font.cssFamily}"`),
   ];
+  for (const style of ["normal 400", "normal 700", "italic 400", "italic 700"]) {
+    loads.push(document.fonts.load(`${style} ${font.size}px ${fallback_family}`, "水"));
+  }
   if (font.fallbacks.some((fallback) => /noto emoji/i.test(fallback))) {
     loads.push(document.fonts.load(`normal 400 ${font.size}px "Noto Emoji"`, "😀"));
   }

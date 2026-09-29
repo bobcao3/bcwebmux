@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Cheng Cao
 
 import { decodeCanvasText } from "../../FramePacket.js";
-import { renderFontFamily } from "../../TerminalOptions.js";
+import { CanvasFontSizing } from "./CanvasFontSizing.js";
 import { MAX_RUN_PIXELS } from "./FrameSchema.js";
 
 export function extractCanvasAlpha(context, x, y, width, height, storage) {
@@ -49,6 +49,7 @@ export class CanvasGlyphRasterizer {
     this.runContext = configureRasterContext(this.runCanvas);
     this.canvasMask = new Uint8Array(0);
     this.uploadMask = new Uint8Array(0);
+    this.fontSizing = new CanvasFontSizing();
   }
 
   rasterize(firstSlot, slotCount, spanCells, bytes, offset, count, style, atlas, font, upload) {
@@ -95,23 +96,39 @@ export class CanvasGlyphRasterizer {
     }
     this.runContext.clearRect(0, 0, runWidth, runHeight);
     const context = this.runContext;
-    const family = renderFontFamily([font.cssFamily, ...font.fallbacks]);
-    const cssFont = `${style & 2 ? "italic" : "normal"} ${style & 1 ? 700 : 400} ${atlas.fontSize}px ${family}`;
+    const sizing = this.fontSizing.resolve(
+      context,
+      font,
+      style,
+      atlas.fontSize,
+      atlas.tileWidth,
+      text,
+    );
+    const cssFont = sizing.css;
     context.font = cssFont;
     context.textAlign = "left";
     context.textBaseline = "alphabetic";
     context.direction = "ltr";
     context.fontKerning = font.ligatures ? "normal" : "none";
     context.textRendering = font.ligatures ? "optimizeLegibility" : "optimizeSpeed";
-    if (this.metricFont !== cssFont || this.metricHeight !== runHeight) {
-      const metrics = context.measureText("Mg");
+    const metricReference = sizing.cjk ? "水" : "Mg";
+    if (
+      this.metricFont !== cssFont ||
+      this.metricHeight !== runHeight ||
+      this.metricReference !== metricReference
+    ) {
+      const metrics = context.measureText(metricReference);
       const ascent = metrics.fontBoundingBoxAscent ?? atlas.fontSize * 0.8;
       const descent = metrics.fontBoundingBoxDescent ?? atlas.fontSize * 0.2;
       this.baseline = Math.round((runHeight - ascent - descent) / 2 + ascent);
       this.metricFont = cssFont;
       this.metricHeight = runHeight;
+      this.metricReference = metricReference;
     }
-    context.fillText(text, 0, this.baseline, runWidth);
+    if (sizing.cjk) {
+      const advance = context.measureText(text).width;
+      context.fillText(text, (runWidth - advance) / 2, this.baseline);
+    } else context.fillText(text, 0, this.baseline, runWidth);
     const mask = extractCanvasAlpha(this.runContext, 0, 0, runWidth, runHeight, this.canvasMask);
     this.canvasMask = mask.storage;
     for (let tileOffset = 0; tileOffset < slotCount;) {

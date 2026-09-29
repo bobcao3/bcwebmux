@@ -128,6 +128,22 @@ rendered as coverage in the terminal foreground color, not color-glyph RGB.
 Canvas preserves combining marks, variation selectors and ZWJ sequences within
 one text request. Font-loading completion invalidates cached fallback masks.
 
+[CanvasFontSizing.js](src/browser/render/CanvasFontSizing.js) adapts Ghostty's
+[ideograph metric](https://github.com/ghostty-org/ghostty/blob/main/src/font/Metrics.zig)
+to Canvas CJK requests. Canvas does not expose the selected fallback face, so
+the normalizer measures 水 through the configured font stack rather than
+normalizing individual faces. The atlas still bounds glyph ink. Hosts must serve
+the coverage-probe TTF assets alongside the render modules. To regenerate those
+original MIT-licensed assets from the repository root:
+
+```sh
+uv run --with fonttools==4.66.0 python wgpuTerminal/scripts/generate-font-coverage.py
+```
+
+After building the application, run `node app-bcwebmux/test/font-sizing-e2e.mjs`
+from the repository root to verify sizing in Chromium with installed Noto CJK
+fonts.
+
 Use `await terminal.setRenderer("canvas")` or
 `await terminal.setRenderer("kb-stb")`. Switching to kb/STB loads its font bytes
 before committing; load failure leaves the previous path active.
