@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Cheng Cao
 
-// Terminal applications print `file://` links, and a browser cannot open them.
-// When a local file service (webdav, nginx, Copyparty, tmf, ...) serves part of
+// Terminal applications print `file://` links, or a bare absolute path, and a
+// browser cannot open either; the two name the same local destination. When a
+// local file service (webdav, nginx, Copyparty, tmf, ...) serves part of
 // this machine over HTTP, these helpers answer which file destinations that
 // service can serve, and at which address.
 //
@@ -161,13 +162,15 @@ export function fileServiceReady(config) {
   return Boolean(config?.enabled && config.url && config.localPrefix);
 }
 
-// Resolves a file:// destination to the address the configured service serves
-// it at, or null when this link stays outside the service's tree. `pageHost` is
-// the hostname the application is being used on, which `{host}` stands for; the
-// normalized local path comes back alongside the address for display.
+// Resolves a file:// destination, or a bare absolute path naming the same file,
+// to the address the configured service serves it at, or null when this link
+// stays outside the service's tree. `pageHost` is the hostname the application
+// is being used on, which `{host}` stands for; the normalized local path comes
+// back alongside the address for display.
 export function resolveFileServiceLink(uri, config, context = {}) {
   if (!fileServiceReady(config) || typeof uri !== "string") return null;
-  const parsed = parseAbsoluteUrl(uri);
+  // A bare absolute path and a file:// URL name the same destination.
+  const parsed = parseAbsoluteUrl(uri.startsWith("/") ? `file://${uri}` : uri);
   if (!parsed || parsed.protocol !== "file:") return null;
   // A remote host in a file:// URI names another machine, which this service
   // speaks for only when it is this one.

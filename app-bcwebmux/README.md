@@ -182,21 +182,22 @@ enrolled factors.
 
 ## Local file service links
 
-Terminal applications print `file://` links that a browser cannot open. When a
-local file service such as WebDAV, nginx, Copyparty, or tmf serves part of the
-machine over HTTP, Settings → LINKS maps a local path prefix to that service.
-The link dialog shows the original link and, for a matching path, its resolved
-address:
+Terminal applications print `file://` links, or bare absolute paths, that a
+browser cannot open; both name the same local destination. When a local file
+service such as WebDAV, nginx, Copyparty, or tmf serves part of the machine over
+HTTP, Settings → LINKS maps a local path prefix to that service. The link dialog
+shows the original link and, for a matching path, its resolved address:
 
 ```text
 file:///home/you/share/reports/q3.pdf
 → http://127.0.0.1:3923/reports/q3.pdf
 ```
 
-Only `file://` paths under the configured prefix resolve. For everything else,
-the second line stays absent and OPEN stays disabled. OPEN SERVED LINK opens the
-resolved address in a new tab, with the original destination still visible.
-Nothing is requested from the service until a link is opened.
+Only `file://` URLs and bare absolute paths under the configured prefix resolve.
+For everything else, the second line stays absent and OPEN stays disabled. OPEN
+SERVED LINK opens the resolved address in a new tab, with the original
+destination still visible. Nothing is requested from the service until a link is
+opened.
 
 The service URL is a small template. `{host}` is the hostname the application
 itself is being used on, and `{path}` is the served path, so one configuration

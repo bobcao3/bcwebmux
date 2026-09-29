@@ -384,7 +384,7 @@ function showLinkConfirmation(uri) {
   linkDialogOpen.textContent = pendingLinkTarget?.served ? "OPEN SERVED LINK" : "OPEN LINK";
   linkDialogOpen.title = pendingLinkTarget
     ? `Opens ${pendingLinkTarget.url} in a new tab.`
-    : "Only absolute HTTP or HTTPS destinations, or file:// destinations under the configured file service prefix, can be opened.";
+    : "Only absolute HTTP or HTTPS destinations, or file:// destinations and absolute paths under the configured file service prefix, can be opened.";
   terminal.suspendFocus();
   linkDialog.showModal();
 }

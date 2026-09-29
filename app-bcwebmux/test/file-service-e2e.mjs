@@ -388,6 +388,14 @@ try {
   assert.equal(localDialog.served, `→ ${servedPrefix}/${reportPath}`);
   assert.equal(await openServedLink(), `${servedPrefix}/${reportPath}`);
 
+  // A bare absolute path names the same file as its file:// URL.
+  const bareUri = `${shareDir}/${reportPath}`;
+  await activateLink(bareUri, "BAREPATH");
+  const bareDialog = await readDialog();
+  assert.equal(bareDialog.destination, `${bareUri}→ ${servedPrefix}/${reportPath}`);
+  assert.equal(bareDialog.served, `→ ${servedPrefix}/${reportPath}`);
+  assert.equal(await openServedLink(), `${servedPrefix}/${reportPath}`);
+
   // A path outside the browser's prefix stays closed, even though the server's
   // configuration would have served it.
   await activateLink("file:///etc/hosts", "OUTSIDELINK");

@@ -89,6 +89,31 @@ test("a destination under the prefix resolves to the served address", () => {
   assert.equal(resolve("file://localhost/home/bob/share/x.txt").url, "http://127.0.0.1:3923/x.txt");
 });
 
+test("a bare absolute path resolves like the file:// URL for the same file", () => {
+  for (const uri of [
+    "/home/bob/share/reports/q3.pdf",
+    "/home/bob/share/2026%20plan%20%C3%A9.md",
+    "/home/bob/share/a%23b%3Fc.txt",
+    "/home/bob/share/q3.pdf?v=2#page=4",
+    "/home/bob/share/../../etc/passwd",
+    "/etc/passwd",
+    "/home/bob/share2/x.txt",
+    "/home/bob/share",
+    "/home/bob/share/",
+    "/",
+  ]) {
+    assert.deepEqual(resolve(uri), resolve(`file://${uri}`), uri);
+  }
+  assert.equal(
+    resolve("/home/bob/share/reports/q3.pdf", { servedPrefix: "/dav" }).url,
+    "http://127.0.0.1:3923/dav/reports/q3.pdf",
+  );
+  assert.equal(resolve("/etc/hosts", { localPrefix: "/" }).url, "http://127.0.0.1:3923/etc/hosts");
+  for (const uri of ["/etc/passwd", "/home/bob/share/../../etc/passwd", "/"]) {
+    assert.equal(resolve(uri), null, uri);
+  }
+});
+
 test("the prefix itself is a directory, and a root prefix serves every path", () => {
   assert.equal(resolve("file:///home/bob/share").url, "http://127.0.0.1:3923/");
   assert.equal(
