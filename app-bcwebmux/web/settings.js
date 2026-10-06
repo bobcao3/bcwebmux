@@ -106,7 +106,7 @@ function migrateFontFamilies(families) {
 
 const DEFAULT_SETTINGS = Object.freeze({
   fontFamily: "jetbrains-mono",
-  fontSize: 15,
+  fontSize: 14,
   ligatures: true,
   grainStrength: 4,
   glyphCacheMaxMiB: GLYPH_CACHE_MAX_MIB,

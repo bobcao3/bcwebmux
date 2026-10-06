@@ -695,6 +695,25 @@ func TestAuthSessionsAreSignedAndScoped(t *testing.T) {
 	}
 }
 
+func TestAuthCredentialListIsOpenWhileNothingIsEnrolled(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "auth.json")
+	serving := startAuthServer(t, func(cfg *Config) { cfg.AuthFile = file })
+
+	// The application is open, so Settings must get an empty listing rather
+	// than a 401 that sends it through /login and straight back.
+	response, body := serving.do(t, http.MethodGet, "/auth/credentials", nil, nil)
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("open credential list = %d (%s)", response.StatusCode, body)
+	}
+	var listing map[string]any
+	if err := json.Unmarshal(body, &listing); err != nil {
+		t.Fatalf("credential list: %v (%s)", err, body)
+	}
+	if credentials, ok := listing["credentials"].([]any); !ok || len(credentials) != 0 || listing["enrolled"] != float64(0) || listing["totp"] != nil {
+		t.Fatalf("open credential list = %v", listing)
+	}
+}
+
 func TestAuthCodeBootstrapThenBrowserKeyEnrollment(t *testing.T) {
 	directory := t.TempDir()
 	file := filepath.Join(directory, "auth.json")

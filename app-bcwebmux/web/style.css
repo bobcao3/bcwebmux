@@ -86,7 +86,7 @@ body {
   overflow: hidden;
   background: var(--color-background);
   color: var(--color-foreground);
-  font-size: 15px;
+  font-size: 14px;
   line-height: 1.2;
   font-kerning: none;
   font-variant-ligatures: none;

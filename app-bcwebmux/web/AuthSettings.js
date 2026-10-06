@@ -30,6 +30,9 @@ export function initializeAuthSettings() {
   const codeForm = document.querySelector("#auth-stepup-form");
   const codeInput = document.querySelector("#auth-stepup-code");
   let busy = false;
+  // With nothing enrolled the server is open and nothing can step up, so key
+  // enrollment waits for an authenticator app enrolled on the host.
+  let nothingEnrolled = false;
   let armed = null;
   let armedTimer = null;
   let askForCode = null;
@@ -55,7 +58,7 @@ export function initializeAuthSettings() {
 
   function setBusy(value) {
     busy = value;
-    addButton.disabled = value || !supported();
+    addButton.disabled = value || nothingEnrolled || !supported();
     signOutButton.disabled = value;
   }
 
@@ -97,6 +100,8 @@ export function initializeAuthSettings() {
 
   function render(credentials, rpId, totp) {
     list.textContent = "";
+    nothingEnrolled = !totp && !credentials.length;
+    addButton.disabled = busy || nothingEnrolled;
     if (totp) {
       const row = document.createElement("div");
       row.className = "auth-credential";

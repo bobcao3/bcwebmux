@@ -689,6 +689,17 @@ func (s *Server) serveCredentialList(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
 		return
 	}
+	if totp, keys := s.auth.factors(); !totp && keys == 0 {
+		// Nothing is enrolled, so the application is open and no session can
+		// exist; answering 401 would bounce Settings through /login and back.
+		scope, ok := s.authScopeFor(r)
+		if !ok {
+			writeJSONError(w, http.StatusForbidden, "unknown_origin", "this address is not a configured origin")
+			return
+		}
+		writeAuthJSON(w, map[string]any{"rpId": scope.rpID, "enrolled": 0, "credentials": []any{}, "stepUp": false})
+		return
+	}
 	scope, ok := s.authSessionReady(w, r)
 	if !ok {
 		return
