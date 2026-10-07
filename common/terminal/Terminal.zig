@@ -262,15 +262,22 @@ pub fn term_snapshot_restore(self: *Self, len: u32) i32 {
     var source: std.Io.Reader = .fixed(snapshot);
     var decoded = ghostty.snapshot.decodeExact(alloc, io, &source, .{
         .max_continuation_bytes = continuation_capacity,
-    }) catch return 0;
+    }) catch |err| {
+        std.log.err("terminal snapshot decode failed: {s}", .{@errorName(err)});
+        return 0;
+    };
     defer decoded.deinit(alloc);
     var replacement_terminal: ghostty.Terminal = decoded.toOwned();
     var replacement_owned = true;
     defer if (replacement_owned) replacement_terminal.deinit(alloc);
     replacement_terminal.setKittyGraphicsSizeLimit(alloc, 16 * 1024 * 1024);
-    if (metadata) |bytes| GraphicsCheckpoint.restore(alloc, &replacement_terminal, bytes) catch return 0;
+    if (metadata) |bytes| GraphicsCheckpoint.restore(alloc, &replacement_terminal, bytes) catch |err| {
+        std.log.err("terminal graphics checkpoint restore failed: {s}", .{@errorName(err)});
+        return 0;
+    };
     var replacement_render_state: ghostty.RenderState = .empty;
-    replacement_render_state.update(alloc, &replacement_terminal) catch {
+    replacement_render_state.update(alloc, &replacement_terminal) catch |err| {
+        std.log.err("terminal snapshot render state update failed: {s}", .{@errorName(err)});
         replacement_render_state.deinit(alloc);
         return 0;
     };

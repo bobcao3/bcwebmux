@@ -82,6 +82,9 @@ checkpoint restore. The desktop/mobile visual suite also compares a Kitty RGBA
 image against committed `kitty-graphics` goldens on both backends, using its
 existing full-viewport capture and diff framework. Browse the resulting PNGs in
 `app-bcwebmux/zig-out/screenshots/index.html`. Browser tests require Chromium
-and OpenSSL for their temporary local certificate. An intermittent Go
-runtime/cgo crash was observed during some reconnect runs and has not been
-isolated; passing reruns do not establish that the flake is resolved.
+and OpenSSL for their temporary local certificate. The Go runtime/cgo stack
+corruption seen during reconnect was reproduced with the native I/O runtime's
+SIGIO/SIGPIPE handlers running without `SA_ONSTACK`. The C engine now enables
+alternate signal stacks on those handlers. Native tests check the flags and
+handler restoration; a Go subprocess stress test delivers both signals on Go
+threads and scans their stacks afterward.

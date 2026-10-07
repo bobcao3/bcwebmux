@@ -3,14 +3,62 @@
 package native
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/binary"
 	"errors"
+	"os"
+	"os/exec"
+	"runtime"
 	"sync"
+	"syscall"
 	"testing"
+	"time"
 )
 
 const terminalABI = "bcwebmux-graphics-frame-v7-checkpoint-v1-continuation-1m-glyph-cell-partitions-pty-zstd-stream"
+
+// Foreign SIGIO/SIGPIPE handlers run on the alternate signal stack, including
+// when a signal interrupts a Go goroutine rather than a native I/O worker.
+// Keep the stress in a subprocess so an unsafe handler cannot kill the suite.
+func TestNativeSignalsOnGoThreads(t *testing.T) {
+	const childEnv = "BCWEBMUX_SIGNAL_TEST_CHILD"
+	if os.Getenv(childEnv) != "1" {
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		child := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestNativeSignalsOnGoThreads$")
+		child.Env = append(os.Environ(), childEnv+"=1")
+		if output, err := child.CombinedOutput(); err != nil {
+			t.Fatalf("native signal stress: %v\n%s", err, output)
+		}
+		return
+	}
+	engine, err := OpenEngine(EngineConfig{Worker: "/bin/true", Shell: "/bin/sh"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer engine.Close()
+	var workers sync.WaitGroup
+	for worker := 0; worker < 8; worker++ {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			runtime.LockOSThread()
+			defer runtime.UnlockOSThread()
+			for iteration := 0; iteration < 200; iteration++ {
+				for _, signal := range []syscall.Signal{syscall.SIGIO, syscall.SIGPIPE} {
+					if err := syscall.Tgkill(os.Getpid(), syscall.Gettid(), signal); err != nil {
+						t.Errorf("deliver native interrupt: %v", err)
+						return
+					}
+				}
+				runtime.Gosched()
+			}
+		}()
+	}
+	workers.Wait()
+	runtime.GC() // Scan every potentially interrupted goroutine stack.
+}
 
 // TestNativeEngineABI exercises the actual cgo ownership boundary without
 // spawning a shell. /bin/true is only used as the worker path; the test does

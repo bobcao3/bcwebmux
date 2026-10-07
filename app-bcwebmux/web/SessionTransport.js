@@ -985,8 +985,17 @@ export class SessionTransport {
     }
     if (socket !== this.#socket || this.#disposed) return;
     if (!restored) return;
-    record.core.restoreSnapshot(restored.bytes);
-    record.core.setReplayMode(true);
+    try {
+      record.core.restoreSnapshot(restored.bytes);
+      record.core.setReplayMode(true);
+    } catch (error) {
+      // The checkpoint's framing and digest have already been validated. A
+      // local restore failure belongs to this attachment: retrying the socket
+      // would feed it the same snapshot and disconnect every healthy session.
+      this.#send(FrameType.DETACH, new Uint8Array(0), record, this.#nextRequestId());
+      this.#failAttachment(record, error);
+      return;
+    }
     record.eventSeq = restored.eventSeq;
     record.outputOffset = restored.outputOffset;
     record.state = "catching-up";
@@ -1130,11 +1139,10 @@ export class SessionTransport {
     this.#records.delete(record.attachmentId.toString());
     record.attachmentId = randomUint64();
     record.epoch = 0n;
-    record.generation = new Uint8Array(16);
-    record.eventSeq = 0n;
-    record.outputOffset = 0n;
     this.#records.set(record.attachmentId.toString(), record);
-    this.#sendAttach(record);
+    // Request a full replay without erasing the committed core's identity and
+    // cursor. Shadow replay must be able to roll back if restoration fails.
+    this.#sendAttach(record, true);
     if (record.active && this.#current(record.attempt))
       this.#attachmentEmitter.emit(record, "resync");
   }
@@ -1185,15 +1193,17 @@ export class SessionTransport {
     } else this.#errorEmitter.emit(error);
   }
 
-  #sendAttach(record) {
+  #sendAttach(record, fullReplay = false) {
     record.attempt = this.#attempt;
     record.attachSubmitted = false;
     if (this.#attempt) this.#attempt.readyAt = null;
     record.pendingCredit = 0;
     const payload = new Uint8Array(40);
-    payload.set(record.generation, 0);
-    writeUint64LE(payload, 16, record.eventSeq);
-    writeUint64LE(payload, 24, record.outputOffset);
+    if (!fullReplay) {
+      payload.set(record.generation, 0);
+      writeUint64LE(payload, 16, record.eventSeq);
+      writeUint64LE(payload, 24, record.outputOffset);
+    }
     writeUint32LE(payload, 32, INITIAL_CREDIT);
     this.#send(
       FrameType.ATTACH,

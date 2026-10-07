@@ -91,6 +91,15 @@ fn initEngine(config: *const CEngineConfig) !*Engine {
     engine.threaded = std.Io.Threaded.init(allocator, .{
         .environ = .{ .block = .{ .slice = std.mem.span(std.c.environ) } },
     });
+    // Threaded replaces SIGIO/SIGPIPE with interrupt-only handlers. cgo callers
+    // can receive either signal on a small Go goroutine stack; every foreign
+    // handler must use the alternate signal stack installed by the Go runtime.
+    for ([_]std.posix.SIG{ .IO, .PIPE }) |signal| {
+        var action: std.posix.Sigaction = undefined;
+        std.posix.sigaction(signal, null, &action);
+        action.flags |= std.posix.SA.ONSTACK;
+        std.posix.sigaction(signal, &action, null);
+    }
     errdefer engine.threaded.deinit();
     engine.io = engine.threaded.io();
     engine.registry = try Registry.init(allocator, engine.io, worker, shell, term, raw.disable_kitty_graphics == 0, native_limits);
@@ -243,6 +252,37 @@ export fn bcwebmux_status_name(status: CStatus) [*:0]const u8 {
         c.BCWMUX_WOULD_BLOCK => "would_block",
         else => "unknown",
     };
+}
+
+test "C engine interrupt handlers use alternate signal stacks and restore previous handlers" {
+    const signals = [_]std.posix.SIG{ .IO, .PIPE };
+    var previous: [signals.len]std.posix.Sigaction = undefined;
+    for (signals, &previous) |signal, *action| std.posix.sigaction(signal, null, action);
+    var config = std.mem.zeroes(CEngineConfig);
+    config.abi_version = abi_version;
+    config.worker_path = "/bin/true";
+    config.worker_path_len = "/bin/true".len;
+    config.shell = "/bin/sh";
+    config.shell_len = "/bin/sh".len;
+    var engine: ?*Engine = null;
+    try std.testing.expectEqual(@as(CStatus, c.BCWMUX_OK), bcwebmux_engine_open(&config, &engine));
+    var closed = false;
+    defer {
+        if (!closed) _ = bcwebmux_engine_close(engine);
+    }
+    for (signals) |signal| {
+        var action: std.posix.Sigaction = undefined;
+        std.posix.sigaction(signal, null, &action);
+        try std.testing.expect(action.flags & std.posix.SA.ONSTACK != 0);
+    }
+    try std.testing.expectEqual(@as(CStatus, c.BCWMUX_OK), bcwebmux_engine_close(engine));
+    closed = true;
+    for (signals, previous) |signal, before| {
+        var after: std.posix.Sigaction = undefined;
+        std.posix.sigaction(signal, null, &after);
+        try std.testing.expectEqual(before.flags, after.flags);
+        try std.testing.expectEqual(before.handler.handler, after.handler.handler);
+    }
 }
 
 test "bounded C transport queue reports overflow and preserves ownership" {

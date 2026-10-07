@@ -7,7 +7,7 @@ import { pathToFileURL } from "node:url";
 import { test } from "node:test";
 
 // Use installed assets: fzstd.js is produced by the normal web build.
-const root = resolve(process.argv[2] ?? "zig-out/web");
+const root = resolve(process.env.BCWEBMUX_TEST_WEB_ROOT ?? process.argv[2] ?? "zig-out/web");
 const load = (name) => import(pathToFileURL(resolve(root, name)).href);
 const { SessionTransport, CONNECTION_PROFILE: PROFILE } = await load("SessionTransport.js");
 const { ABI_DIGEST, uuidBytes, writeGeometry } = await load("SessionWire.js");
@@ -158,7 +158,7 @@ function harness(t, options = {}) {
   t.after(() => transport.dispose());
   return { clock, sockets, window, document, errors, transport };
 }
-async function welcome(h, socket = h.sockets.at(-1), rtt = 40) {
+async function welcome(h, socket = h.sockets.at(-1), rtt = 40, maxAttachments = 1) {
   if (socket.readyState !== Socket.OPEN) socket.open();
   const hello = socket.last(F.HELLO);
   await h.clock.advance(rtt);
@@ -170,7 +170,7 @@ async function welcome(h, socket = h.sockets.at(-1), rtt = 40) {
   writeUint32LE(payload, 56, 32 * 1024 * 1024);
   writeUint32LE(payload, 60, 15000);
   writeUint32LE(payload, 64, 45000);
-  payload[68] = 1;
+  payload[68] = maxAttachments;
   writeUint64LE(payload, 80, 1n);
   socket.frame(F.WELCOME, payload, { requestId: hello.requestId });
   await flush();
@@ -222,8 +222,11 @@ async function begin(socket, mode = 2, controller = false, options = {}) {
   await flush();
   return attach;
 }
-async function live(socket, attach) {
-  socket.frame(F.LIVE_BARRIER, new Uint8Array(16), attachmentFields(attach));
+async function live(socket, attach, eventSeq = 0n, outputOffset = 0n) {
+  const payload = new Uint8Array(16);
+  writeUint64LE(payload, 0, eventSeq);
+  writeUint64LE(payload, 8, outputOffset);
+  socket.frame(F.LIVE_BARRIER, payload, attachmentFields(attach));
   await flush();
 }
 async function lease(socket, attach) {
@@ -517,6 +520,125 @@ test("genuine geometry changes made offline remain pending through carried-lease
   assert.ok(
     replacement.sent.indexOf(replacement.frames(F.ACK).at(-1)) < replacement.sent.indexOf(request),
   );
+});
+
+test(
+  "snapshot restore failure detaches only the failed session and rolls back its core",
+  { timeout: 1000 },
+  async (t) => {
+    const h = harness(t);
+    const ready = h.transport.connect();
+    const socket = await welcome(h, h.sockets.at(-1), 40, 2);
+    await ready;
+    await pong(h);
+    const core = new Core(),
+      shadow = new Core();
+    const failure = new Error("terminal snapshot restore failed");
+    shadow.restoreSnapshot = () => {
+      throw failure;
+    };
+    h.transport.activate({
+      core,
+      onResize: () => ({ dispose() {} }),
+      onSelectionModeChange: () => ({ dispose() {} }),
+      createCore: async () => shadow,
+    });
+    const attached = h.transport.attach(metadata, core);
+    await flush();
+    const initial = await begin(socket, 2, true);
+    await live(socket, initial);
+    const record = await attached;
+    h.transport.setActive(record);
+
+    const otherCore = new Core();
+    const otherAttached = h.transport.attach(
+      { ...metadata, id: "44444444-4444-4444-8444-444444444444" },
+      otherCore,
+      { preserveCore: false },
+    );
+    await flush();
+    const other = await begin(socket, 2);
+    await live(socket, other);
+    const otherRecord = await otherAttached;
+
+    record.eventSeq = 7n;
+    record.outputOffset = 9n;
+    const generation = record.generation.slice();
+    socket.frame(F.RESYNC_REQUIRED, new Uint8Array(), attachmentFields(initial));
+    await flush();
+    assert.deepEqual(socket.last(F.ATTACH).payload.subarray(0, 32), new Uint8Array(32));
+    const resumed = await begin(socket, 1);
+    assert.equal(record.core, shadow);
+    const checkpoint = new Uint8Array([1]);
+    const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", checkpoint));
+    record.checkpoint = checkpoint;
+    record.checkpointOffset = checkpoint.length;
+    record.checkpointHash = digest;
+    const acks = socket.frames(F.ACK).length;
+    const removed = new Promise((resolve) =>
+      h.transport.onAttachmentChanged((value, reason) => {
+        if (value === record && reason === "removed") resolve();
+      }),
+    );
+    socket.frame(F.CHECKPOINT_END, digest, attachmentFields(resumed));
+    await removed;
+    await flush();
+    assert.equal(h.transport.state.connected, true);
+    assert.equal(socket.closeCalls, 0);
+    assert.equal(h.transport.state.attachmentCount, 1);
+    assert.equal(record.active, false);
+    assert.equal(record.core, core);
+    assert.equal(record.eventSeq, 7n);
+    assert.equal(record.outputOffset, 9n);
+    assert.deepEqual(record.generation, generation);
+    assert.equal(shadow.disposed, 1);
+    assert.equal(core.disposed, 0);
+    assert.deepEqual(h.errors, [failure]);
+    assert.equal(socket.frames(F.DETACH).at(-1).attachmentId, resumed.attachmentId);
+    assert.equal(socket.frames(F.ACK).length, acks);
+    assert.equal(otherRecord.live, true);
+    assert.equal(otherRecord.active, true);
+    // Already queued frames for the detached binding have no authority.
+    await live(socket, resumed);
+    await live(socket, other);
+    assert.equal(h.transport.state.connected, true);
+    assert.equal(socket.frames(F.ACK).at(-1).attachmentId, other.attachmentId);
+  },
+);
+
+test("resync from journal uses a shadow and preserves the committed cursor on cancellation", async (t) => {
+  const h = harness(t),
+    socket = await healthy(h),
+    core = new Core(),
+    shadow = new Core();
+  let resets = 0;
+  core.reset = () => assert.fail("resync must not reset the committed terminal");
+  shadow.reset = () => resets++;
+  h.transport.activate({
+    core,
+    onResize: () => ({ dispose() {} }),
+    onSelectionModeChange: () => ({ dispose() {} }),
+    createCore: async () => shadow,
+  });
+  const attached = h.transport.attach(metadata, core);
+  await flush();
+  const initial = await begin(socket, 2);
+  await live(socket, initial);
+  const record = await attached;
+  record.eventSeq = 7n;
+  record.outputOffset = 9n;
+  socket.frame(F.RESYNC_REQUIRED, new Uint8Array(), attachmentFields(initial));
+  await flush();
+  await begin(socket, 0);
+  assert.equal(record.core, shadow);
+  assert.equal(resets, 1);
+  assert.equal(record.eventSeq, 0n);
+  socket.emit("error");
+  assert.equal(record.core, core);
+  assert.equal(record.eventSeq, 7n);
+  assert.equal(record.outputOffset, 9n);
+  assert.equal(shadow.disposed, 1);
+  assert.equal(core.disposed, 0);
 });
 
 test("fatal ERROR during digest preserves committed core and retries after the floor", async (t) => {
@@ -935,7 +1057,9 @@ test("observed CLOSED state admits only after backoff and releases constructor f
   ready.catch(() => {});
   h.window.emit("online");
   assert.equal(h.sockets.length, 2, "notification cannot bypass backoff");
-  await h.clock.advance(500);
+  await h.clock.advance(PROFILE.retryFloorMs * 2 - 1);
+  assert.equal(h.sockets.length, 2);
+  await h.clock.advance(1);
   assert.equal(h.sockets.length, 3);
   assert.equal(h.transport.state.unreleasedSockets, 2);
   h.transport.dispose();
@@ -1210,7 +1334,7 @@ test("fatal ERROR bypasses delayed restore, fences late work, and retries attach
   await h.clock.advance(PROFILE.retryFloorMs);
   const replacement = await welcome(h);
   const resumed = await begin(replacement, 2, true);
-  await live(replacement, resumed);
+  await live(replacement, resumed, 7n);
   await attached;
   assert.equal(h.transport.state.status, "ready");
 });
