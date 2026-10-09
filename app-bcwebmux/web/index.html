@@ -24,10 +24,6 @@
   <div id="app-shell">
     <output id="session-live-region" role="status" aria-live="polite"></output>
     <aside id="session-drawer" aria-label="Sessions">
-      <header>
-        <h1>[ SESSIONS ]</h1>
-        <output id="session-drawer-status"></output>
-      </header>
       <div id="session-list">
         <div id="session-tabs" role="tablist" aria-orientation="vertical" aria-label="Terminal sessions"></div>
         <button id="session-new" type="button" aria-label="New session" title="New session">
@@ -36,6 +32,9 @@
           </svg>
         </button>
       </div>
+      <footer id="session-drawer-summary">
+        <h1 id="session-drawer-status">[ 0 SESSIONS ]</h1>
+      </footer>
     </aside>
     <div id="workspace">
       <main id="terminal">
@@ -53,6 +52,7 @@
       </section>
     </section>
     <footer id="terminal-chrome">
+      <div id="terminal-progress" role="progressbar" aria-label="Program progress" aria-valuemin="0" aria-valuemax="100" hidden><div class="terminal-progress-fill"></div></div>
       <nav id="softkeys" aria-label="Terminal soft keys">
         <button type="button" data-code="Escape" data-key="Escape">ESC</button>
         <button type="button" data-code="Tab" data-key="Tab">TAB</button>

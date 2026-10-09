@@ -1,0 +1,356 @@
+{
+  "version": 1,
+  "codec": "av1",
+  "pixelFormat": "gbrp",
+  "crf": 2,
+  "fps": 5,
+  "width": 1024,
+  "height": 720,
+  "frames": [
+    {
+      "name": "progress-absent-1",
+      "width": 1024,
+      "height": 577
+    },
+    {
+      "name": "progress-active-set-0-1024-1",
+      "width": 1024,
+      "height": 577
+    },
+    {
+      "name": "progress-active-set-25-1024-1",
+      "width": 1024,
+      "height": 577
+    },
+    {
+      "name": "progress-active-set-73-1024-1",
+      "width": 1024,
+      "height": 577
+    },
+    {
+      "name": "progress-active-set-100-1024-1",
+      "width": 1024,
+      "height": 577
+    },
+    {
+      "name": "progress-active-error-35-1024-1",
+      "width": 1024,
+      "height": 577
+    },
+    {
+      "name": "progress-active-pause-60-1024-1",
+      "width": 1024,
+      "height": 577
+    },
+    {
+      "name": "progress-softkeys-progress-1",
+      "width": 1024,
+      "height": 577
+    },
+    {
+      "name": "progress-indeterminate-motion-0-1",
+      "width": 1024,
+      "height": 577
+    },
+    {
+      "name": "progress-indeterminate-motion-0.08333333333333333-1",
+      "width": 1024,
+      "height": 577
+    },
+    {
+      "name": "progress-indeterminate-motion-0.16666666666666666-1",
+      "width": 1024,
+      "height": 577
+    },
+    {
+      "name": "progress-indeterminate-motion-0.25-1",
+      "width": 1024,
+      "height": 577
+    },
+    {
+      "name": "progress-indeterminate-motion-0.3333333333333333-1",
+      "width": 1024,
+      "height": 577
+    },
+    {
+      "name": "progress-indeterminate-motion-0.4166666666666667-1",
+      "width": 1024,
+      "height": 577
+    },
+    {
+      "name": "progress-indeterminate-motion-0.5-1",
+      "width": 1024,
+      "height": 577
+    },
+    {
+      "name": "progress-indeterminate-motion-0.5833333333333334-1",
+      "width": 1024,
+      "height": 577
+    },
+    {
+      "name": "progress-indeterminate-motion-0.6666666666666666-1",
+      "width": 1024,
+      "height": 577
+    },
+    {
+      "name": "progress-indeterminate-motion-0.75-1",
+      "width": 1024,
+      "height": 577
+    },
+    {
+      "name": "progress-indeterminate-motion-0.8333333333333334-1",
+      "width": 1024,
+      "height": 577
+    },
+    {
+      "name": "progress-indeterminate-motion-0.9166666666666666-1",
+      "width": 1024,
+      "height": 577
+    },
+    {
+      "name": "progress-indeterminate-motion-1-1",
+      "width": 1024,
+      "height": 577
+    },
+    {
+      "name": "progress-indeterminate-reduced-1",
+      "width": 1024,
+      "height": 577
+    },
+    {
+      "name": "progress-removed-1",
+      "width": 1024,
+      "height": 577
+    },
+    {
+      "name": "progress-reset-1",
+      "width": 1024,
+      "height": 577
+    },
+    {
+      "name": "progress-osc7501-idle-reduced-1",
+      "width": 1024,
+      "height": 577
+    },
+    {
+      "name": "progress-working-motion-0-1",
+      "width": 1024,
+      "height": 577
+    },
+    {
+      "name": "progress-working-motion-0.08333333333333333-1",
+      "width": 1024,
+      "height": 577
+    },
+    {
+      "name": "progress-working-motion-0.16666666666666666-1",
+      "width": 1024,
+      "height": 577
+    },
+    {
+      "name": "progress-working-motion-0.25-1",
+      "width": 1024,
+      "height": 577
+    },
+    {
+      "name": "progress-working-motion-0.3333333333333333-1",
+      "width": 1024,
+      "height": 577
+    },
+    {
+      "name": "progress-working-motion-0.4166666666666667-1",
+      "width": 1024,
+      "height": 577
+    },
+    {
+      "name": "progress-working-motion-0.5-1",
+      "width": 1024,
+      "height": 577
+    },
+    {
+      "name": "progress-working-motion-0.5833333333333334-1",
+      "width": 1024,
+      "height": 577
+    },
+    {
+      "name": "progress-working-motion-0.6666666666666666-1",
+      "width": 1024,
+      "height": 577
+    },
+    {
+      "name": "progress-working-motion-0.75-1",
+      "width": 1024,
+      "height": 577
+    },
+    {
+      "name": "progress-working-motion-0.8333333333333334-1",
+      "width": 1024,
+      "height": 577
+    },
+    {
+      "name": "progress-working-motion-0.9166666666666666-1",
+      "width": 1024,
+      "height": 577
+    },
+    {
+      "name": "progress-osc7501-working-reduced-1",
+      "width": 1024,
+      "height": 577
+    },
+    {
+      "name": "progress-osc7501-done-reduced-1",
+      "width": 1024,
+      "height": 577
+    },
+    {
+      "name": "progress-blocked-motion-0-1",
+      "width": 1024,
+      "height": 577
+    },
+    {
+      "name": "progress-blocked-motion-0.125-1",
+      "width": 1024,
+      "height": 577
+    },
+    {
+      "name": "progress-blocked-motion-0.25-1",
+      "width": 1024,
+      "height": 577
+    },
+    {
+      "name": "progress-blocked-motion-0.375-1",
+      "width": 1024,
+      "height": 577
+    },
+    {
+      "name": "progress-blocked-motion-0.5-1",
+      "width": 1024,
+      "height": 577
+    },
+    {
+      "name": "progress-blocked-motion-0.625-1",
+      "width": 1024,
+      "height": 577
+    },
+    {
+      "name": "progress-blocked-motion-0.75-1",
+      "width": 1024,
+      "height": 577
+    },
+    {
+      "name": "progress-blocked-motion-0.875-1",
+      "width": 1024,
+      "height": 577
+    },
+    {
+      "name": "progress-osc7501-blocked-reduced-1",
+      "width": 1024,
+      "height": 577
+    },
+    {
+      "name": "progress-osc7501-error-reduced-1",
+      "width": 1024,
+      "height": 577
+    },
+    {
+      "name": "progress-active-working-25-1024-1",
+      "width": 1024,
+      "height": 577
+    },
+    {
+      "name": "progress-blocked-motion-0-2",
+      "width": 1024,
+      "height": 577
+    },
+    {
+      "name": "progress-blocked-motion-0.125-2",
+      "width": 1024,
+      "height": 577
+    },
+    {
+      "name": "progress-blocked-motion-0.25-2",
+      "width": 1024,
+      "height": 577
+    },
+    {
+      "name": "progress-blocked-motion-0.375-2",
+      "width": 1024,
+      "height": 577
+    },
+    {
+      "name": "progress-blocked-motion-0.5-2",
+      "width": 1024,
+      "height": 577
+    },
+    {
+      "name": "progress-blocked-motion-0.625-2",
+      "width": 1024,
+      "height": 577
+    },
+    {
+      "name": "progress-blocked-motion-0.75-2",
+      "width": 1024,
+      "height": 577
+    },
+    {
+      "name": "progress-blocked-motion-0.875-2",
+      "width": 1024,
+      "height": 577
+    },
+    {
+      "name": "progress-inactive-blocked-40-1024-1",
+      "width": 1024,
+      "height": 577
+    },
+    {
+      "name": "progress-active-blocked-40-1024-1",
+      "width": 1024,
+      "height": 577
+    },
+    {
+      "name": "progress-active-set-73-1024-2",
+      "width": 1024,
+      "height": 577
+    },
+    {
+      "name": "progress-active-blocked-40-1024-2",
+      "width": 1024,
+      "height": 577
+    },
+    {
+      "name": "progress-context-menu-1",
+      "width": 1024,
+      "height": 577
+    },
+    {
+      "name": "progress-rename-dialog-1",
+      "width": 1024,
+      "height": 577
+    },
+    {
+      "name": "progress-active-set-65-720-1",
+      "width": 720,
+      "height": 720
+    },
+    {
+      "name": "progress-inactive-blocked-40-721-1",
+      "width": 721,
+      "height": 720
+    },
+    {
+      "name": "progress-three-sessions-1",
+      "width": 721,
+      "height": 720
+    },
+    {
+      "name": "progress-exited-done-card-1",
+      "width": 222,
+      "height": 56
+    },
+    {
+      "name": "progress-exited-done-bar-1",
+      "width": 481,
+      "height": 44
+    }
+  ]
+}

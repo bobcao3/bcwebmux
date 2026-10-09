@@ -58,6 +58,8 @@ function copyMetadata(value) {
   if (result.state == null) result.state = "running";
   if (result.name == null) result.name = "";
   if (result.title == null) result.title = "";
+  result.programStatus = result.programStatus ? { ...result.programStatus } : null;
+  result.progressReport = result.progressReport ? { ...result.progressReport } : null;
   return result;
 }
 
@@ -101,6 +103,11 @@ function sameObservableMetadata(a, b) {
       bController?.leaseEpoch == null ? null : String(bController.leaseEpoch),
     ) &&
     Object.is(a?.exitStatus, b?.exitStatus) &&
+    Object.is(a?.programStatus?.state, b?.programStatus?.state) &&
+    Object.is(a?.programStatus?.kind, b?.programStatus?.kind) &&
+    Object.is(a?.programStatus?.progress, b?.programStatus?.progress) &&
+    Object.is(a?.progressReport?.state, b?.progressReport?.state) &&
+    Object.is(a?.progressReport?.progress, b?.progressReport?.progress) &&
     Object.is(Number(aGeometry?.cols ?? 0), Number(bGeometry?.cols ?? 0)) &&
     Object.is(Number(aGeometry?.rows ?? 0), Number(bGeometry?.rows ?? 0)) &&
     Object.is(Number(aGeometry?.cellWidthPx ?? 0), Number(bGeometry?.cellWidthPx ?? 0)) &&

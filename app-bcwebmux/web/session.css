@@ -32,7 +32,7 @@
   min-height: 0;
   grid-column: 1;
   grid-row: 1;
-  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr) var(--controls-row-height);
   overflow: hidden;
   border-right: 2px solid var(--color-border);
   background: var(--color-background);
@@ -40,28 +40,21 @@
   font-family: var(--terminal-font);
 }
 
-#session-drawer > header {
-  display: grid;
-  gap: 5px;
-  min-height: 58px;
-  padding: max(12px, env(safe-area-inset-top)) 14px 10px max(14px, env(safe-area-inset-left));
-  border-bottom: 2px solid var(--color-border);
+#session-drawer-summary {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+  padding: 0 max(14px, env(safe-area-inset-left));
   background: var(--color-surface);
 }
 
-#session-drawer h1 {
-  margin: 0;
-  font-size: 15px;
-  line-height: 1;
-  letter-spacing: .06em;
-}
-
 #session-drawer-status {
-  min-height: 12px;
+  margin: 0;
   overflow: hidden;
-  color: var(--color-muted);
-  font-size: 10px;
+  font-size: 14px;
   line-height: 1.2;
+  letter-spacing: 0.06em;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -71,7 +64,7 @@
   min-height: 0;
   flex-direction: column;
   gap: 2px;
-  padding: 8px;
+  padding: max(8px, env(safe-area-inset-top)) 8px 8px;
   overflow: auto;
   overscroll-behavior: contain;
   scrollbar-color: var(--color-border) var(--color-background);
@@ -102,11 +95,12 @@
   border-color: var(--color-border);
 }
 
+.session-row.is-unread:not(.is-active) {
+  border-color: color-mix(in srgb, #c6b8e8 60%, var(--color-background));
+}
+
 .session-row.is-active {
   border-color: var(--color-accent);
-  background: var(--color-accent);
-  color: var(--color-background);
-  box-shadow: inset 5px 0 0 var(--color-foreground);
 }
 
 .session-row.is-active:focus-within,
@@ -115,7 +109,6 @@
 }
 
 .session-tab,
-.session-rename,
 .session-lifecycle {
   min-width: 0;
   min-height: 44px;
@@ -154,13 +147,6 @@
   pointer-events: none;
 }
 
-.session-name-line {
-  position: relative;
-  width: fit-content;
-  max-width: calc(100% - 60px);
-  min-width: 0;
-}
-
 .session-name,
 .session-detail {
   overflow: hidden;
@@ -180,52 +166,135 @@
   text-transform: uppercase;
 }
 
-.session-row.is-active .session-copy,
-.session-row.is-active .session-name,
-.session-row.is-active .session-detail,
-.session-row.is-active .session-rename,
-.session-row.is-active .session-lifecycle {
-  color: var(--color-background);
+.session-row[data-program-status="idle"],
+#terminal-progress[data-program-status="idle"] {
+  --session-status-color: #c6b8e8;
 }
 
-.session-unread.is-unread::after {
+.session-row[data-program-status="working"] {
+  animation: session-status-shade 2.4s ease-in-out infinite;
+}
+
+.session-row[data-program-status="working"],
+#terminal-progress[data-program-status="working"] {
+  --session-status-color: #adc9ee;
+}
+
+.session-row[data-program-status="done"],
+#terminal-progress[data-program-status="done"] {
+  --session-status-color: #acd9be;
+}
+
+.session-row[data-program-status="blocked"] {
+  animation: session-status-shade 1.6s steps(1, end) infinite;
+}
+
+.session-row[data-program-status="blocked"],
+#terminal-progress[data-program-status="blocked"] {
+  --session-status-color: #efb34e;
+}
+
+.session-row[data-program-status="error"],
+#terminal-progress[data-program-status="error"] {
+  --session-status-color: #e5afb8;
+}
+
+.session-row[data-program-status] {
+  --session-status-dim: 8%;
+  --session-status-bright: 16%;
+  background: color-mix(
+    in srgb,
+    var(--session-status-color) var(--session-status-bright),
+    var(--color-background)
+  );
+}
+
+.session-row[data-program-status="blocked"] {
+  --session-status-dim: 16%;
+  --session-status-bright: 24%;
+}
+
+.session-row[data-program-status] .session-detail {
+  color: color-mix(in srgb, var(--color-foreground) 20%, var(--color-muted));
+}
+
+.session-row[data-progress]::before {
   position: absolute;
-  top: 8px;
-  right: 6px;
-  width: 7px;
-  height: 7px;
-  background: var(--color-success);
+  inset: 0 auto 0 0;
+  width: var(--session-progress);
+  background: color-mix(in srgb, var(--session-status-color) 6%, transparent);
+  pointer-events: none;
   content: "";
 }
 
-.session-rename {
+.session-row.is-paused {
+  animation: none;
+}
+
+#terminal-progress {
   position: absolute;
-  top: -7px;
-  left: 100%;
-  z-index: 3;
-  display: grid;
-  width: 44px;
-  height: 44px;
-  padding: 0;
-  place-items: center;
-  color: var(--color-muted);
-  font-size: 16px;
-  font-weight: 700;
-  opacity: 0;
+  top: 0;
+  right: 0;
+  left: 0;
+  z-index: 9;
+  height: 3px;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--session-status-color) 18%, var(--color-background));
   pointer-events: none;
-  transition: opacity 120ms ease;
 }
 
-.session-rename:focus-visible {
-  opacity: 1;
-  pointer-events: auto;
+#terminal-progress[hidden] {
+  display: none;
 }
 
-@media (hover: hover) {
-  .session-row:has(.session-tab:focus-visible) .session-rename,
-  .session-row:hover .session-rename {
-    opacity: 1;
-    pointer-events: auto;
+.terminal-progress-fill {
+  width: var(--session-progress, 0%);
+  height: 100%;
+  background: color-mix(in srgb, var(--session-status-color) 75%, var(--color-background));
+}
+
+#terminal-progress.is-indeterminate .terminal-progress-fill {
+  width: calc(100% / 3);
+  transform: translateX(100%);
+}
+
+#terminal-progress.is-indeterminate[data-program-status="working"] .terminal-progress-fill {
+  animation: session-progress-sweep 2.4s ease-in-out infinite alternate;
+}
+
+@keyframes session-progress-sweep {
+  from {
+    transform: translateX(0);
+  }
+  to {
+    transform: translateX(200%);
+  }
+}
+
+@keyframes session-status-shade {
+  0%,
+  100% {
+    background-color: color-mix(
+      in srgb,
+      var(--session-status-color) var(--session-status-dim),
+      var(--color-background)
+    );
+  }
+
+  50% {
+    background-color: color-mix(
+      in srgb,
+      var(--session-status-color) var(--session-status-bright),
+      var(--color-background)
+    );
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .session-row[data-program-status="working"],
+  .session-row[data-program-status="blocked"],
+  #terminal-progress.is-indeterminate[data-program-status="working"] .terminal-progress-fill {
+    animation: none;
   }
 }
 
@@ -244,24 +313,6 @@
   font-weight: 700;
 }
 
-.session-row.is-active .session-lifecycle {
-  border-left-color: var(--color-background);
-}
-
-.session-rename:hover,
-.session-rename:focus-visible {
-  background: var(--color-foreground);
-  color: var(--color-background);
-  outline: 0;
-}
-
-.session-row.is-active .session-rename:hover,
-.session-row.is-active .session-rename:focus-visible,
-.session-row.is-active .session-lifecycle:hover,
-.session-row.is-active .session-lifecycle:focus-visible {
-  color: var(--color-background);
-}
-
 .session-lifecycle:hover,
 .session-lifecycle:focus-visible {
   background: var(--color-danger);
@@ -275,12 +326,8 @@
   outline-offset: -4px;
 }
 
-.session-row.is-active .session-tab:focus-visible {
-  outline-color: var(--color-background);
-}
-
-.session-row:not(.is-active)[data-state="exited"] .session-name,
-.session-row:not(.is-active)[data-state="failed"] .session-name {
+.session-row[data-state="exited"] .session-name,
+.session-row[data-state="failed"] .session-name {
   color: var(--color-muted);
 }
 
@@ -337,7 +384,7 @@
 #session-context-menu button:disabled {
   color: var(--color-muted);
   cursor: not-allowed;
-  opacity: .45;
+  opacity: 0.45;
 }
 
 #session-new {
@@ -368,7 +415,7 @@
 #session-new:disabled,
 .session-row button:disabled {
   cursor: not-allowed;
-  opacity: .45;
+  opacity: 0.45;
 }
 
 #session-toggle {
@@ -462,7 +509,7 @@
 #session-action-dialog h1 {
   margin: 15px 0;
   font-size: 15px;
-  letter-spacing: .06em;
+  letter-spacing: 0.06em;
 }
 
 #session-rename-dialog label,
@@ -565,4 +612,3 @@
     background: rgb(0 0 0 / 66%);
   }
 }
-

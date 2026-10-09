@@ -384,7 +384,7 @@
 }
 
 @media (display-mode: fullscreen), (display-mode: standalone) {
-  #terminal { --bottom-safe-inset: 0px; }
+  :root { --bottom-safe-inset: 0px; }
 }
 
 #glyph-atlas-dialog {

@@ -305,6 +305,48 @@ async function harness(values, coreLimit = 4) {
 }
 
 {
+  const { controller, api } = await harness([metadata("a")]);
+  const events = [];
+  const subscription = controller.onChange((event) => events.push(event.type));
+  for (const [field, values] of [
+    [
+      "programStatus",
+      [
+        { state: "working", kind: null, progress: 0 },
+        { state: "working", kind: null, progress: 50 },
+        { state: "blocked", kind: "permission", progress: null },
+        { state: "blocked", kind: "auth", progress: null },
+        null,
+      ],
+    ],
+    [
+      "progressReport",
+      [
+        { state: "set", progress: 0 },
+        { state: "set", progress: 50 },
+        { state: "pause", progress: 50 },
+        { state: "indeterminate", progress: null },
+        null,
+      ],
+    ],
+  ]) {
+    for (const status of values) {
+      api.values.set("a", { ...api.values.get("a"), [field]: status });
+      api.revision += 1;
+      events.length = 0;
+      await controller.refresh();
+      assert.deepEqual(controller.get("a")[field], status);
+      assert.deepEqual(events, ["list"], "status-only changes must update the drawer");
+      events.length = 0;
+      await controller.refresh();
+      assert.deepEqual(events, [], "unchanged status must not update the drawer");
+    }
+  }
+  subscription.dispose();
+  controller.dispose();
+}
+
+{
   const { controller, api } = await harness([metadata("a", 1, "Original")]);
   let releaseList;
   api.listOverride = () =>

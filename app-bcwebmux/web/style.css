@@ -42,6 +42,8 @@
 }
 
 :root {
+  --bottom-safe-inset: env(safe-area-inset-bottom);
+  --controls-row-height: calc(44px + var(--bottom-safe-inset));
   color-scheme: dark;
   --color-background: #0a0c10;
   --color-foreground: #f0f3f6;
@@ -76,8 +78,6 @@ body {
   --cell-width: 8px;
   --cell-height: 16px;
   --softkeys-row-height: 0px;
-  --bottom-safe-inset: env(safe-area-inset-bottom);
-  --controls-row-height: calc(44px + var(--bottom-safe-inset));
   --chrome-height: calc(var(--softkeys-row-height) + var(--controls-row-height));
   display: grid;
   grid-template-rows: minmax(0, 1fr) var(--chrome-height);

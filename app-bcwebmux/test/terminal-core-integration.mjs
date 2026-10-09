@@ -23,7 +23,15 @@ const debugPort = await freePort();
 const profile = await mkdtemp(path.join(os.tmpdir(), "bcwebmux-terminal-core-integration-"));
 const server = spawn(
   serverPath,
-  ["--config", "/dev/null", "--auth=false", "--web-root", webRoot, "--port", String(serverPort)],
+  [
+    "--config",
+    "/dev/null",
+    "--auth=false",
+    "--web-root",
+    webRoot,
+    "--listen",
+    `127.0.0.1:${serverPort}`,
+  ],
   {
     stdio: ["ignore", "pipe", "pipe"],
   },

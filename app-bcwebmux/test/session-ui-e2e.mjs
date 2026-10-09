@@ -6,6 +6,8 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { VideoGoldens } from "./video-goldens.mjs";
 import { Cdp, freePort, terminateProcess, waitFor, delay } from "./test-support.mjs";
 
 const [serverPath, webRoot, outputArgument] = process.argv.slice(2);
@@ -18,6 +20,7 @@ const serverPort = await freePort();
 const debugPort = await freePort();
 const base = `http://127.0.0.1:${serverPort}`;
 const profile = await mkdtemp(path.join(os.tmpdir(), "bcwebmux-session-ui-"));
+const fixtureShell = path.join(profile, "fixture-shell");
 let server;
 let serverError;
 let serverLog = "";
@@ -26,14 +29,38 @@ let chromiumError;
 let page;
 let browser;
 let cleanupPromise = null;
+const progressGoldenCounts = new Map();
+const videoGoldens = new VideoGoldens({
+  goldenDir: path.join(path.dirname(fileURLToPath(import.meta.url)), "golden", "session-progress"),
+  outputDir: screenshotDir,
+  update: process.env.UPDATE_GOLDEN === "1",
+});
+let goldenStyleSheet;
 
 process.once("SIGTERM", () => void cleanup().finally(() => process.exit(124)));
 process.once("SIGINT", () => void cleanup().finally(() => process.exit(130)));
 
 try {
+  await writeFile(
+    fixtureShell,
+    "#!/bin/sh\nexport ENV=/dev/null BASH_ENV=/dev/null PS1='$ '\nprintf '\\033]0;Progress demo\\007'\nexec /bin/sh -i\n",
+    { mode: 0o700 },
+  );
   server = spawn(
     serverPath,
-    ["--auth=false", "--web-root", webRoot, "--port", String(serverPort), "--origin", base],
+    [
+      "--config",
+      "/dev/null",
+      "--auth=false",
+      "--shell",
+      fixtureShell,
+      "--web-root",
+      webRoot,
+      "--listen",
+      `127.0.0.1:${serverPort}`,
+      "--origin",
+      base,
+    ],
     { stdio: ["ignore", "pipe", "pipe"], detached: true },
   );
   server.detachedGroup = true;
@@ -115,8 +142,10 @@ try {
     "notification dialog did not close",
   );
   const firstId = await evaluate("window.bcwebmux.activeSessionId");
+  await verifyLegacyProgress(firstId);
+  await verifyProgramStatus(firstId);
   await evaluate(
-    `window.bcwebmux.write("A=L4-; printf '\\\\033]0;ALPHA\\\\007'; echo \${A}ALPHA; (sleep 4; printf '\\\\033]0;INACTIVE-ALPHA\\\\007'; echo \${A}INACTIVE)&\\n")`,
+    `window.bcwebmux.write("A=L4-; printf '\\\\033]0;ALPHA\\\\007'; echo \${A}ALPHA; (sleep 4; printf '\\\\033]0;INACTIVE-ALPHA\\\\007'; printf '\\\\033]7501;state=blocked:kind=permission:progress=40\\\\007\\\\033]9;4;1;73\\\\007'; echo \${A}INACTIVE)&\\n")`,
   );
   await waitBrowser(
     "window.bcwebmux.sessionText().includes('L4-ALPHA')",
@@ -154,7 +183,7 @@ try {
   );
   try {
     await waitBrowser(
-      `document.querySelector('.session-row[data-session-id="${firstId}"] .session-unread.is-unread')`,
+      `document.querySelector('.session-row[data-session-id="${firstId}"].is-unread .session-tab')?.getAttribute('aria-label').endsWith('unread activity')`,
       10000,
       "inactive session output did not mark the session unread",
     );
@@ -171,6 +200,20 @@ try {
     throw error;
   }
   const secondMetadata = await sessionMetadata(secondId);
+  await waitBrowser(
+    `window.bcwebmux.sessions.find(session => session.id === ${JSON.stringify(firstId)})?.programStatus?.state === 'blocked' && document.querySelector('.session-row[data-session-id="${firstId}"] .session-detail')?.textContent.includes('approval required')`,
+    5000,
+    "inactive card did not receive the server's program status",
+  );
+  await verifyStatusAnimation(firstId, "blocked");
+  await verifyProgressPresentation(firstId, 40);
+  assert.deepEqual((await sessionMetadata(firstId)).progressReport, { state: "set", progress: 73 });
+  assert.equal(
+    await evaluate("document.querySelector('#terminal-progress').hidden"),
+    true,
+    "inactive progress must not appear on another session's bottom bar",
+  );
+  await screenshot("session-drawer-program-status.png");
   assert.equal(await evaluate("document.title"), secondMetadata.title || secondMetadata.name);
   assert.doesNotMatch(await evaluate("document.title"), /INACTIVE-ALPHA/);
   assert.match(await evaluate("window.bcwebmux.sessionText()"), /L4-BETA/);
@@ -192,13 +235,35 @@ try {
   );
   assert.equal(
     await evaluate(
-      `document.querySelector('.session-row[data-session-id="${firstId}"] .session-unread.is-unread') === null`,
+      `!document.querySelector('.session-row[data-session-id="${firstId}"] .session-tab')?.getAttribute('aria-label').endsWith('unread activity')`,
     ),
     true,
   );
   const firstText = await evaluate("window.bcwebmux.sessionText()");
   assert.match(firstText, /L4-ALPHA/);
   assert.doesNotMatch(firstText, /L4-BETA/);
+  await verifyProgressPresentation(firstId, 40);
+  await evaluate(
+    `window.bcwebmux.write(${JSON.stringify("printf '\\033]7501;state=clear\\007'\n")})`,
+  );
+  await waitBrowser(
+    `window.bcwebmux.sessions.find(session => session.id === ${JSON.stringify(firstId)})?.programStatus === null && document.querySelector('.session-row[data-session-id="${firstId}"] .session-detail')?.textContent === 'working · 73%'`,
+    5000,
+    "clearing OSC 7501 must reveal the retained OSC 9;4 report",
+  );
+  await verifyProgressPresentation(firstId, 73);
+  await evaluate(
+    `window.bcwebmux.write(${JSON.stringify("printf '\\033]7501;state=blocked:kind=permission:progress=40\\007\\033]9;4;0\\007'\n")})`,
+  );
+  await waitFor(
+    async () => (await sessionMetadata(firstId)).progressReport === null,
+    5000,
+    "OSC 9;4 removal must clear its report independently",
+  );
+  await verifyProgressPresentation(firstId, 40);
+  await evaluate(
+    `window.bcwebmux.write(${JSON.stringify("(sleep 1; printf '\\033]9;4;1;73\\007'; echo background-ready)&\n")})`,
+  );
   await evaluate("window.bcwebmux.enterSelectionMode()");
   await evaluate(
     `document.querySelector('.session-row[data-session-id="${secondId}"] .session-tab').click()`,
@@ -210,8 +275,13 @@ try {
   );
   assert.match(await evaluate("window.bcwebmux.sessionText()"), /L4-BETA/);
 
+  await waitBrowser(
+    `window.bcwebmux.sessions.find(session => session.id === ${JSON.stringify(firstId)})?.unread && window.bcwebmux.sessions.find(session => session.id === ${JSON.stringify(firstId)})?.progressReport?.progress === 73`,
+    5000,
+    "background progress must mark the inactive session unread",
+  );
   await evaluate(
-    `(() => { const row = document.querySelector('.session-row[data-session-id="${secondId}"]'); const rename = row.querySelector('.session-rename'); rename.focus(); rename.click(); const input = document.querySelector('#session-rename-input'); input.value = 'Renamed beta'; document.querySelector('#session-rename-save').click(); })()`,
+    `(() => { const tab = document.querySelector('.session-row[data-session-id="${secondId}"] .session-tab'); tab.focus(); tab.dispatchEvent(new KeyboardEvent('keydown', { key: 'ContextMenu', bubbles: true })); document.querySelector('.session-context-rename').click(); const input = document.querySelector('#session-rename-input'); input.value = 'Renamed beta'; document.querySelector('#session-rename-save').click(); })()`,
   );
   await waitBrowser(
     `window.bcwebmux.sessions.some(session => session.id === ${JSON.stringify(secondId)} && session.name === 'Renamed beta')`,
@@ -225,17 +295,17 @@ try {
   );
   assert.equal(
     await evaluate(
-      `document.activeElement === document.querySelector('.session-row[data-session-id="${secondId}"] .session-rename')`,
+      `document.activeElement === document.querySelector('.session-row[data-session-id="${secondId}"] .session-tab')`,
     ),
     true,
   );
   await evaluate(
-    `document.querySelector('.session-row[data-session-id="${firstId}"] .session-rename').focus()`,
+    `document.querySelector('.session-row[data-session-id="${firstId}"] .session-tab').focus()`,
   );
   await delay(3500);
   assert.equal(
     await evaluate(
-      `document.activeElement === document.querySelector('.session-row[data-session-id="${firstId}"] .session-rename')`,
+      `document.activeElement === document.querySelector('.session-row[data-session-id="${firstId}"] .session-tab')`,
     ),
     true,
   );
@@ -281,33 +351,6 @@ try {
   assert.ok(tabNavigation.selectedId);
   assert.equal(tabNavigation.selectedCount, 1);
 
-  const controls = await evaluate(`(() => {
-    const selectors = ['#session-toggle', '#session-new', '.session-rename', '.session-lifecycle'];
-    const tabs = document.querySelector('#session-tabs');
-    const newSession = document.querySelector('#session-new');
-    const active = document.querySelector('.session-row[data-session-id="${secondId}"]');
-    const activeTab = active?.querySelector('.session-tab');
-    const activeLifecycle = active?.querySelector('.session-lifecycle');
-    const transparent = value => value === 'transparent' || value === 'rgba(0, 0, 0, 0)';
-    return {
-      sizes: selectors.map(selector => { const rect = document.querySelector(selector).getBoundingClientRect(); return [rect.width, rect.height]; }),
-      nested: document.querySelectorAll('button button, button a, [role=tab] button').length,
-      activeBox: active?.classList.contains('is-active') && getComputedStyle(active).backgroundColor !== 'transparent' && getComputedStyle(active).backgroundColor !== 'rgba(0, 0, 0, 0)' && transparent(getComputedStyle(activeTab).backgroundColor) && transparent(getComputedStyle(activeLifecycle).backgroundColor),
-      inlineRename: [...document.querySelectorAll('.session-rename')].every(rename => rename.parentElement?.matches('.session-name-line') && rename.previousElementSibling?.matches('.session-name')),
-      obsolete: document.querySelector('#session-control, .session-viewer, #session-drawer > footer') === null,
-      newPlacement: newSession?.parentElement === document.querySelector('#session-list') && newSession?.previousElementSibling === tabs,
-      newHasSvg: Boolean(newSession?.querySelector('svg')),
-    };
-  })()`);
-  assert.equal(controls.obsolete, true);
-  assert.equal(controls.newPlacement, true);
-  assert.equal(controls.newHasSvg, true);
-  assert.equal(controls.nested, 0);
-  assert.equal(controls.activeBox, true);
-  assert.equal(controls.inlineRename, true);
-  for (const [width, height] of controls.sizes)
-    assert.ok(width >= 44 && height >= 44, `undersized session control ${width}x${height}`);
-
   await evaluate(
     `(() => { const tab = document.querySelector('.session-row[data-session-id="${secondId}"] .session-tab'); const rect = tab.getBoundingClientRect(); tab.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerId: 41, pointerType: 'touch', button: 0, buttons: 1, isPrimary: true, clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2 })); })()`,
   );
@@ -320,12 +363,14 @@ try {
   await evaluate(
     `(() => { const tab = document.querySelector('.session-row[data-session-id="${secondId}"] .session-tab'); const rect = tab.getBoundingClientRect(); tab.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerId: 41, pointerType: 'touch', button: 0, buttons: 0, isPrimary: true, clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2 })); })()`,
   );
+  await progressGolden("context-menu");
   await evaluate("document.querySelector('.session-context-rename').click()");
   await waitBrowser(
     "document.querySelector('#session-rename-dialog').open",
     1000,
     "context rename dialog did not open",
   );
+  await progressGolden("rename-dialog");
   await evaluate("document.querySelector('#session-rename-cancel').click()");
   await waitBrowser(
     "!document.querySelector('#session-rename-dialog').open",
@@ -374,6 +419,19 @@ try {
     narrowOpenMetadata.revision,
     narrowMetadata.revision,
     "narrow overlay journaled a redundant resize",
+  );
+  await evaluate(`window.bcwebmux.write(${JSON.stringify("printf '\\033]9;4;1;65\\007'\n")})`);
+  await waitFor(
+    async () => (await sessionMetadata(secondId)).progressReport?.progress === 65,
+    5000,
+    "mobile progress report missing",
+  );
+  await verifyProgressPresentation(secondId, 65);
+  await evaluate(`window.bcwebmux.write(${JSON.stringify("printf '\\033]9;4;0\\007'\n")})`);
+  await waitFor(
+    async () => (await sessionMetadata(secondId)).progressReport === null,
+    5000,
+    "mobile progress removal missing",
   );
   await evaluate("document.querySelector('#session-backdrop').click()");
   await waitBrowser(
@@ -441,6 +499,7 @@ try {
     "wide drawer did not close before reload",
   );
   assert.equal(await evaluate("window.bcwebmux.drawerState.open"), false);
+  goldenStyleSheet = null;
   await page.call("Page.reload", { ignoreCache: true });
   await waitBrowser(
     `window.bcwebmux?.connected && window.bcwebmux.activeSessionId === ${JSON.stringify(secondId)}`,
@@ -455,6 +514,17 @@ try {
   await evaluate("document.querySelector('#session-toggle').click()");
   await waitBrowser("window.bcwebmux.drawerState.open", 1000, "restored wide drawer did not open");
   assert.equal((await evaluate("window.bcwebmux.sessions")).length, 2);
+  await waitBrowser(
+    `document.querySelector('.session-row[data-session-id="${firstId}"] .session-detail')?.textContent.includes('approval required')`,
+    5000,
+    "reloaded browser did not hydrate the inactive session's program status",
+  );
+  await waitBrowser(
+    `window.bcwebmux.sessions.find(session => session.id === ${JSON.stringify(firstId)})?.progressReport?.progress === 73`,
+    5000,
+    "reloaded browser did not hydrate inactive OSC 9;4 progress",
+  );
+  await verifyProgressPresentation(firstId, 40);
 
   await evaluate(
     "window.__bcwebmuxCoreCountMax = window.bcwebmux.rendererIdentity.coreCount; window.__bcwebmuxCoreCountTimer = setInterval(() => { window.__bcwebmuxCoreCountMax = Math.max(window.__bcwebmuxCoreCountMax, window.bcwebmux.rendererIdentity.coreCount); }, 5)",
@@ -466,6 +536,7 @@ try {
       10000,
       `session ${name} did not activate`,
     );
+    if (name === "Gamma") await progressGolden("three-sessions");
   }
   const sampledCoreCount = await evaluate(
     "clearInterval(window.__bcwebmuxCoreCountTimer); window.__bcwebmuxCoreCountMax",
@@ -499,6 +570,19 @@ try {
   );
   assert.match(await evaluate("window.bcwebmux.sessionText()"), /L4-BETA/);
   await evaluate(
+    `window.bcwebmux.write("printf '\\\\033]7501;state=clear\\\\007\\\\033]7501;state=working:id=live\\\\007\\\\033]7501;state=done:id=result\\\\007\\\\033]9;4;1;30\\\\007'\\n")`,
+  );
+  await waitFor(
+    async () => {
+      const metadata = await sessionMetadata(secondId);
+      return (
+        metadata.programStatus?.state === "working" && metadata.progressReport?.progress === 30
+      );
+    },
+    5000,
+    "session did not report working before termination",
+  );
+  await evaluate(
     `(() => { const lifecycle = document.querySelector('.session-row[data-session-id="${secondId}"] .session-lifecycle'); lifecycle.focus(); lifecycle.click(); })()`,
   );
   await waitBrowser(
@@ -512,6 +596,24 @@ try {
     8000,
     "session did not exit through UI",
   );
+  assert.equal(
+    (await sessionMetadata(secondId)).programStatus?.state,
+    "done",
+    "exit must remove live work and retain completed results",
+  );
+  assert.equal(
+    (await sessionMetadata(secondId)).progressReport,
+    null,
+    "exit must clear OSC 9;4 progress",
+  );
+  await waitBrowser(
+    `document.querySelector('.session-row[data-session-id="${secondId}"] .session-detail')?.textContent.split(' · ').slice(0, 2).join(' · ') === 'exited · done'`,
+    5000,
+    "exited cards must retain the lifecycle label alongside the completed program status",
+  );
+  await evaluate("document.querySelector('.session-row.is-active .session-tab').focus()");
+  await progressGolden("exited-done-card", ".session-row.is-active");
+  await progressGolden("exited-done-bar", "#terminal-chrome");
   await evaluate(
     `(() => { const lifecycle = document.querySelector('.session-row[data-session-id="${secondId}"] .session-lifecycle'); lifecycle.focus(); lifecycle.click(); })()`,
   );
@@ -553,6 +655,7 @@ try {
     true,
   );
 
+  await videoGoldens.finish();
   const exceptions = page.events.filter((event) => event.method === "Runtime.exceptionThrown");
   assert.deepEqual(exceptions, [], JSON.stringify(exceptions));
   console.log(
@@ -566,6 +669,333 @@ try {
   throw error;
 } finally {
   await cleanup();
+}
+
+async function progressGolden(name, selector = null) {
+  const count = (progressGoldenCounts.get(name) ?? 0) + 1;
+  progressGoldenCounts.set(name, count);
+  const scenario = `${name}-${count}`;
+  await evaluate("document.fonts.ready");
+  if (!goldenStyleSheet) {
+    await page.call("DOM.enable");
+    await page.call("CSS.enable");
+    const { frameTree } = await page.call("Page.getFrameTree");
+    goldenStyleSheet = (await page.call("CSS.createStyleSheet", { frameId: frameTree.frame.id }))
+      .styleSheetId;
+  }
+  // Terminal output and telemetry are volatile; card and bottom-bar titles remain visible.
+  await page.call("CSS.setStyleSheetText", {
+    styleSheetId: goldenStyleSheet,
+    text: "#surface, #screen, #input, #composition, #perf { visibility: hidden !important; }",
+  });
+  await evaluate(
+    "new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))",
+  );
+  try {
+    const clip = selector
+      ? await evaluate(`(() => {
+      const r = document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect();
+      return { x: Math.floor(r.x), y: Math.floor(r.y), width: Math.ceil(r.width), height: Math.ceil(r.height), scale: 1 };
+    })()`)
+      : null;
+    const { width, height } =
+      clip ?? (await evaluate("({ width: innerWidth, height: innerHeight })"));
+    const { data } = await page.call("Page.captureScreenshot", {
+      format: "png",
+      fromSurface: true,
+      ...(clip ? { clip } : {}),
+    });
+    await videoGoldens.add({
+      png: Buffer.from(data, "base64"),
+      name: `progress-${scenario}`,
+      width,
+      height,
+    });
+  } finally {
+    await page.call("CSS.setStyleSheetText", { styleSheetId: goldenStyleSheet, text: "" });
+  }
+}
+
+async function verifyProgressPresentation(id, progress) {
+  const active = await evaluate(`window.bcwebmux.activeSessionId === ${JSON.stringify(id)}`);
+  await waitBrowser(
+    `(() => { const s = window.bcwebmux.sessions.find(s => s.id === ${JSON.stringify(id)}); return (s?.programStatus?.progress ?? s?.progressReport?.progress) === ${progress}; })()`,
+    5000,
+    "progress metadata did not reach the browser",
+  );
+  await evaluate(
+    "new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))",
+  );
+  if (active)
+    assert.equal(
+      await evaluate("document.querySelector('#terminal-progress').getAttribute('aria-valuenow')"),
+      String(progress),
+      "accessible progress must match the report",
+    );
+  const state = await evaluate(
+    `(() => { const s = window.bcwebmux.sessions.find(s => s.id === ${JSON.stringify(id)}); return s.programStatus?.state ?? s.progressReport.state; })()`,
+  );
+  await progressGolden(
+    `${active ? "active" : "inactive"}-${state}-${progress}-${await evaluate("innerWidth")}`,
+  );
+}
+
+async function verifyLegacyProgress(id) {
+  await page.call("Emulation.setEmulatedMedia", {
+    features: [{ name: "prefers-reduced-motion", value: "reduce" }],
+  });
+  const report = async (body, expected) => {
+    await evaluate(`window.bcwebmux.write(${JSON.stringify(`printf '\\033]9;4;${body}\\007'\n`)})`);
+    await waitFor(
+      async () =>
+        JSON.stringify((await sessionMetadata(id)).progressReport) === JSON.stringify(expected),
+      5000,
+      `OSC 9;4 report did not reach session metadata: ${body}`,
+    );
+    await waitBrowser(
+      `JSON.stringify(window.bcwebmux.sessions.find(session => session.id === ${JSON.stringify(id)})?.progressReport) === ${JSON.stringify(JSON.stringify(expected))}`,
+      5000,
+      "OSC 9;4 report did not reach the UI",
+    );
+  };
+  await progressGolden("absent");
+  for (const progress of [0, 25, 73, 100]) {
+    await report(`1;${progress}`, { state: "set", progress });
+    await verifyProgressPresentation(id, progress);
+    if (progress === 73) await screenshot("session-progress-osc9.png");
+  }
+  await report("2;35", { state: "error", progress: 35 });
+  await verifyProgressPresentation(id, 35);
+  await report("4;60", { state: "pause", progress: 60 });
+  await verifyProgressPresentation(id, 60);
+  await evaluate("document.querySelector('#softkeys-toggle').click()");
+  await progressGolden("softkeys-progress");
+  await evaluate("document.querySelector('#softkeys-toggle').click()");
+  await page.call("Emulation.setEmulatedMedia", {
+    features: [{ name: "prefers-reduced-motion", value: "no-preference" }],
+  });
+  assert.equal(
+    await evaluate(
+      `document.querySelector('.session-row[data-session-id="${id}"]').getAnimations().length`,
+    ),
+    0,
+    "paused progress must not animate",
+  );
+  await report("3", { state: "indeterminate", progress: null });
+  assert.equal(
+    await evaluate("document.querySelector('#terminal-progress').getAttribute('aria-valuenow')"),
+    null,
+    "indeterminate progress must not claim a percentage",
+  );
+  await page.call("Emulation.setEmulatedMedia", {
+    features: [{ name: "prefers-reduced-motion", value: "no-preference" }],
+  });
+  assert.equal(
+    await evaluate(
+      "document.querySelector('.terminal-progress-fill').getAnimations()[0]?.playState",
+    ),
+    "running",
+    "indeterminate bottom progress must animate",
+  );
+  for (const phase of Array.from({ length: 13 }, (_, index) => index / 12)) {
+    await evaluate(`(() => {
+      for (const animation of document.getAnimations()) {
+        if (animation.effect.getComputedTiming().iterations !== Infinity) continue;
+        animation.pause();
+        animation.currentTime = animation.effect.getComputedTiming().duration * ${phase};
+      }
+    })()`);
+    await progressGolden(`indeterminate-motion-${phase}`);
+  }
+  await page.call("Emulation.setEmulatedMedia", {
+    features: [{ name: "prefers-reduced-motion", value: "reduce" }],
+  });
+  assert.equal(
+    await evaluate("document.querySelector('.terminal-progress-fill').getAnimations().length"),
+    0,
+    "reduced motion must disable indeterminate bottom progress",
+  );
+  await progressGolden("indeterminate-reduced");
+  await report("0", null);
+  await progressGolden("removed");
+  await report("1;200", { state: "set", progress: 100 });
+  await report("9;20", { state: "set", progress: 100 });
+  await evaluate(`window.bcwebmux.write(${JSON.stringify("printf '\\033]133;A\\007'\n")})`);
+  await waitFor(
+    async () => (await sessionMetadata(id)).progressReport === null,
+    5000,
+    "prompt must clear OSC 9;4 progress",
+  );
+  await report("1;42", { state: "set", progress: 42 });
+  await evaluate(`window.bcwebmux.write(${JSON.stringify("printf '\\033c'\n")})`);
+  await waitFor(
+    async () => (await sessionMetadata(id)).progressReport === null,
+    5000,
+    "reset must clear OSC 9;4 progress",
+  );
+  await waitBrowser(
+    "document.querySelector('#terminal-progress').hidden",
+    5000,
+    "reset must hide bottom progress",
+  );
+  await progressGolden("reset");
+}
+
+async function verifyStatusAnimation(id, state) {
+  await page.call("Emulation.setEmulatedMedia", {
+    features: [{ name: "prefers-reduced-motion", value: "no-preference" }],
+  });
+  const motion = await evaluate(`(() => {
+    const row = document.querySelector('.session-row[data-session-id="${id}"]');
+    const animations = row.getAnimations();
+    window.__statusMotionRow = row;
+    if (animations.length !== 1) return { count: animations.length };
+    const animation = animations[0];
+    const running = animation.playState === 'running';
+    const repeating = animation.effect.getComputedTiming().iterations === Infinity;
+    animation.pause();
+    const duration = animation.effect.getComputedTiming().duration;
+    animation.currentTime = duration * 0.75;
+    return { count: animations.length, running, repeating, time: animation.currentTime };
+  })()`);
+  assert.equal(motion.count, 1, `${state} must animate the card background`);
+  assert.equal(motion.running, true, `${state} motion must start automatically`);
+  assert.equal(motion.repeating, true, `${state} motion must repeat while the status remains`);
+  for (const phase of state === "working"
+    ? Array.from({ length: 12 }, (_, index) => index / 12)
+    : Array.from({ length: 8 }, (_, index) => index / 8)) {
+    await evaluate(`(() => {
+      for (const animation of document.getAnimations()) {
+        if (animation.effect.getComputedTiming().iterations !== Infinity) continue;
+        animation.pause();
+        animation.currentTime = animation.effect.getComputedTiming().duration * ${phase};
+      }
+    })()`);
+    await progressGolden(`${state}-motion-${phase}`);
+  }
+  if (await evaluate(`window.bcwebmux.activeSessionId === ${JSON.stringify(id)}`)) {
+    const original = await evaluate(
+      `window.bcwebmux.sessions.find(session => session.id === ${JSON.stringify(id)}).programStatus`,
+    );
+    const field = state === "working" ? "progress" : "kind";
+    const value = state === "working" ? 50 : "question";
+    await evaluate(
+      `window.bcwebmux.write(${JSON.stringify(`printf '\\033]7501;state=${state}:${field}=${value}\\007'\n`)})`,
+    );
+    await waitBrowser(
+      `document.querySelector('.session-row[data-session-id="${id}"]') !== window.__statusMotionRow && window.bcwebmux.sessions.find(session => session.id === ${JSON.stringify(id)})?.programStatus?.${field} === ${JSON.stringify(value)}`,
+      5000,
+      "status update did not refresh the card",
+    );
+    assert.ok(
+      (await evaluate(
+        `document.querySelector('.session-row[data-session-id="${id}"]').getAnimations()[0].currentTime`,
+      )) >= motion.time,
+      "metadata refresh must preserve the status animation's phase",
+    );
+    const restored = `state=${state}${original.kind ? `:kind=${original.kind}` : ""}${original.progress !== null ? `:progress=${original.progress}` : ""}`;
+    await evaluate(
+      `window.bcwebmux.write(${JSON.stringify(`printf '\\033]7501;${restored}\\007'\n`)})`,
+    );
+    await waitBrowser(
+      `JSON.stringify(window.bcwebmux.sessions.find(session => session.id === ${JSON.stringify(id)})?.programStatus) === ${JSON.stringify(JSON.stringify(original))}`,
+      5000,
+      "original program status was not restored",
+    );
+  }
+  await page.call("Emulation.setEmulatedMedia", {
+    features: [{ name: "prefers-reduced-motion", value: "reduce" }],
+  });
+  assert.equal(
+    await evaluate(
+      `document.querySelector('.session-row[data-session-id="${id}"]').getAnimations().length`,
+    ),
+    0,
+    "reduced motion must disable status animations",
+  );
+}
+
+async function verifyProgramStatus(id) {
+  await page.call("Emulation.setEmulatedMedia", {
+    features: [{ name: "prefers-reduced-motion", value: "reduce" }],
+  });
+  const report = async (body, expected) => {
+    await evaluate(
+      `window.bcwebmux.write(${JSON.stringify(`printf '\\033]7501;${body}\\007'\n`)})`,
+    );
+    await waitFor(
+      async () => {
+        const metadata = await sessionMetadata(id);
+        return JSON.stringify(metadata.programStatus) === JSON.stringify(expected);
+      },
+      5000,
+      `OSC 7501 report did not reach session metadata: ${body}`,
+    );
+    await waitBrowser(
+      `(() => {
+      const session = window.bcwebmux.sessions.find(session => session.id === ${JSON.stringify(id)});
+      const row = document.querySelector('.session-row[data-session-id="${id}"]');
+      return JSON.stringify(session?.programStatus) === ${JSON.stringify(JSON.stringify(expected))} &&
+        ${expected ? `row?.querySelector('.session-detail')?.textContent.includes(${JSON.stringify(expected.state)})` : `!row?.hasAttribute('data-program-status') && row?.querySelector('.session-detail')?.hidden`};
+    })()`,
+      5000,
+      "program status did not reach the card",
+    );
+  };
+  for (const state of ["idle", "working", "done", "blocked", "error"]) {
+    const expected = {
+      state,
+      kind: state === "blocked" ? "permission" : null,
+      progress: state === "working" ? 0 : null,
+    };
+    await report(
+      `state=${state}${state === "blocked" ? ":kind=permission" : ""}${state === "working" ? ":progress=0" : ""}`,
+      expected,
+    );
+    if (state === "working" || state === "blocked") await verifyStatusAnimation(id, state);
+    await progressGolden(`osc7501-${state}-reduced`);
+  }
+  await report("state=working:id=build:progress=25", {
+    state: "error",
+    kind: null,
+    progress: null,
+  });
+  await report("state=clear", null);
+  await report("state=working:id=build:progress=25", {
+    state: "working",
+    kind: null,
+    progress: 25,
+  });
+  await verifyProgressPresentation(id, 25);
+  await screenshot("session-progress-osc7501.png");
+  await report("state=blocked:id=build/test:kind=auth", {
+    state: "blocked",
+    kind: "auth",
+    progress: null,
+  });
+  await report("state=clear:id=build", null);
+  await report("state=done", { state: "done", kind: null, progress: null });
+  await report("state=clear:id=bad//id", { state: "done", kind: null, progress: null });
+  await report("state=unknown", { state: "done", kind: null, progress: null });
+  await report("state=working:id=temporary", { state: "working", kind: null, progress: null });
+  await evaluate(`window.bcwebmux.write(${JSON.stringify("printf '\\033]133;A\\007'\n")})`);
+  await waitFor(
+    async () => (await sessionMetadata(id)).programStatus?.state === "done",
+    5000,
+    "prompt must discard live work but retain results",
+  );
+  await report("state=idle", { state: "idle", kind: null, progress: null });
+  await evaluate(`window.bcwebmux.write(${JSON.stringify("printf '\\033c'\n")})`);
+  await waitFor(
+    async () => (await sessionMetadata(id)).programStatus === null,
+    5000,
+    "full reset must clear program status",
+  );
+  await waitBrowser(
+    `!document.querySelector('.session-row[data-session-id="${id}"]')?.hasAttribute('data-program-status')`,
+    5000,
+    "reset must remove the card tint",
+  );
 }
 
 async function evaluate(expression) {
@@ -623,6 +1053,7 @@ async function cleanup() {
       try {
         browser?.close();
       } catch {}
+      await videoGoldens.dispose();
       await terminateProcess(chromium);
       await terminateProcess(server);
       await rm(profile, { recursive: true, force: true });

@@ -5,6 +5,7 @@ import { Terminal } from "/wgpuTerminal/src/index.js";
 import { SessionApi } from "./SessionApi.js";
 import { SessionController } from "./SessionController.js";
 import { SessionDrawer } from "./SessionDrawer.js";
+import { applySessionStatus, programStatusLabel, sessionStatus } from "./SessionStatus.js";
 import { SessionTransport } from "./SessionTransport.js";
 import { initializeSettings } from "./settings.js";
 import { initializeGlyphAtlasDialog } from "./GlyphAtlasDialog.js";
@@ -535,6 +536,18 @@ const drawer = new SessionDrawer({
 });
 drawer.init();
 if (query.has("gpu-test")) drawer.close();
+const terminalProgress = document.querySelector("#terminal-progress");
+function renderTerminalProgress() {
+  const status = sessionStatus(sessionController.activeSession);
+  const progress = applySessionStatus(terminalProgress, status);
+  terminalProgress.hidden = !status || status.state === "idle";
+  terminalProgress.classList.toggle("is-indeterminate", status != null && progress === null);
+  if (progress === null) terminalProgress.removeAttribute("aria-valuenow");
+  else terminalProgress.setAttribute("aria-valuenow", String(progress));
+  const label = programStatusLabel(status);
+  terminalProgress.setAttribute("aria-valuetext", label);
+  terminalProgress.title = label;
+}
 sessionController.onChange(() => {
   activeAttachment = query.has("gpu-test")
     ? transport.activeAttachment
@@ -542,8 +555,9 @@ sessionController.onChange(() => {
   updateTerminalIdentity(sessionController.activeSession);
   renderConnectionStatus();
   const count = sessionController.sessions.length;
+  renderTerminalProgress();
   document.querySelector("#session-drawer-status").textContent =
-    `${count} ${count === 1 ? "SESSION" : "SESSIONS"}`;
+    `[ ${count} ${count === 1 ? "SESSION" : "SESSIONS"} ]`;
 });
 sessionController.onActiveChange(() => {
   activeAttachment = query.has("gpu-test")
@@ -551,6 +565,7 @@ sessionController.onActiveChange(() => {
     : sessionController.activeAttachment;
   updateTerminalIdentity(sessionController.activeSession);
   renderConnectionStatus();
+  renderTerminalProgress();
 });
 terminal.onError((error) => showClientError(error, "terminal error"));
 terminal.onTitleChange((title) => {

@@ -6,6 +6,8 @@ import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import sharp from "sharp";
 
+sharp.concurrency(2);
+
 export function pixelDifference(actual, expected, width, height, tolerance = 24) {
   assert.equal(actual.length, width * height * 3);
   assert.equal(expected.length, actual.length);
@@ -45,6 +47,8 @@ export async function compareScreenshot({
   width,
   height,
   update = false,
+  tolerance = 24,
+  referencePng,
 }) {
   await mkdir(outputDir, { recursive: true });
   const actualPath = path.join(outputDir, `${name}.png`);
@@ -56,19 +60,36 @@ export async function compareScreenshot({
   const actual = await decode(png);
   assert.equal(actual.info.width, width, `${name}: screenshot width`);
   assert.equal(actual.info.height, height, `${name}: screenshot height`);
-  const goldenPath = path.join(goldenDir, `${goldenName}.webp`);
+  const goldenPath = path.join(goldenDir, `${goldenName}.avif`);
   if (update) {
     await mkdir(goldenDir, { recursive: true });
-    await sharp(png).webp({ lossless: true }).toFile(goldenPath);
+    for (const quality of [60, 80, 100, null]) {
+      const encoded = await sharp(png)
+        .avif({
+          ...(quality === null ? { lossless: true } : { quality }),
+          chromaSubsampling: "4:4:4",
+          effort: 6,
+        })
+        .toBuffer();
+      const decoded = await decode(encoded);
+      const error = pixelDifference(actual.data, decoded.data, width, height, tolerance);
+      if (error.changedRatio <= 0.0005 && error.maxTileRatio <= 0.005) {
+        await writeFile(goldenPath, encoded);
+        break;
+      }
+      assert.notEqual(quality, null, `${name}: lossless AVIF did not preserve the reference`);
+    }
   }
-  let golden;
-  try {
-    golden = await readFile(goldenPath);
-  } catch (error) {
-    if (error.code !== "ENOENT") throw error;
-    throw new Error(
-      `Missing ${goldenPath}; inspect ${actualPath}, then rerun visual-e2e.mjs with UPDATE_GOLDEN=1`,
-    );
+  let golden = referencePng;
+  if (!golden) {
+    try {
+      golden = await readFile(goldenPath);
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+      throw new Error(
+        `Missing ${goldenPath}; inspect ${actualPath}, then rerun the visual test with UPDATE_GOLDEN=1`,
+      );
+    }
   }
   const expected = await decode(golden);
   assert.equal(expected.info.width, width, `${name}: golden width; actual: ${actualPath}`);
@@ -78,6 +99,7 @@ export async function compareScreenshot({
     expected.data,
     width,
     height,
+    tolerance,
   );
   // A local limit prevents a missing glyph from disappearing in a mostly dark full viewport.
   if (changedRatio > 0.002 || maxTileRatio > 0.02) {

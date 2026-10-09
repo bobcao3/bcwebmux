@@ -24,19 +24,19 @@ rendering works on WebGPU and WebGL2. This is not full Kitty compatibility.
   and bounded. Both renderers blend RGBA pixels. Browser decoding does not send
   delayed Kitty replies or change logical terminal state.
 - Session checkpoints wrap the VT snapshot with a bounded `KGST` logical-image
-  envelope. Legacy VT-only snapshots remain readable. If historical encoded
-  bytes are unavailable after restore, image identity and protocol behavior
-  persist but the image remains undrawn until retransmission. Capture waits for
-  a complete APC/chunk boundary, then applies ordered PTY output once.
+  envelope. The restore path also accepts VT-only snapshots. If historical
+  encoded bytes are unavailable after restore, image identity and protocol
+  behavior persist but the image remains undrawn until retransmission. Capture
+  waits for a complete APC/chunk boundary, then applies ordered PTY output once.
 
 Unsupported: animation commands, filesystem/temporary-file/shared-memory
 sources, and the rest of Kitty's full protocol. A PNG's signature, IHDR and IHDR
 CRC and its bounded compressed-stream length are validated at logical admission;
 full raster validation happens in the browser. Thus a successful protocol reply
 does **not** guarantee that a damaged PNG can be displayed. Browser decode
-currently runs asynchronously on the main thread, not in a Web Worker.
-Visibility suspension, graphics device loss and overload behavior have not been
-verified by the browser screenshot test.
+currently runs asynchronously on the main thread, not in a Web Worker. The
+browser screenshot test does not cover visibility suspension, graphics device
+loss or overload behavior.
 
 Limits include 4096 pixels per side, 16 MiB of decoded-byte accounting per
 image, 8 MiB of encoded bytes per upload, 32 MiB of retained source bytes, 512
@@ -47,17 +47,25 @@ state.
 
 ## Build dependency
 
-`app-bcwebmux/build.zig.zon` fetches the `bobcao3/ghostty` fork's
-`bcwebmux/wasm-kitty-graphics` branch at commit `a21f94b` by URL, with a
-verified hash. No local checkout or submodule is needed. Four patches enable
-freestanding Kitty graphics, exclude OS-backed image loaders on WASM, expose
-Ghostty's APC dispatch through a stream-handler hook, and export
-`device_attributes`. Upstream's VT snapshot omits image/placement registries,
-which is why `KGST` exists.
+`app-bcwebmux/build.zig.zon` pins the `bobcao3/ghostty` fork at
+[`acf31468a`](https://github.com/bobcao3/ghostty/commit/acf31468a65f6b9f11e97987dc08fe442e5f4049),
+based on upstream main
+[`c770410db`](https://github.com/ghostty-org/ghostty/commit/c770410dbb57909ff4f6921a6497688a957f85db),
+with a verified archive hash. No local checkout or submodule is needed. Three
+patches enable freestanding Kitty graphics, exclude OS-backed image loaders on
+WASM, and expose Ghostty's APC dispatch through a stream-handler hook. Upstream
+exports `device_attributes`. Upstream's VT snapshot omits image/placement
+registries, which is why `KGST` exists.
 
-To bump the pin, rebase `bcwebmux/wasm-kitty-graphics` in the `bobcao3/ghostty`
-fork onto upstream `main` and push it. Then update `.url` to the new commit and
-`.hash` (printed by `zig fetch <url>`) in `app-bcwebmux/build.zig.zon`.
+To bump the pin, rebase the fork patches onto upstream `main` in a clean
+worktree, retain only patches absent from upstream, and push
+`bcwebmux/wasm-kitty-graphics` with `--force-with-lease`. Then update `.url` to
+the new commit and `.hash` (printed by `zig fetch <url>` from `app-bcwebmux/`)
+in `app-bcwebmux/build.zig.zon`. Update `terminal_abi` in
+`app-bcwebmux/src/session_manifest.zig`, the matching SHA-256 digest in
+`app-bcwebmux/web/SessionWire.js`, and the protocol test constants when changing
+terminal semantics. The client and server require matching compatibility
+identifiers before replaying PTY output.
 
 ## Verification
 
@@ -77,14 +85,13 @@ The HTTPS browser test reads actual pixels for raw and chunked zlib PNG images,
 z layers, RGBA blending, relative and virtual placement, deletion, alternate
 screens and reconnect on both backends. When `viu` is installed, the same test
 exercises its DA1/Kitty probes and a 5.7 MiB raw image on both backends. The
-native continuation test compares old-ID operations and subsequent text after
-checkpoint restore. The desktop/mobile visual suite also compares a Kitty RGBA
-image against committed `kitty-graphics` goldens on both backends, using its
-existing full-viewport capture and diff framework. Browse the resulting PNGs in
-`app-bcwebmux/zig-out/screenshots/index.html`. Browser tests require Chromium
-and OpenSSL for their temporary local certificate. The Go runtime/cgo stack
-corruption seen during reconnect was reproduced with the native I/O runtime's
-SIGIO/SIGPIPE handlers running without `SA_ONSTACK`. The C engine now enables
-alternate signal stacks on those handlers. Native tests check the flags and
-handler restoration; a Go subprocess stress test delivers both signals on Go
-threads and scans their stacks afterward.
+native continuation test compares operations on restored image IDs and
+subsequent text after checkpoint restore. The desktop/mobile visual suite also
+compares a Kitty RGBA image against committed `kitty-graphics` goldens on both
+backends, using its existing full-viewport capture and diff framework. Browse
+the resulting PNGs in `app-bcwebmux/zig-out/screenshots/index.html`. Browser
+tests require Chromium and OpenSSL for their temporary local certificate. The
+native I/O runtime installs SIGIO/SIGPIPE handlers with `SA_ONSTACK` so the
+handlers use alternate signal stacks when a signal interrupts a Go thread.
+Native tests check the flags and handler restoration; a Go subprocess stress
+test delivers both signals on Go threads and scans their stacks afterward.

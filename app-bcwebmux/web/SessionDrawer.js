@@ -1,9 +1,12 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Cheng Cao
 
+import { applySessionStatus, programStatusLabel, sessionStatus } from "./SessionStatus.js";
+
 const STORAGE_VERSION = "v1";
 const LONG_PRESS_MS = 550;
 const LONG_PRESS_MOVE_PX = 10;
+
 function lifecycleAction(metadata) {
   return metadata?.state === "creating" ||
     metadata?.state === "running" ||
@@ -270,11 +273,20 @@ export class SessionDrawer {
     const tabs = this.#refs.tabs;
     const focusedElement = tabs.ownerDocument.activeElement;
     const focusedRowId = focusedElement?.closest?.(".session-row")?.dataset?.sessionId;
-    const focusedControl = ["session-tab", "session-rename", "session-lifecycle"].find(
-      (className) => focusedElement?.closest?.(`.${className}`),
+    const focusedControl = ["session-tab", "session-lifecycle"].find((className) =>
+      focusedElement?.closest?.(`.${className}`),
     );
     const activeId =
       this.#controller.activeSessionId == null ? "" : String(this.#controller.activeSessionId);
+    const motion = new Map(
+      [...tabs.children].map((row) => [
+        row.dataset.sessionId,
+        {
+          state: row.dataset.programStatus,
+          time: row.getAnimations()[0]?.currentTime,
+        },
+      ]),
+    );
     this.#tabs.clear();
     tabs.replaceChildren();
     const sessions = this.#controller.sessions ?? [];
@@ -292,11 +304,8 @@ export class SessionDrawer {
         row = tabs.ownerDocument.createElement("div"),
         tab = tabs.ownerDocument.createElement("button"),
         copy = tabs.ownerDocument.createElement("div"),
-        nameLine = tabs.ownerDocument.createElement("div"),
         name = tabs.ownerDocument.createElement("span"),
         detail = tabs.ownerDocument.createElement("span"),
-        unread = tabs.ownerDocument.createElement("span"),
-        rename = tabs.ownerDocument.createElement("button"),
         remove = tabs.ownerDocument.createElement("button");
       const label = String(metadata.name || metadata.title || "Untitled terminal"),
         attached = Boolean(this.#controller.isAttached?.(id)),
@@ -304,8 +313,12 @@ export class SessionDrawer {
         action = lifecycleAction(metadata),
         terminate = action === "terminate";
       row.className = id === activeId ? "session-row is-active" : "session-row";
+      row.classList.toggle("is-unread", Boolean(metadata.unread));
       row.dataset.sessionId = id;
       row.dataset.state = String(metadata.state || "unknown");
+      const status = sessionStatus(metadata);
+      const statusLabel = programStatusLabel(status);
+      applySessionStatus(row, status);
       tab.type = "button";
       tab.className = "session-tab";
       tab.role = "tab";
@@ -313,27 +326,24 @@ export class SessionDrawer {
       tab.id = `session-tab-${id.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
       tab.tabIndex = id === focusId ? 0 : -1;
       tab.setAttribute("aria-selected", String(id === activeId));
-      tab.setAttribute("aria-label", label);
+      tab.setAttribute("aria-label", metadata.unread ? `${label} · unread activity` : label);
       tab.setAttribute("aria-haspopup", "menu");
       if (this.#refs.workspace?.id) tab.setAttribute("aria-controls", this.#refs.workspace.id);
       copy.className = "session-copy";
-      nameLine.className = "session-name-line";
       name.className = "session-name";
       name.textContent = label;
       detail.className = "session-detail";
       detail.id = `${tab.id}-detail`;
-      detail.textContent = `${metadata.state || "unknown"}${disconnected ? " · disconnected" : ""}`;
-      unread.className = metadata.unread ? "session-unread is-unread" : "session-unread";
-      unread.textContent = "";
-      unread.setAttribute("aria-label", metadata.unread ? "Unread activity" : "No unread activity");
-      tab.setAttribute("aria-describedby", detail.id);
-      rename.type = "button";
-      rename.className = "session-rename";
-      rename.style.minWidth = "44px";
-      rename.style.minHeight = "44px";
-      rename.textContent = "✎";
-      rename.setAttribute("aria-label", `Rename ${label}`);
-      rename.setAttribute("title", `Rename ${label}`);
+      detail.textContent = [
+        metadata.state === "running" ? "" : metadata.state || "unknown",
+        statusLabel,
+        disconnected ? "disconnected" : "",
+      ]
+        .filter(Boolean)
+        .join(" · ");
+      detail.title = detail.textContent;
+      detail.hidden = !detail.textContent;
+      if (!detail.hidden) tab.setAttribute("aria-describedby", detail.id);
       remove.type = "button";
       remove.className = "session-lifecycle";
       remove.style.minWidth = "44px";
@@ -341,8 +351,7 @@ export class SessionDrawer {
       remove.textContent = terminate ? "■" : "×";
       remove.setAttribute("aria-label", `${terminate ? "Terminate" : "Remove"} ${label}`);
       remove.disabled = metadata.state === "creating" || metadata.state === "terminating";
-      nameLine.append(name, rename);
-      copy.append(nameLine, detail, unread);
+      copy.append(name, detail);
       row.append(tab, copy, remove);
       tabs.append(row);
       this.#tabs.set(id, tab);
@@ -358,14 +367,17 @@ export class SessionDrawer {
         this.#closeContextMenu();
         this.#select(id);
       });
-      rename.addEventListener("click", (event) => {
-        event.stopPropagation();
-        this.#showRename(id);
-      });
       remove.addEventListener("click", (event) => {
         event.stopPropagation();
         this.#showConfirm(id, action);
       });
+    }
+    for (const row of tabs.children) {
+      const previousMotion = motion.get(row.dataset.sessionId);
+      if (previousMotion?.state === row.dataset.programStatus && previousMotion?.time != null) {
+        const animation = row.getAnimations()[0];
+        if (animation) animation.currentTime = previousMotion.time;
+      }
     }
     if (this.#refs.workspace && activeId) {
       const tab = this.#tabs.get(activeId);
@@ -543,11 +555,7 @@ export class SessionDrawer {
     this.#cancelLongPress();
     if (event.pointerType === "mouse" || !event.isPrimary || event.button !== 0) return;
     const row = event.target.closest(".session-row");
-    if (
-      !row ||
-      !this.#refs.tabs.contains(row) ||
-      event.target.closest(".session-rename, .session-lifecycle")
-    )
+    if (!row || !this.#refs.tabs.contains(row) || event.target.closest(".session-lifecycle"))
       return;
     const id = String(row.dataset.sessionId);
     const press = {

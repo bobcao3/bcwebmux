@@ -5,6 +5,7 @@ const std = @import("std");
 const ghostty = @import("ghostty-vt");
 const Graphics = @import("terminal-graphics");
 const GraphicsCheckpoint = @import("terminal-graphics-checkpoint");
+const ProgramStatus = @import("ProgramStatus.zig");
 const manifest = @import("session_manifest.zig");
 const worker = @import("session_worker.zig");
 
@@ -219,6 +220,8 @@ pub const Metadata = struct {
     name_len: u8,
     title: [max_title_bytes]u8,
     title_len: u16,
+    program_status: ?ProgramStatus.Summary = null,
+    progress_report: ?ghostty.osc.Command.ProgressReport = null,
     state: State,
     geometry: Geometry,
     created_at_ms: i64,
@@ -251,6 +254,8 @@ name: [max_name_bytes]u8 = undefined,
 name_len: u8,
 title: [max_title_bytes]u8 = undefined,
 title_len: u16 = 0,
+program_status: ProgramStatus = .{},
+progress_report: ?ghostty.osc.Command.ProgressReport = null,
 state: State = .creating,
 geometry: Geometry,
 initial_geometry: Geometry,
@@ -410,6 +415,8 @@ pub fn snapshotMetadata(self: *Self) Metadata {
         .name_len = self.name_len,
         .title = undefined,
         .title_len = self.title_len,
+        .program_status = self.program_status.summary(),
+        .progress_report = self.progress_report,
         .state = self.state,
         .geometry = self.geometry,
         .created_at_ms = self.created_at_ms,
@@ -604,6 +611,7 @@ fn acceptExit(self: *Self, status: i32) !void {
     self.createCheckpoint(now) catch |err| if (err != error.CaptureDeferred) return err;
     if (self.attachment_count == 0 and self.checkpoint_event_seq == self.next_event_seq - 1) self.journal.release();
     self.state = .exited;
+    _ = self.finishCommand();
     self.bumpRevision();
 }
 
@@ -704,6 +712,7 @@ fn markFailed(self: *Self) void {
     defer self.mutex.unlock(self.io);
     if (self.state != .exited and self.state != .failed) {
         self.state = .failed;
+        _ = self.finishCommand();
         self.bumpRevision();
     }
     self.last_activity_ms = nowMs(self.io);
@@ -757,6 +766,9 @@ fn configuredHandler(value: *ghostty.Terminal, term: []const u8) Handler {
     handler.effects.write_pty = effectWritePty;
     handler.effects.device_attributes = effectDeviceAttributes;
     handler.effects.title_changed = effectTitle;
+    handler.effects.program_status = effectProgramStatus;
+    handler.effects.progress_report = effectProgressReport;
+    handler.effects.semantic_prompt = effectSemanticPrompt;
     handler.effects.size = effectSize;
     handler.effects.enquiry = effectEnquiry;
     handler.effects.xtversion = effectVersion;
@@ -803,6 +815,31 @@ fn effectWritePty(handler: *Handler, bytes: []const u8) void {
     };
 }
 
+fn effectProgramStatus(handler: *Handler, report: ghostty.osc.Command.ProgramStatus.Report) void {
+    const self: *Self = @fieldParentPtr("mirror_terminal", handler.terminal);
+    if (self.program_status.update(report)) self.bumpRevision();
+}
+
+fn effectProgressReport(handler: *Handler, report: ghostty.osc.Command.ProgressReport) void {
+    const self: *Self = @fieldParentPtr("mirror_terminal", handler.terminal);
+    const next: ?ghostty.osc.Command.ProgressReport = if (report.state == .remove) null else report;
+    if (std.meta.eql(self.progress_report, next)) return;
+    self.progress_report = next;
+    self.bumpRevision();
+}
+
+fn finishCommand(self: *Self) bool {
+    const changed = self.program_status.finishCommand() or self.progress_report != null;
+    self.progress_report = null;
+    return changed;
+}
+
+fn effectSemanticPrompt(handler: *Handler, event: Handler.SemanticPrompt) void {
+    if (event.kind != .prompt_start) return;
+    const self: *Self = @fieldParentPtr("mirror_terminal", handler.terminal);
+    if (self.finishCommand()) self.bumpRevision();
+}
+
 fn effectTitle(handler: *Handler) void {
     const self: *Self = @fieldParentPtr("mirror_terminal", handler.terminal);
     const title = handler.terminal.getTitle() orelse return;
@@ -813,7 +850,7 @@ fn effectTitle(handler: *Handler) void {
     self.bumpRevision();
 }
 
-test "terminal answers primary device attributes for image viewer probes" {
+test "terminal answers device attribute and program status support probes" {
     const testing = std.testing;
     const Capture = struct {
         var reply: [64]u8 = undefined;
@@ -833,6 +870,9 @@ test "terminal answers primary device attributes for image viewer probes" {
     defer stream.deinit();
     stream.nextSlice("\x1b[c");
     try testing.expectEqualStrings("\x1b[?62;22c", Capture.reply[0..Capture.length]);
+    Capture.length = 0;
+    stream.nextSlice("\x1b]7501;?\x1b\\");
+    try testing.expectEqualStrings("\x1b]7501;?\x1b\\", Capture.reply[0..Capture.length]);
 }
 
 test "journal preserves ordered output and resize" {

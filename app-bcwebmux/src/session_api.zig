@@ -269,6 +269,30 @@ fn writeMetadata(json: *std.json.Stringify, metadata: *const Session.Metadata, r
     try json.write(metadata.nameSlice());
     try json.objectField("title");
     try json.write(metadata.titleSlice());
+    try json.objectField("programStatus");
+    if (metadata.program_status) |status| {
+        try json.beginObject();
+        try json.objectField("state");
+        try json.write(@tagName(status.state));
+        try json.objectField("kind");
+        if (status.kind) |kind| try json.write(@tagName(kind)) else try json.write(null);
+        try json.objectField("progress");
+        try json.write(status.progress);
+        try json.endObject();
+    } else {
+        try json.write(null);
+    }
+    try json.objectField("progressReport");
+    if (metadata.progress_report) |report| {
+        try json.beginObject();
+        try json.objectField("state");
+        try json.write(@tagName(report.state));
+        try json.objectField("progress");
+        try json.write(report.progress);
+        try json.endObject();
+    } else {
+        try json.write(null);
+    }
     try json.objectField("state");
     try json.write(@tagName(metadata.state));
     try writeField(json, "createdAtMs", metadata.created_at_ms);
