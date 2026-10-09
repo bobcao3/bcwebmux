@@ -960,5 +960,5 @@ fn effectEnquiry(_: *Handler) []const u8 {
 }
 
 fn effectVersion(_: *Handler) []const u8 {
-    return "bcwebmux 0.1.0";
+    return "bcwebmux 2026.9.9";
 }

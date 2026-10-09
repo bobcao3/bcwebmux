@@ -3,7 +3,7 @@
 
 .{
     .name = .bcwebmux,
-    .version = "0.1.0",
+    .version = "2026.9.9",
     .fingerprint = 0xd7f1f8d55ccd9213,
     .minimum_zig_version = "0.16.0",
     .dependencies = .{

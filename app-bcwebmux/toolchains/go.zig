@@ -2,6 +2,7 @@
 // Copyright (c) 2026 Cheng Cao
 
 const std = @import("std");
+const config = @import("config");
 
 // Build-owned host runner. Source staging, toolchain, and caches are separate:
 // changing one Go source file must not copy or rebuild the whole Go toolchain.
@@ -24,11 +25,11 @@ pub fn main(init: std.process.Init) !void {
         if (init.environ_map.get(key)) |value| try env.put(key, value);
     }
     for ([_][2][]const u8{
-        .{ "GOROOT", goroot },       .{ "GOOS", "linux" },      .{ "GOARCH", arch },
-        .{ "GOAMD64", "v1" },        .{ "GOARM64", "v8.0" },    .{ "GOENV", "off" },
-        .{ "GOTOOLCHAIN", "local" }, .{ "GOWORK", "off" },      .{ "GOPROXY", "https://proxy.golang.org" },
-        .{ "GOSUMDB", "sum.golang.org" }, .{ "GOVCS", "*:off" }, .{ "CGO_ENABLED", "1" },
-        .{ "GOFLAGS", "" },          .{ "GOTELEMETRY", "off" },
+        .{ "GOROOT", goroot },            .{ "GOOS", "linux" },      .{ "GOARCH", arch },
+        .{ "GOAMD64", config.go_amd64 },  .{ "GOARM64", "v8.0" },    .{ "GOENV", "off" },
+        .{ "GOTOOLCHAIN", "local" },      .{ "GOWORK", "off" },      .{ "GOPROXY", "https://proxy.golang.org" },
+        .{ "GOSUMDB", "sum.golang.org" }, .{ "GOVCS", "*:off" },     .{ "CGO_ENABLED", "1" },
+        .{ "GOFLAGS", "" },               .{ "GOTELEMETRY", "off" },
     }) |entry| try env.put(entry[0], entry[1]);
     try env.put("CC", try quote(arena, cc));
     try env.put("CGO_CFLAGS", try quote(arena, try std.fmt.allocPrint(arena, "-I{s}", .{std.fs.path.dirname(header).?})));

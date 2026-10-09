@@ -22,9 +22,15 @@ pub fn add(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builti
     options.addOption([]const u8, "zig_exe", b.graph.zig_exe);
     options.addOption([]const u8, "target", triple);
     options.addOption([]const u8, "cpu", cpu);
+    const go_amd64 = if (target.result.cpu.arch == .x86_64 and std.Target.x86.featureSetHasAll(
+        target.result.cpu.features,
+        .{ .cx16, .popcnt, .sahf, .sse3, .ssse3, .sse4_1, .sse4_2 },
+    )) "v2" else "v1";
+    options.addOption([]const u8, "go_amd64", go_amd64);
     const cc = hostTool(b, "bcwebmux-cc", "toolchains/cc_wrapper.zig");
     cc.root_module.addOptions("config", options);
     const driver = hostTool(b, "bcwebmux-go", "toolchains/go.zig");
+    driver.root_module.addOptions("config", options);
     const provision = b.addRunArtifact(hostTool(b, "bcwebmux-provision-go", "toolchains/provision.zig"));
     // Zig 0.16 displays any successful run's stderr as a "failed command".
     // Save normal download progress, but still report it when the run fails.

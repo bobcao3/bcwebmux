@@ -1,0 +1,137 @@
+name: Build distributions
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  ZIG_VERSION: 0.16.0
+  NODE_VERSION: 24
+
+jobs:
+  server:
+    name: Server (${{ matrix.name }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x86_64-v2
+            runner: ubuntu-24.04
+            target: x86_64-linux-musl
+            cpu: x86_64_v2
+          - name: linux-aarch64-armv8a
+            runner: ubuntu-24.04-arm
+            target: aarch64-linux-musl
+            cpu: generic+v8a
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - name: Set up Zig
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29
+        with:
+          version: ${{ env.ZIG_VERSION }}
+          use-cache: false
+      - name: Install workspace dependencies
+        run: npm ci
+      - name: Build static executables and run native tests
+        working-directory: app-bcwebmux
+        env:
+          TARGET: ${{ matrix.target }}
+          CPU: ${{ matrix.cpu }}
+        run: zig build install test gotest -Dtarget="$TARGET" -Dcpu="$CPU" -Doptimize=ReleaseSmall
+      - name: Verify static linkage and package executables with licenses
+        env:
+          TARGET_NAME: ${{ matrix.name }}
+        run: node .github/scripts/package-server.mjs "$TARGET_NAME" "$RUNNER_TEMP/artifacts"
+      - name: Test server and worker from the extracted archive
+        env:
+          TARGET_NAME: ${{ matrix.name }}
+        run: |
+          tar -xzf "$RUNNER_TEMP/artifacts/bcwebmux-${TARGET_NAME}.tar.gz" -C "$RUNNER_TEMP"
+          server="$RUNNER_TEMP/bcwebmux-${TARGET_NAME}/bcwebmux-server"
+          node app-bcwebmux/test/session-shell-integration.mjs "$server"
+          node app-bcwebmux/test/session-api-integration.mjs "$server"
+      - name: Upload server archive and checksum
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: bcwebmux-${{ matrix.name }}
+          path: ${{ runner.temp }}/artifacts/*
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+
+  terminal:
+    name: Embeddable terminal
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - name: Set up Zig
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29
+        with:
+          version: ${{ env.ZIG_VERSION }}
+          use-cache: false
+      - name: Install workspace dependencies
+        run: npm ci
+      - name: Build and pack terminal assets
+        run: |
+          mkdir -p "$RUNNER_TEMP/artifacts"
+          npm pack --workspace=@bcwebmux/wgpu-terminal --pack-destination="$RUNNER_TEMP/artifacts"
+          cd "$RUNNER_TEMP/artifacts"
+          sha256sum ./*.tgz > wgpu-terminal.sha256
+      - name: Verify installation outside the monorepo
+        run: |
+          mkdir -p "$RUNNER_TEMP/consumer"
+          cd "$RUNNER_TEMP/consumer"
+          npm init -y
+          npm install "$RUNNER_TEMP"/artifacts/*.tgz
+          node --input-type=module <<'JS'
+          import assert from 'node:assert/strict';
+          import { readFile } from 'node:fs/promises';
+          import { Terminal, TerminalCore } from '@bcwebmux/wgpu-terminal';
+          assert.equal(typeof Terminal, 'function');
+          assert.equal(typeof TerminalCore, 'function');
+          const wasm = new URL(import.meta.resolve('@bcwebmux/wgpu-terminal/terminal.wasm'));
+          await WebAssembly.compile(await readFile(wasm));
+          const css = new URL(import.meta.resolve('@bcwebmux/wgpu-terminal/css/terminal.css'));
+          assert.ok((await readFile(css)).length > 0);
+          for (const style of ['Regular', 'Bold', 'Italic', 'BoldItalic']) {
+            const font = new URL(import.meta.resolve(`@bcwebmux/wgpu-terminal/fonts/JetBrainsMonoNerdFontMono-${style}.ttf`));
+            assert.equal((await readFile(font)).readUInt32BE(0), 0x00010000);
+          }
+          JS
+      - name: Upload terminal package and checksum
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: wgpu-terminal
+          path: ${{ runner.temp }}/artifacts/*
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14

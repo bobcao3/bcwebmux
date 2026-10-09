@@ -124,6 +124,18 @@ pub fn build(b: *std.Build) void {
     // The WASM terminal embeds Ghostty, so its notices must travel with the package.
     const notices_install = b.addInstallFile(b.path("../THIRD_PARTY_NOTICES.md"), "wgpu-terminal/THIRD_PARTY_NOTICES.md");
     terminal_wasm_step.dependOn(&notices_install.step);
+    const terminal_licenses = b.addWriteFiles();
+    _ = terminal_licenses.addCopyFile(b.path("../LICENSE"), "LICENSE");
+    _ = terminal_licenses.addCopyFile(ghostty.path("LICENSE"), "Ghostty.txt");
+    _ = terminal_licenses.addCopyFile(ghostty.builder.dependency("uucode", .{}).path("LICENSE.md"), "uucode.txt");
+    _ = terminal_licenses.addCopyFile(kb.path("LICENSE"), "kb.txt");
+    _ = terminal_licenses.addCopyFile(stb.path("LICENSE"), "stb.txt");
+    const terminal_licenses_install = b.addInstallDirectory(.{
+        .source_dir = terminal_licenses.getDirectory(),
+        .install_dir = .prefix,
+        .install_subdir = "wgpu-terminal/licenses",
+    });
+    terminal_wasm_step.dependOn(&terminal_licenses_install.step);
     _ = web_assets.addCopyFile(b.path("../THIRD_PARTY_NOTICES.md"), "THIRD_PARTY_NOTICES.md");
     _ = web_assets.addCopyFile(
         b.path("../node_modules/@fontsource/noto-emoji/files/noto-emoji-emoji-400-normal.woff2"),

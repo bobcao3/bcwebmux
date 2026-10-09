@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Cheng Cao
 
-import { copyFile, mkdir } from "node:fs/promises";
+import { cp } from "node:fs/promises";
 import { spawnSync } from "node:child_process";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -15,23 +15,8 @@ const result = spawnSync("zig", ["build", "terminal-wasm", "-Doptimize=ReleaseSm
 if (result.error) throw result.error;
 if (result.status !== 0) process.exit(result.status ?? 1);
 
-const destination = resolve(packageRoot, "dist/terminal.wasm");
-await mkdir(dirname(destination), { recursive: true });
-await copyFile(
-  resolve(repositoryRoot, "app-bcwebmux/zig-out/wgpu-terminal/terminal.wasm"),
-  destination,
+await cp(
+  resolve(repositoryRoot, "app-bcwebmux/zig-out/wgpu-terminal"),
+  resolve(packageRoot, "dist"),
+  { recursive: true },
 );
-
-const fontFiles = [
-  "JetBrainsMonoNerdFontMono-Regular.ttf",
-  "JetBrainsMonoNerdFontMono-Bold.ttf",
-  "JetBrainsMonoNerdFontMono-Italic.ttf",
-  "JetBrainsMonoNerdFontMono-BoldItalic.ttf",
-  "OFL.txt",
-];
-const fontsSource = resolve(repositoryRoot, "app-bcwebmux/zig-out/wgpu-terminal/fonts");
-const fontsDestination = resolve(packageRoot, "dist/fonts");
-await mkdir(fontsDestination, { recursive: true });
-for (const filename of fontFiles) {
-  await copyFile(resolve(fontsSource, filename), resolve(fontsDestination, filename));
-}
