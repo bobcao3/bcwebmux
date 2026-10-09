@@ -47,6 +47,7 @@ func loadConfig(cfg *Config, explicit string) error {
 			Shell             *string  `toml:"shell"`
 			Term              *string  `toml:"term"`
 			KittyGraphics     *bool    `toml:"kitty-graphics"`
+			WebPQuality       *int     `toml:"webp-quality"`
 			Origin            *string  `toml:"origin"`
 			Origins           []string `toml:"origins"`
 			MaxSessions       *uint64  `toml:"max-sessions"`
@@ -96,6 +97,9 @@ func loadConfig(cfg *Config, explicit string) error {
 		}
 		if file.KittyGraphics != nil {
 			cfg.KittyGraphics = *file.KittyGraphics
+		}
+		if file.WebPQuality != nil {
+			cfg.WebPQuality = *file.WebPQuality
 		}
 		if file.Origin != nil {
 			cfg.Origin = *file.Origin

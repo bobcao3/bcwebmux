@@ -16,7 +16,7 @@ import (
 	"time"
 )
 
-const terminalABI = "bcwebmux-graphics-frame-v7-checkpoint-v1-continuation-1m-glyph-cell-partitions-pty-zstd-stream-v2-ghostty-acf31468a"
+const terminalABI = "bcwebmux-graphics-frame-v8-checkpoint-v1-continuation-1m-glyph-cell-partitions-pty-zstd-stream-v2-kitty-webp-ghostty-acf31468a"
 
 // Foreign SIGIO/SIGPIPE handlers run on the alternate signal stack, including
 // when a signal interrupts a Go goroutine rather than a native I/O worker.

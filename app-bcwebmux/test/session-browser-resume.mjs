@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Cheng Cao
 
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
@@ -336,6 +336,62 @@ try {
     "returning from alternate screen lost primary image",
   );
   assert.equal((await evaluate(page, "window.bcwebmux.state")).gpuError, null);
+
+  // The server journals large uploads re-encoded as WebP; browsers decode them.
+  const gradientWidth = 320;
+  const gradientHeight = 240;
+  const gradient = Buffer.alloc(gradientWidth * gradientHeight * 4);
+  for (let y = 0; y < gradientHeight; y++) {
+    for (let x = 0; x < gradientWidth; x++) {
+      const i = (y * gradientWidth + x) * 4;
+      gradient[i] = 40 + Math.floor((x * 180) / gradientWidth);
+      gradient[i + 1] = 200 - Math.floor((y * 150) / gradientHeight);
+      gradient[i + 2] = 90;
+      gradient[i + 3] = 255;
+    }
+  }
+  const gradientBase64 = gradient.toString("base64");
+  let gradientUpload = "\x1b[2;20H";
+  for (let offset = 0; offset < gradientBase64.length; offset += 4096) {
+    const more = offset + 4096 < gradientBase64.length ? 1 : 0;
+    const keys =
+      offset === 0
+        ? `a=T,q=2,f=32,s=${gradientWidth},v=${gradientHeight},i=47,c=10,r=5,m=${more}`
+        : `m=${more}`;
+    gradientUpload += `\x1b_G${keys};${gradientBase64.slice(offset, offset + 4096)}\x1b\\`;
+  }
+  const gradientFile = path.join(profile, "gradient.kitty");
+  await writeFile(gradientFile, gradientUpload);
+  const outputOffset = async () =>
+    (await (await fetch(`${base}/api/sessions/${initial.id}`)).json()).outputOffset;
+  const offsetBefore = await outputOffset();
+  await evaluate(
+    page,
+    `window.bcwebmux.write(${JSON.stringify(`cat ${JSON.stringify(gradientFile)}; printf 'WEBP-READY\\n'\n`)})`,
+  );
+  await waitBrowser(
+    page,
+    "window.bcwebmux.sessionText().includes('WEBP-READY')",
+    8000,
+    "WebP upload marker missing",
+  );
+  const journaled = (await outputOffset()) - offsetBefore;
+  assert.ok(
+    journaled < gradientUpload.length / 8,
+    `server journaled ${journaled} bytes for a ${gradientUpload.length}-byte upload`,
+  );
+  await waitBrowser(
+    page,
+    `(async () => {
+    const { data, width } = await window.bcwebmux.readPixels();
+    const state = window.bcwebmux.state;
+    const x = Math.floor(state.physicalCellWidth * 24), y = Math.floor(state.physicalCellHeight * 3.5);
+    const i = (y * width + x) * 4;
+    return Math.abs(data[i] - 130) < 24 && Math.abs(data[i + 1] - 125) < 24 && Math.abs(data[i + 2] - 90) < 24;
+  })()`,
+    8000,
+    "WebP-encoded Kitty image did not render",
+  );
 
   if (spawnSync("viu", ["--version"], { stdio: "ignore" }).status === 0) {
     const fixture = path.join(profile, "viu-large.png");

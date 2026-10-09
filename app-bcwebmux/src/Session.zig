@@ -5,6 +5,7 @@ const std = @import("std");
 const ghostty = @import("ghostty-vt");
 const Graphics = @import("terminal-graphics");
 const GraphicsCheckpoint = @import("terminal-graphics-checkpoint");
+const GraphicsTranscoder = @import("GraphicsTranscoder.zig");
 const ProgramStatus = @import("ProgramStatus.zig");
 const manifest = @import("session_manifest.zig");
 const worker = @import("session_worker.zig");
@@ -14,6 +15,8 @@ const continuation_limit = 1024 * 1024;
 const max_title_bytes = 256;
 const max_name_bytes = 80;
 const max_journal_records = 64 * 1024;
+/// Rewritten output is journaled in events no larger than a worker packet.
+const max_output_event_bytes = worker.packet_capacity - 1;
 
 pub const Id = [16]u8;
 pub const State = enum { creating, running, terminating, exited, failed };
@@ -273,6 +276,8 @@ connection: worker.Connection,
 mirror_terminal: ghostty.Terminal,
 mirror_stream: ghostty.TerminalStream,
 graphics: Graphics,
+/// Rewrites Kitty images in output before it is journaled; null when disabled.
+transcoder: ?GraphicsTranscoder = null,
 mirror_reply_failed: bool = false,
 attachments: [max_attachment_slots]AttachmentState = [_]AttachmentState{.{}} ** max_attachment_slots,
 input_dedup: [max_input_dedup_entries]InputDedupEntry = [_]InputDedupEntry{.{}} ** max_input_dedup_entries,
@@ -296,6 +301,7 @@ pub fn create(
     shell: []const u8,
     term: []const u8,
     kitty_graphics: bool,
+    webp_quality: u8,
     limits: manifest.Limits,
     registry_revision: *std.atomic.Value(u64),
     id: Id,
@@ -335,6 +341,7 @@ pub fn create(
         .mirror_terminal = mirror,
         .mirror_stream = undefined,
         .graphics = Graphics.init(allocator),
+        .transcoder = if (webp_quality == 0) null else GraphicsTranscoder.init(allocator, webp_quality),
     };
     @memcpy(self.name[0..name.len], name);
     self.mirror_stream = ghostty.TerminalStream.init(.{
@@ -351,6 +358,7 @@ pub fn create(
 pub fn destroy(self: *Self) void {
     self.connection.finish(self.io);
     self.mirror_stream.deinit();
+    if (self.transcoder) |*transcoder| transcoder.deinit();
     self.graphics.deinit();
     self.mirror_terminal.deinit(self.allocator);
     self.journal.deinit();
@@ -581,7 +589,35 @@ fn acceptResizeApplied(self: *Self, payload: []const u8) !void {
     if (promote_after_resize) self.promoteControllerLocked();
 }
 
+/// Receives transcoder output on the session actor, which alone feeds the mirror.
+const OutputSink = struct {
+    session: *Self,
+
+    pub fn output(sink: OutputSink, bytes: []const u8) !void {
+        var rest = bytes;
+        while (rest.len != 0) {
+            const event = rest[0..@min(rest.len, max_output_event_bytes)];
+            try sink.session.publishOutput(event);
+            rest = rest[event.len..];
+        }
+    }
+
+    /// A rewritten upload starts as a new one, so the mirror must not be
+    /// continuing an earlier upload that the original would have joined.
+    pub fn replaceable(sink: OutputSink) bool {
+        sink.session.mutex.lockUncancelable(sink.session.io);
+        defer sink.session.mutex.unlock(sink.session.io);
+        return sink.session.graphics.safeToCapture();
+    }
+};
+
 fn acceptOutput(self: *Self, bytes: []const u8) !void {
+    // The transcoder encodes images without holding the session mutex.
+    if (self.transcoder) |*transcoder| return transcoder.feed(bytes, OutputSink{ .session = self });
+    try self.publishOutput(bytes);
+}
+
+fn publishOutput(self: *Self, bytes: []const u8) !void {
     self.mutex.lockUncancelable(self.io);
     defer self.mutex.unlock(self.io);
     try self.ensureJournalCapacity(bytes.len);
@@ -600,6 +636,7 @@ fn acceptOutput(self: *Self, bytes: []const u8) !void {
 }
 
 fn acceptExit(self: *Self, status: i32) !void {
+    if (self.transcoder) |*transcoder| try transcoder.finish(OutputSink{ .session = self });
     self.mutex.lockUncancelable(self.io);
     defer self.mutex.unlock(self.io);
     try self.ensureJournalCapacity(0);
@@ -761,7 +798,7 @@ const Handler = ghostty.TerminalStream.Handler;
 fn configuredHandler(value: *ghostty.Terminal, term: []const u8) Handler {
     var handler = value.vtHandler();
     handler.kitty_graphics = executeGraphics;
-    handler.apc_handler.max_bytes.put(.kitty, 1024 * 1024);
+    handler.apc_handler.max_bytes.put(.kitty, Graphics.apc_limit);
     handler.terminfo_name = term;
     handler.effects.write_pty = effectWritePty;
     handler.effects.device_attributes = effectDeviceAttributes;

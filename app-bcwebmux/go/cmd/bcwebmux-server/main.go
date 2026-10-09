@@ -65,6 +65,7 @@ func main() {
 		Shell:                cfg.Shell,
 		Term:                 cfg.Term,
 		DisableKittyGraphics: !cfg.KittyGraphics,
+		WebPQuality:          uint8(cfg.WebPQuality),
 		Worker:               cfg.Worker,
 		MaxSessions:          cfg.MaxSessions,
 		ExpectedOrigin:       expectedOrigin,

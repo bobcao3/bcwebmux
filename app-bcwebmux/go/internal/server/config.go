@@ -21,6 +21,7 @@ import (
 const (
 	DefaultHost        = "127.0.0.1"
 	DefaultMaxSessions = 16
+	DefaultWebPQuality = 90
 	MaxRequestBytes    = native.MaxRequestBytes
 	MaxHeaderBytes     = 16 * 1024
 	MaxAssetBytes      = 16 * 1024 * 1024
@@ -44,6 +45,9 @@ type Config struct {
 	TLSKey        string
 	HTTP3         bool
 	Worker        string
+	// WebPQuality re-encodes Kitty images as WebP, lossy at this quality
+	// (1-100), before browsers receive them; 0 sends them unchanged.
+	WebPQuality int
 	// FileServiceURL and FileServicePrefix configure the local file service
 	// the browser resolves file:// links through.
 	FileServiceURL    string
@@ -73,13 +77,14 @@ func ParseConfig(args []string) (Config, bool, error) {
 // and must keep working when this machine's addresses changed.
 func parseConfig(args []string, validateListeners bool) (Config, bool, error) {
 	// Port stays -1 until the listeners or origins name one.
-	cfg := Config{Port: -1, MaxSessions: DefaultMaxSessions, Term: "xterm-ghostty", KittyGraphics: true, AuthEnabled: true}
+	cfg := Config{Port: -1, MaxSessions: DefaultMaxSessions, Term: "xterm-ghostty", KittyGraphics: true, WebPQuality: DefaultWebPQuality, AuthEnabled: true}
 	flags := flag.NewFlagSet("bcwebmux-server", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	flags.StringVar(&cfg.WebRoot, "web-root", "", "asset directory")
 	flags.StringVar(&cfg.Shell, "shell", "", "shell")
 	flags.StringVar(&cfg.Term, "term", cfg.Term, "TERM for session shells")
 	flags.BoolVar(&cfg.KittyGraphics, "kitty-graphics", cfg.KittyGraphics, "advertise Kitty graphics to session shells")
+	flags.IntVar(&cfg.WebPQuality, "webp-quality", cfg.WebPQuality, "re-encode Kitty images as WebP, lossy at this quality (1-100); 0 sends them unchanged")
 	flags.BoolVar(&cfg.AuthEnabled, "auth", cfg.AuthEnabled, "require a FIDO2 security key login once credentials are enrolled")
 	flags.StringVar(&cfg.AuthFile, "auth-file", "", "FIDO2 authentication state file")
 	flags.DurationVar(&cfg.AuthSessionTTL, "auth-session-ttl", 0, "browser login session lifetime (default 168h)")
@@ -140,6 +145,8 @@ func parseConfig(args []string, validateListeners bool) (Config, bool, error) {
 			cfg.Term = cli.Term
 		case "kitty-graphics":
 			cfg.KittyGraphics = cli.KittyGraphics
+		case "webp-quality":
+			cfg.WebPQuality = cli.WebPQuality
 		case "auth":
 			cfg.AuthEnabled = cli.AuthEnabled
 		case "auth-file":
@@ -198,6 +205,9 @@ func parseConfig(args []string, validateListeners bool) (Config, bool, error) {
 	}
 	if cfg.MaxSessions == 0 || cfg.MaxSessions > uint64(^uint32(0)) {
 		return Config{}, false, fmt.Errorf("invalid max sessions %d", cfg.MaxSessions)
+	}
+	if cfg.WebPQuality < 0 || cfg.WebPQuality > 100 {
+		return Config{}, false, fmt.Errorf("invalid WebP quality %d: use 1-100, or 0 to send images unchanged", cfg.WebPQuality)
 	}
 	if cfg.Term == "" || len(cfg.Term) > 256 || strings.ContainsAny(cfg.Term, "\x00\r\n= \t") {
 		return Config{}, false, fmt.Errorf("invalid term %q", cfg.Term)
@@ -455,6 +465,9 @@ func Usage(program string) string {
 		"                               (default: 720h)\n"+
 		"  --kitty-graphics[=false]     advertise Kitty graphics to session shells\n"+
 		"                               (default: true)\n"+
+		"  --webp-quality N             re-encode Kitty images as WebP, lossy at\n"+
+		"                               quality N (1-100), to save bandwidth; 0 sends\n"+
+		"                               them unchanged (default: 90)\n"+
 		"  --worker FILE                PTY worker executable\n"+
 		"  --file-service-url URL        local file service for file:// links, with\n"+
 		"                               {host} and {path} tokens\n"+

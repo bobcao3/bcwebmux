@@ -27,7 +27,10 @@ type EngineConfig struct {
 	Shell                string
 	Term                 string // Empty selects xterm-ghostty.
 	DisableKittyGraphics bool   // Suppress the Kitty graphics environment hint.
-	Worker               string
+	// WebPQuality re-encodes Kitty images in PTY output as WebP, lossy at this
+	// quality (1-100), before clients receive them; 0 passes them unchanged.
+	WebPQuality uint8
+	Worker      string
 	// ExpectedOrigin is copied into the native engine for same-origin validation;
 	// the Go transport still enforces the check before calling native REST/WebSocket paths.
 	ExpectedOrigin string

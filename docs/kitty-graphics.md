@@ -7,8 +7,11 @@ rendering works on WebGPU and WebGL2. This is not full Kitty compatibility.
 ## Supported behavior
 
 - Direct RGB, RGBA and PNG payloads, including zlib compression, chunked
-  uploads, query, display, replacement and deletion. The server alone sends
-  protocol replies; browser replicas and replay do not.
+  uploads, query, display, replacement and deletion. A PNG-format (`f=100`)
+  payload may also be a still WebP image, admitted by its RIFF and frame
+  headers; this is how the server forwards re-encoded uploads
+  ([WebP transcoding](#webp-transcoding)). The server alone sends protocol
+  replies; browser replicas and replay do not.
 - Pinned, relative and Unicode-placeholder virtual placements, clipping,
   alternate screens and scrollback. Negative-z images render beneath glyphs
   without being erased by default cell backgrounds; nonnegative-z images render
@@ -19,7 +22,7 @@ rendering works on WebGPU and WebGL2. This is not full Kitty compatibility.
   channel. Ghostty owns image IDs, placements, cursor behavior and decoded-byte
   accounting. The shared Zig adapter owns encoded bytes; browser textures are
   disposable presentation state.
-- Frame ABI v7 carries bounded graphics resource/draw records. Source bytes are
+- Frame ABI v8 carries bounded graphics resource/draw records. Source bytes are
   copied while the WASM frame lease is valid; browser decoding is asynchronous
   and bounded. Both renderers blend RGBA pixels. Browser decoding does not send
   delayed Kitty replies or change logical terminal state.
@@ -45,6 +48,28 @@ MiB browser decoded-texture budget. Exceeding logical limits returns a protocol
 error; missing browser resources leave images undrawn without changing terminal
 state.
 
+## WebP transcoding
+
+To save bandwidth, the server re-encodes each complete image upload as WebP
+before journaling it, so the mirror terminal, every browser and checkpoint
+replay all receive the smaller stream. Raw RGB, raw RGBA and PNG uploads,
+chunked or zlib-compressed, are encoded lossily at the configured quality.
+Images with few distinct colors, such as plots, charts and screenshots, are also
+encoded losslessly, and the smaller result wins, so they keep exact pixels. The
+rewritten upload keeps its image ID or number, placement keys and quiet setting,
+so replies and logical state match the original. Set `webp-quality = 0` in the
+server config, or pass `--webp-quality=0`, to forward uploads byte for byte.
+
+An upload passes through unchanged when it is small, when WebP would not shrink
+it substantially, when it is invalid or already WebP, or when the stream around
+it is irregular: other output between its chunks, unusual control keys or
+terminators, or an upload the mirror is still assembling. A rewritten RGB image
+counts as RGBA toward each screen's decoded-byte budget, as PNG images already
+do. Encoding runs on the session's output path, so an image reaches browsers
+after tens to hundreds of milliseconds of CPU time; later output from that
+session waits behind it. PNG is decoded on the server with Ghostty's memory-safe
+Wuffs decoder; the browser still decodes every image it draws.
+
 ## Build dependency
 
 `app-bcwebmux/build.zig.zon` pins the `bobcao3/ghostty` fork at
@@ -55,7 +80,9 @@ with a verified archive hash. No local checkout or submodule is needed. Three
 patches enable freestanding Kitty graphics, exclude OS-backed image loaders on
 WASM, and expose Ghostty's APC dispatch through a stream-handler hook. Upstream
 exports `device_attributes`. Upstream's VT snapshot omits image/placement
-registries, which is why `KGST` exists.
+registries, which is why `KGST` exists. The server also links libwebp, pinned in
+the same manifest and built by `app-bcwebmux/build/webp.zig` with libwebp's
+runtime SIMD dispatch, and imports Wuffs from the Ghostty dependency.
 
 To bump the pin, rebase the fork patches onto upstream `main` in a clean
 worktree, retain only patches absent from upstream, and push
@@ -95,3 +122,8 @@ native I/O runtime installs SIGIO/SIGPIPE handlers with `SA_ONSTACK` so the
 handlers use alternate signal stacks when a signal interrupts a Go thread.
 Native tests check the flags and handler restoration; a Go subprocess stress
 test delivers both signals on Go threads and scans their stacks afterward.
+
+`zig build test` checks that rewritten uploads draw the same replies and image
+state from a real terminal as the originals, and that every other byte passes
+through unchanged. The browser test also draws a server-rewritten WebP upload
+and checks that the server journaled a fraction of its original size.

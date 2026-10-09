@@ -39,6 +39,8 @@ executable: []const u8,
 shell: []const u8,
 term: []const u8,
 kitty_graphics: bool,
+/// WebP quality for re-encoded Kitty images; 0 leaves them unchanged.
+webp_quality: u8,
 limits: manifest.Limits,
 server_instance: Session.Id,
 mutex: std.Io.Mutex = .init,
@@ -57,6 +59,7 @@ pub fn init(
     shell: []const u8,
     term: []const u8,
     kitty_graphics: bool,
+    webp_quality: u8,
     limits: manifest.Limits,
 ) !Self {
     if (limits.max_exited_sessions < limits.max_live_sessions or limits.max_exited_sessions > 64 or limits.max_attachments_per_session > Session.max_attachment_slots) return error.InvalidLimits;
@@ -75,6 +78,7 @@ pub fn init(
         .shell = owned_shell,
         .term = owned_term,
         .kitty_graphics = kitty_graphics,
+        .webp_quality = webp_quality,
         .limits = limits,
         .server_instance = server_instance,
     };
@@ -152,6 +156,7 @@ pub fn create(
         self.shell,
         self.term,
         self.kitty_graphics,
+        self.webp_quality,
         self.limits,
         &self.revision,
         id,

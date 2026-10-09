@@ -9,14 +9,15 @@ const config = @import("config");
 pub fn main(init: std.process.Init) !void {
     const arena = init.arena.allocator();
     const args = try init.minimal.args.toSlice(arena);
-    if (args.len < 9) return error.InvalidArguments;
+    if (args.len < 10) return error.InvalidArguments;
     const goroot = try std.Io.Dir.cwd().realPathFileAlloc(init.io, args[1], arena);
     const cc = try std.Io.Dir.cwd().realPathFileAlloc(init.io, args[2], arena);
     const header = try std.Io.Dir.cwd().realPathFileAlloc(init.io, args[3], arena);
     const core = try std.Io.Dir.cwd().realPathFileAlloc(init.io, args[4], arena);
     const zstd = try std.Io.Dir.cwd().realPathFileAlloc(init.io, args[5], arena);
-    const arch = args[6];
-    const cache = args[7];
+    const webp = try std.Io.Dir.cwd().realPathFileAlloc(init.io, args[6], arena);
+    const arch = args[7];
+    const cache = args[8];
 
     var env = std.process.Environ.Map.init(arena);
     // Keep only host process essentials. Ambient Go/cgo/compiler flags cannot
@@ -33,14 +34,14 @@ pub fn main(init: std.process.Init) !void {
     }) |entry| try env.put(entry[0], entry[1]);
     try env.put("CC", try quote(arena, cc));
     try env.put("CGO_CFLAGS", try quote(arena, try std.fmt.allocPrint(arena, "-I{s}", .{std.fs.path.dirname(header).?})));
-    try env.put("CGO_LDFLAGS", try std.fmt.allocPrint(arena, "{s} {s}", .{ try quote(arena, core), try quote(arena, zstd) }));
+    try env.put("CGO_LDFLAGS", try std.fmt.allocPrint(arena, "{s} {s} {s}", .{ try quote(arena, core), try quote(arena, zstd), try quote(arena, webp) }));
     for ([_][2][]const u8{ .{ "GOCACHE", "build" }, .{ "GOMODCACHE", "modules" }, .{ "GOPATH", "path" }, .{ "TMPDIR", "tmp" } }) |entry| {
         const path = try std.fs.path.join(arena, &.{ cache, entry[1] });
         try std.Io.Dir.cwd().createDirPath(init.io, path);
         try env.put(entry[0], path);
     }
 
-    if (std.mem.eql(u8, args[8], "deps")) {
+    if (std.mem.eql(u8, args[9], "deps")) {
         const go = try std.fs.path.join(arena, &.{ goroot, "bin", "go" });
         var child = try std.process.spawn(init.io, .{ .argv = &.{ go, "mod", "tidy" }, .environ_map = &env });
         const term = try child.wait(init.io);
@@ -53,7 +54,7 @@ pub fn main(init: std.process.Init) !void {
 
     var argv: std.array_list.Managed([]const u8) = .init(arena);
     try argv.append(try std.fs.path.join(arena, &.{ goroot, "bin", "go" }));
-    try argv.appendSlice(args[8..]);
+    try argv.appendSlice(args[9..]);
     return std.process.replace(init.io, .{ .argv = argv.items, .environ_map = &env });
 }
 

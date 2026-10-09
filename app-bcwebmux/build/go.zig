@@ -6,7 +6,7 @@ pub const GoBuild = struct {
     server: std.Build.LazyPath,
 };
 
-pub fn add(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode, web_assets: std.Build.LazyPath, core: *std.Build.Step.Compile, zstd: *std.Build.Step.Compile) GoBuild {
+pub fn add(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode, web_assets: std.Build.LazyPath, core: *std.Build.Step.Compile, zstd: *std.Build.Step.Compile, webp: *std.Build.Step.Compile) GoBuild {
     if (target.result.os.tag != .linux) @panic("Go frontend prototype supports Linux targets");
     const arch = switch (target.result.cpu.arch) {
         .x86_64 => "amd64",
@@ -49,6 +49,7 @@ pub fn add(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builti
         maintenance.addFileArg(b.path("include/bcwebmux.h"));
         maintenance.addFileArg(core.getEmittedBin());
         maintenance.addFileArg(zstd.getEmittedBin());
+        maintenance.addFileArg(webp.getEmittedBin());
         maintenance.addArgs(&.{ arch, b.pathFromRoot(b.fmt("{s}/go", .{b.cache_root.path orelse ".zig-cache"})), command });
         if (std.mem.eql(u8, command, "fmt")) maintenance.addArg("./...");
         maintenance.setCwd(b.path("go"));
@@ -72,6 +73,7 @@ pub fn add(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builti
         run.addFileArg(b.path("include/bcwebmux.h"));
         run.addFileArg(core.getEmittedBin());
         run.addFileArg(zstd.getEmittedBin());
+        run.addFileArg(webp.getEmittedBin());
         run.addArgs(&.{ arch, cache, command, "-trimpath", "-buildvcs=false", "-mod=readonly", link_flags });
         run.setCwd(stage.getDirectory());
         slot.* = run;

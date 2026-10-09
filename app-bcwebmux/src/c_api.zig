@@ -74,7 +74,7 @@ export fn bcwebmux_engine_open(config: ?*const CEngineConfig, out: ?*?*Engine) C
 
 fn initEngine(config: *const CEngineConfig) !*Engine {
     const raw = config.*;
-    if (raw.abi_version != abi_version or raw.max_live_sessions > 64 or raw.disable_kitty_graphics > 1) return error.InvalidArgument;
+    if (raw.abi_version != abi_version or raw.max_live_sessions > 64 or raw.disable_kitty_graphics > 1 or raw.webp_quality > 100) return error.InvalidArgument;
     const worker = try slice(raw.worker_path, raw.worker_path_len, 4096);
     const shell = try slice(raw.shell, raw.shell_len, 4096);
     if (worker.len == 0 or shell.len == 0 or std.mem.indexOfScalar(u8, worker, 0) != null or std.mem.indexOfScalar(u8, shell, 0) != null) return error.InvalidArgument;
@@ -102,7 +102,7 @@ fn initEngine(config: *const CEngineConfig) !*Engine {
     }
     errdefer engine.threaded.deinit();
     engine.io = engine.threaded.io();
-    engine.registry = try Registry.init(allocator, engine.io, worker, shell, term, raw.disable_kitty_graphics == 0, native_limits);
+    engine.registry = try Registry.init(allocator, engine.io, worker, shell, term, raw.disable_kitty_graphics == 0, @intCast(raw.webp_quality), native_limits);
     errdefer engine.registry.deinit();
     engine.expected_origin = try allocator.dupe(u8, origin);
     return engine;

@@ -15,9 +15,7 @@ async function pixels(source) {
         const { value, done } = await reader.read();
         if (done) break;
         length += value.length;
-        if (
-          length > (source.format === 100 ? 32 * 1024 * 1024 : source.width * source.height * 4)
-        ) {
+        if (length > (source.format >= 100 ? 32 * 1024 * 1024 : source.width * source.height * 4)) {
           await reader.cancel();
           throw new Error("graphics decompression budget exceeded");
         }
@@ -34,16 +32,17 @@ async function pixels(source) {
     }
   }
   const { width, height, format } = source;
-  if (format === 100) {
+  if (format >= 100) {
     if (source.pngSize && bytes.length !== source.pngSize)
-      throw new Error("invalid graphics PNG length");
-    const bitmap = await createImageBitmap(new Blob([bytes], { type: "image/png" }), {
+      throw new Error("invalid graphics image length");
+    const type = format === 101 ? "image/webp" : "image/png";
+    const bitmap = await createImageBitmap(new Blob([bytes], { type }), {
       premultiplyAlpha: "none",
       colorSpaceConversion: "none",
     });
     try {
       if (bitmap.width !== width || bitmap.height !== height)
-        throw new Error("invalid graphics PNG dimensions");
+        throw new Error("invalid graphics image dimensions");
       const canvas = new OffscreenCanvas(width, height);
       const context = canvas.getContext("2d", { willReadFrequently: true });
       if (!context) throw new Error("graphics decoder unavailable");

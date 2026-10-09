@@ -39,7 +39,7 @@ func TestConfigDiscoveryAndOverrides(t *testing.T) {
 		t.Fatal("parse accepted a run with no port")
 	}
 	putConfig(t, filepath.Join(home, ".bcwebmux.toml"), "listen = [\"127.0.0.1:8101\"]\n")
-	if c := parse(); c.Port != 8101 || c.Term != "xterm-ghostty" || !c.KittyGraphics {
+	if c := parse(); c.Port != 8101 || c.Term != "xterm-ghostty" || !c.KittyGraphics || c.WebPQuality != DefaultWebPQuality {
 		t.Fatal(c)
 	}
 	path := filepath.Join(xdg, "bcwebmux", "config.toml")
@@ -51,13 +51,19 @@ tls-key = "key"
 max-sessions = 19
 term = "xterm-256color"
 kitty-graphics = false
+webp-quality = 0
 `)
-	if c := parse(); c.Port != 8102 || !c.HTTP3 || len(c.Listen) != 2 || len(c.Origins) != 2 || c.Term != "xterm-256color" || c.KittyGraphics {
+	if c := parse(); c.Port != 8102 || !c.HTTP3 || len(c.Listen) != 2 || len(c.Origins) != 2 || c.Term != "xterm-256color" || c.KittyGraphics || c.WebPQuality != 0 {
 		t.Fatal(c)
 	}
-	c := parse("--http3=false", "--listen=127.0.0.3:8103", "--listen=127.0.0.4:8103", "--origin=https://cli.example", "--term=screen-256color", "--kitty-graphics=true")
-	if c.Port != 8103 || c.HTTP3 || c.Term != "screen-256color" || !c.KittyGraphics || !reflect.DeepEqual(c.Listen, []string{"127.0.0.3", "127.0.0.4"}) || !reflect.DeepEqual(c.origins(), []string{"https://cli.example"}) {
+	c := parse("--http3=false", "--listen=127.0.0.3:8103", "--listen=127.0.0.4:8103", "--origin=https://cli.example", "--term=screen-256color", "--kitty-graphics=true", "--webp-quality=75")
+	if c.Port != 8103 || c.HTTP3 || c.Term != "screen-256color" || !c.KittyGraphics || c.WebPQuality != 75 || !reflect.DeepEqual(c.Listen, []string{"127.0.0.3", "127.0.0.4"}) || !reflect.DeepEqual(c.origins(), []string{"https://cli.example"}) {
 		t.Fatal(c)
+	}
+	for _, quality := range []string{"--webp-quality=101", "--webp-quality=-1"} {
+		if _, _, err := ParseConfig([]string{quality}); err == nil || !strings.Contains(err.Error(), "WebP quality") {
+			t.Fatalf("%s: %v", quality, err)
+		}
 	}
 	putConfig(t, path, "host = \"127.0.0.5\"\norigins = [\"http://127.0.0.5:8104\"]\n")
 	if c := parse(); c.Host != "127.0.0.5" || len(c.Listen) != 0 || c.Port != 8104 {

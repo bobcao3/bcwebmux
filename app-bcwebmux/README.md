@@ -52,7 +52,9 @@ port; `origins` are exact scheme/host/port values. The TLS pair
 comes together and origins must then be `https`. `http3 = true`
 adds HTTP/3 on the same port and needs TLS plus UDP access.
 Report progress with OSC 7501 or OSC 9;4 codes; the server keeps
-reports for reconnecting clients.
+reports for reconnecting clients. Kitty images reach browsers
+re-encoded as WebP; `webp-quality` tunes or (at 0) disables that
+([Kitty graphics](../docs/kitty-graphics.md#webp-transcoding)).
 
 ## Development
 

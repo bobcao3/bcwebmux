@@ -35,9 +35,9 @@ const execFileAsync = promisify(execFile),
   } = Protocol,
   INITIAL_CREDIT = 33554432,
   ABI_TEXT =
-    "bcwebmux-graphics-frame-v7-checkpoint-v1-continuation-1m-glyph-cell-partitions-pty-zstd-stream-v2-ghostty-acf31468a",
+    "bcwebmux-graphics-frame-v8-checkpoint-v1-continuation-1m-glyph-cell-partitions-pty-zstd-stream-v2-kitty-webp-ghostty-acf31468a",
   ABI_DIGEST = new Uint8Array(createHash("sha256").update(ABI_TEXT).digest()),
-  ABI_HEX = "729bf9fe68baf34670aa43d041509c7edfcb47a9a454dee09a0a2d09744682e7",
+  ABI_HEX = "fb0883d998dea18a9aafda96d265b6b8461a902909d05498dbc82822cc294a96",
   encoder = new TextEncoder(),
   decoder = new TextDecoder(),
   serverPath = process.argv[2];

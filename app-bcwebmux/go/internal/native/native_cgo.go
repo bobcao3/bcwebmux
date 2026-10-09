@@ -64,6 +64,7 @@ func OpenEngine(config EngineConfig) (Engine, error) {
 	nativeConfig.expected_origin = (*C.uint8_t)(originPtr)
 	nativeConfig.expected_origin_len = C.size_t(len(origin))
 	nativeConfig.max_live_sessions = C.uint32_t(config.MaxSessions)
+	nativeConfig.webp_quality = C.uint32_t(config.WebPQuality)
 	var ptr *C.bcwebmux_engine
 	status := C.bcwebmux_engine_open(&nativeConfig, &ptr)
 	if status != C.BCWMUX_OK {

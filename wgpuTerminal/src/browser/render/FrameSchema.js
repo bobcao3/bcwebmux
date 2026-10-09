@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Cheng Cao
 
 // Frame ABI record sizes, shared by browser allocation and submission decoding.
-export const FRAME_ABI = 7;
+export const FRAME_ABI = 8;
 export const CELL_SIZE = 8;
 export const STYLE_SIZE = 12;
 export const FRAME_SIZE = 80;

@@ -35,7 +35,8 @@ sets this project enables are built here:
 
 - **Wuffs** (Wrangling Untrusted File Formats Safely) — MIT **or** Apache-2.0 —
   Copyright (c) 2017 The Wuffs Authors. Vendored by Ghostty at `pkg/wuffs`;
-  compiled into the native server (PNG/JPEG image decode for Kitty graphics).
+  compiled into the native server, which decodes Kitty PNG uploads with it
+  before re-encoding them as WebP.
 - **zlib** — Zlib license — Copyright (C) 1995-2022 Jean-loup Gailly and Mark
   Adler. Vendored by Ghostty at `pkg/zlib`; compiled into the native server.
 - **uucode** (µUnicode) — MIT — Copyright (c) 2026 Jacob Sandlund. Supplies the
@@ -75,6 +76,16 @@ this project's build and are not distributed here.
   compiled into `terminal.wasm`, the browser-side zstd decompressor.
 - **License text:** ships in the fetched package as `zig-pkg/N-V-*/LICENSE`,
   also installed to `zig-out/wgpu-terminal/licenses/zstd.txt`.
+
+### libwebp
+
+- **License:** BSD 3-Clause, with Google's additional patent grant
+- **Copyright:** Copyright (c) 2010, Google Inc. All rights reserved.
+- **Used as:** pinned v1.6.0 in `app-bcwebmux/build.zig.zon`, built by
+  `app-bcwebmux/build/webp.zig` and linked into `bcwebmux-server`, which
+  re-encodes Kitty images as WebP.
+- **License text:** ships in the fetched package as `zig-pkg/N-V-*/COPYING`,
+  with the patent grant in `zig-pkg/N-V-*/PATENTS`.
 
 ### JetBrains Mono Nerd Font
 

@@ -2,14 +2,18 @@ const std = @import("std");
 const ghostty = @import("ghostty-vt");
 const gfx = ghostty.kitty.graphics;
 const Self = @This();
-const Transmission = @FieldType(gfx.Command.Control, "transmit");
+pub const Transmission = @FieldType(gfx.Command.Control, "transmit");
 const Format = @FieldType(Transmission, "format");
 const Compression = @FieldType(Transmission, "compression");
 
-const image_limit = 16 * 1024 * 1024;
-const upload_limit = 8 * 1024 * 1024;
+/// Decoded bytes one image may account for.
+pub const image_limit = 16 * 1024 * 1024;
+/// Encoded bytes of one complete upload, summed over its chunks.
+pub const upload_limit = 8 * 1024 * 1024;
 const source_limit = 32 * 1024 * 1024;
-const side_limit = 4096;
+pub const side_limit = 4096;
+/// Payload bytes one Kitty APC may carry before Ghostty drops it.
+pub const apc_limit = 1024 * 1024;
 const max_images = 512;
 const max_placements = 2048;
 
@@ -18,12 +22,18 @@ const Key = struct {
     id: u32,
 };
 
+/// How a source's bytes encode its pixels. A PNG-format (f=100) payload may
+/// also be a still WebP image: the server re-encodes uploads that way, and
+/// browsers decode both natively.
+pub const Codec = enum { raw, png, webp };
+
 pub const Source = struct {
     bytes: []const u8,
     generation: u64,
     width: u32,
     height: u32,
     format: Format,
+    codec: Codec,
     compression: Compression,
     png_size: u32,
 };
@@ -239,6 +249,7 @@ fn accept(self: *Self, terminal: *ghostty.Terminal, cmd: *const gfx.Command, byt
         .width = image.width,
         .height = image.height,
         .format = t.format,
+        .codec = image.codec,
         .compression = t.compression,
         .png_size = if (t.format == .png) t.size else 0,
     })) |replaced| {
@@ -302,33 +313,89 @@ fn discardOldest(self: *Self) void {
     self.alloc.free(stale.bytes);
 }
 
-const Inspection = struct { width: u32, height: u32, decoded_bytes: usize };
+pub const Inspection = struct { width: u32, height: u32, decoded_bytes: usize, codec: Codec };
 
-fn inspect(t: Transmission, bytes: []const u8) error{ InvalidData, TooLarge }!Inspection {
+/// Validates a complete upload's bytes as `execute` will before accepting it.
+/// Encoded images are checked only as far as their headers; browsers decode
+/// the rest.
+pub fn inspect(t: Transmission, bytes: []const u8) error{ InvalidData, TooLarge }!Inspection {
     var width = t.width;
     var height = t.height;
+    var codec: Codec = .raw;
     if (t.format == .png) {
-        var header: [33]u8 = undefined;
-        const png: []const u8 = if (t.compression == .zlib_deflate) blk: {
-            if (t.size < header.len or t.size > source_limit) return error.TooLarge;
+        var buffer: [33]u8 = undefined;
+        const header: []const u8 = if (t.compression == .zlib_deflate) blk: {
+            if (t.size < buffer.len or t.size > source_limit) return error.TooLarge;
             var input: std.Io.Reader = .fixed(bytes);
             var window: [std.compress.flate.max_window_len]u8 = undefined;
             var inflater: std.compress.flate.Decompress = .init(&input, .zlib, &window);
-            inflater.reader.readSliceAll(&header) catch return error.InvalidData;
-            break :blk &header;
-        } else bytes;
-        if (png.len < 33 or !std.mem.eql(u8, png[0..8], "\x89PNG\r\n\x1a\n") or
-            std.mem.readInt(u32, png[8..12], .big) != 13 or !std.mem.eql(u8, png[12..16], "IHDR") or
-            std.hash.crc.Crc32.hash(png[12..29]) != std.mem.readInt(u32, png[29..33], .big)) return error.InvalidData;
-        width = std.mem.readInt(u32, png[16..20], .big);
-        height = std.mem.readInt(u32, png[20..24], .big);
+            inflater.reader.readSliceAll(&buffer) catch return error.InvalidData;
+            break :blk &buffer;
+        } else bytes[0..@min(bytes.len, buffer.len)];
+        const size = pngSize(header) orelse
+            webpSize(header, if (t.compression == .zlib_deflate) t.size else bytes.len) orelse
+            return error.InvalidData;
+        width = size.width;
+        height = size.height;
+        codec = size.codec;
     }
     if (width == 0 or height == 0 or width > side_limit or height > side_limit) return error.InvalidData;
     const decoded = @as(usize, width) * height * (if (t.format == .rgb) @as(usize, 3) else 4);
     if (decoded > image_limit) return error.TooLarge;
     if (t.format != .png and t.compression == .none and bytes.len != decoded) return error.InvalidData;
     if (t.compression == .zlib_deflate) try validateInflated(bytes, if (t.format == .png) t.size else decoded);
-    return .{ .width = width, .height = height, .decoded_bytes = decoded };
+    return .{ .width = width, .height = height, .decoded_bytes = decoded, .codec = codec };
+}
+
+const EncodedSize = struct { width: u32, height: u32, codec: Codec };
+
+fn pngSize(png: []const u8) ?EncodedSize {
+    if (png.len < 33 or !std.mem.eql(u8, png[0..8], "\x89PNG\r\n\x1a\n") or
+        std.mem.readInt(u32, png[8..12], .big) != 13 or !std.mem.eql(u8, png[12..16], "IHDR") or
+        std.hash.crc.Crc32.hash(png[12..29]) != std.mem.readInt(u32, png[29..33], .big)) return null;
+    return .{
+        .width = std.mem.readInt(u32, png[16..20], .big),
+        .height = std.mem.readInt(u32, png[20..24], .big),
+        .codec = .png,
+    };
+}
+
+/// Reads the canvas size of a still WebP image from its first bytes. `len` is
+/// the whole image's length, which its RIFF header must state exactly.
+fn webpSize(header: []const u8, len: usize) ?EncodedSize {
+    if (header.len < 25 or !std.mem.eql(u8, header[0..4], "RIFF") or !std.mem.eql(u8, header[8..12], "WEBP")) return null;
+    const riff_size = std.mem.readInt(u32, header[4..8], .little);
+    const chunk_size = std.mem.readInt(u32, header[16..20], .little);
+    if (riff_size < 12 or @as(usize, riff_size) + 8 != len or chunk_size > riff_size - 12) return null;
+    const fourcc = header[12..16];
+    if (std.mem.eql(u8, fourcc, "VP8L")) {
+        // Lossless: signature byte, then 14-bit width-1, height-1, alpha bit and a zero version.
+        const bits = std.mem.readInt(u32, header[21..25], .little);
+        if (chunk_size < 5 or header[20] != 0x2f or bits >> 29 != 0) return null;
+        return .{ .width = (bits & 0x3fff) + 1, .height = ((bits >> 14) & 0x3fff) + 1, .codec = .webp };
+    }
+    if (header.len < 30 or chunk_size < 10) return null;
+    if (std.mem.eql(u8, fourcc, "VP8 ")) {
+        // Lossy: a shown key frame of a known version, its start code, then 14-bit sizes.
+        const tag = std.mem.readInt(u24, header[20..23], .little);
+        if (tag & 1 != 0 or (tag >> 1) & 7 > 3 or (tag >> 4) & 1 == 0 or
+            !std.mem.eql(u8, header[23..26], "\x9d\x01\x2a")) return null;
+        return .{
+            .width = std.mem.readInt(u16, header[26..28], .little) & 0x3fff,
+            .height = std.mem.readInt(u16, header[28..30], .little) & 0x3fff,
+            .codec = .webp,
+        };
+    }
+    if (std.mem.eql(u8, fourcc, "VP8X")) {
+        // Extended: flags (animation unsupported), then 24-bit canvas width-1, height-1.
+        if (header[20] & 0x02 != 0) return null;
+        return .{
+            .width = std.mem.readInt(u24, header[24..27], .little) + 1,
+            .height = std.mem.readInt(u24, header[27..30], .little) + 1,
+            .codec = .webp,
+        };
+    }
+    return null;
 }
 
 fn validateInflated(bytes: []const u8, expected: usize) error{ InvalidData, TooLarge }!void {

@@ -3,6 +3,7 @@
 
 const std = @import("std");
 const go_build = @import("build/go.zig");
+const webp_build = @import("build/webp.zig");
 const zstd_build = @import("build/zstd.zig");
 
 pub fn build(b: *std.Build) void {
@@ -52,6 +53,15 @@ pub fn build(b: *std.Build) void {
         .imports = &.{.{ .name = "ghostty-vt", .module = native_ghostty.module("ghostty-vt") }},
     });
     const target_zstd = zstd_build.add(b, zstd_dep, target, server_optimize);
+    // Image encoding is the server's hot path; a size-optimized libwebp encodes
+    // markedly slower for a few hundred kilobytes saved.
+    const webp_optimize: std.builtin.OptimizeMode = if (server_optimize == .ReleaseSmall) .ReleaseFast else server_optimize;
+    const libwebp = b.dependency("libwebp", .{});
+    const target_webp = webp_build.add(b, libwebp, target, webp_optimize);
+    // Ghostty already compiles Wuffs for Kitty graphics; the transcoder decodes
+    // PNG with that same memory-safe instance.
+    const wuffs_dep = native_ghostty.builder.lazyDependency("wuffs", .{ .target = target, .optimize = server_optimize }) orelse return;
+    const wuffs = wuffs_dep.module("wuffs");
     const bcwebmux_core = b.addLibrary(.{
         .name = "bcwebmux_core",
         .linkage = .static,
@@ -64,13 +74,16 @@ pub fn build(b: *std.Build) void {
                 .{ .name = "ghostty-vt", .module = native_ghostty.module("ghostty-vt") },
                 .{ .name = "terminal-graphics", .module = native_graphics },
                 .{ .name = "terminal-graphics-checkpoint", .module = native_graphics_checkpoint },
+                .{ .name = "wuffs", .module = wuffs },
             },
         }),
     });
     bcwebmux_core.root_module.addIncludePath(b.path("include"));
     bcwebmux_core.root_module.addIncludePath(zstd_dep.path("lib"));
+    bcwebmux_core.root_module.addIncludePath(libwebp.path("src"));
     bcwebmux_core.root_module.link_libc = true;
     bcwebmux_core.root_module.linkLibrary(target_zstd);
+    bcwebmux_core.root_module.linkLibrary(target_webp);
     const bcwebmux_worker = b.addExecutable(.{
         .name = "bcwebmux-worker",
         .root_module = b.createModule(.{
@@ -145,7 +158,7 @@ pub fn build(b: *std.Build) void {
     );
     _ = web_assets.addCopyFile(wasm.getEmittedBin(), "terminal.wasm");
 
-    const go_frontend = go_build.add(b, target, server_optimize, web_assets.getDirectory(), bcwebmux_core, target_zstd);
+    const go_frontend = go_build.add(b, target, server_optimize, web_assets.getDirectory(), bcwebmux_core, target_zstd, target_webp);
     const go_install = b.addInstallBinFile(go_frontend.server, "bcwebmux-server");
     b.getInstallStep().dependOn(&go_install.step);
     b.installArtifact(bcwebmux_worker);
@@ -172,13 +185,16 @@ pub fn build(b: *std.Build) void {
                 .{ .name = "ghostty-vt", .module = native_ghostty.module("ghostty-vt") },
                 .{ .name = "terminal-graphics", .module = native_graphics },
                 .{ .name = "terminal-graphics-checkpoint", .module = native_graphics_checkpoint },
+                .{ .name = "wuffs", .module = wuffs },
             },
         }),
     });
     native_tests.root_module.link_libc = true;
     native_tests.root_module.addIncludePath(b.path("include"));
     native_tests.root_module.addIncludePath(zstd_dep.path("lib"));
+    native_tests.root_module.addIncludePath(libwebp.path("src"));
     native_tests.root_module.linkLibrary(target_zstd);
+    native_tests.root_module.linkLibrary(target_webp);
     const run_native_tests = b.addRunArtifact(native_tests);
     const test_step = b.step("test", "Run Zig unit tests, or compile them for a cross target");
     if (runnable_target) {

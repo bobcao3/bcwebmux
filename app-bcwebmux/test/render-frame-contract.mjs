@@ -458,4 +458,4 @@ const bridgeSource = await readFile(new URL("TerminalCore.js", sourceRoot), "utf
 assert.doesNotMatch(bridgeSource, /get wasm\(|gpu_submit/);
 const packetSource = await readFile(new URL("FramePacket.js", sourceRoot), "utf8");
 assert.doesNotMatch(packetSource, /renderer\.|applyRenderer|WebAssembly/);
-console.log("render frame contract passed (ABI v7, browser assets, both text renderers)");
+console.log("render frame contract passed (ABI v8, browser assets, both text renderers)");

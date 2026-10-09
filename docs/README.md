@@ -13,8 +13,8 @@ repository-root `docs/` directory.
 - [Glyph cache design](glyph-cache-design.md): cell-sized glyph slots, shared
   atlas ownership, capacity limits, and terminal partitions.
 - [Kitty graphics design](kitty-graphics.md): local Ghostty checkout, WASM
-  portability, checkpoint continuation and browser rendering; compilation alone
-  does not complete image support.
+  portability, checkpoint continuation, browser rendering and server-side WebP
+  transcoding; compilation alone does not complete image support.
 - [Hardening proposals](hardening-design.md): proposal — moving the mirror
   terminal into the session worker, trimming the unauthenticated status
   endpoint, and replacing the global sign-in limiter.

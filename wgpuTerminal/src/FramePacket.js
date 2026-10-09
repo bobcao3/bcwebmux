@@ -158,12 +158,13 @@ export function parseFramePacket(memory, submissionPtr, expectations) {
       width > 4096 ||
       height > 4096 ||
       pixels * 4 > 16 * 1024 * 1024 ||
-      ![24, 32, 100].includes(format) ||
+      // Kitty's raw RGB/RGBA and PNG formats, plus 101 for WebP sent as PNG-format data.
+      ![24, 32, 100, 101].includes(format) ||
       compression > 1 ||
       graphicsResources.getUint32(o + 32, true) > 32 * 1024 * 1024 ||
       !length ||
       length > 8 * 1024 * 1024 ||
-      (format !== 100 && compression === 0 && length !== pixels * (format === 24 ? 3 : 4))
+      (format <= 32 && compression === 0 && length !== pixels * (format === 24 ? 3 : 4))
     ) {
       throw new Error("invalid graphics resource");
     }
@@ -292,7 +293,7 @@ export function parseFramePacket(memory, submissionPtr, expectations) {
   );
   const canvasText = new Uint8Array(memory, canvasTextPtr, canvasTextLen);
   validateRange(memory.byteLength, textBytesPtr, textBytesLen, "text bytes");
-  if (frame.getUint32(0, true) !== 0x46574342 || frame.getUint32(4, true) !== 7) {
+  if (frame.getUint32(0, true) !== 0x46574342 || frame.getUint32(4, true) !== FRAME_ABI) {
     throw new Error("invalid renderer frame");
   }
   const cols = frame.getUint32(8, true);

@@ -790,7 +790,7 @@ fn prepareCached(self: *Self, state: *ghostty.RenderState, terminal: *ghostty.Te
     const cursor_x: u32 = if (cursor) |pos| if (pos.wide_tail and pos.x > 0) pos.x - 1 else pos.x else std.math.maxInt(u16);
     self.frame = .{
         .magic = 0x46574342,
-        .version = 7,
+        .version = 8,
         .cols = state.cols,
         .rows = state.rows,
         .cell_count = @intCast(cell_count),
@@ -828,7 +828,7 @@ fn prepareCached(self: *Self, state: *ghostty.RenderState, terminal: *ghostty.Te
     try self.graphics_scene.prepare(std.heap.wasm_allocator, terminal, graphics, self.font_cell_width, self.font_cell_height);
     self.packet = .{
         .magic = 0x5355424d,
-        .version = 7,
+        .version = 8,
         .byte_size = @sizeOf(Submission),
         .text_unit_size = 1,
         .frame_offset = try wasmOffset(&self.frame),

@@ -9,7 +9,7 @@
 extern "C" {
 #endif
 
-#define BCWMUX_ABI_VERSION 2u
+#define BCWMUX_ABI_VERSION 3u
 #define BCWMUX_UUID_BYTES 16u
 
 /*
@@ -55,6 +55,9 @@ typedef struct bcwebmux_engine_config {
     size_t expected_origin_len;
     uint32_t max_live_sessions; /* 0 selects manifest default; maximum 64.
                                 * All other limits use native manifest defaults. */
+    /* Kitty images in PTY output are re-encoded as WebP, lossy at this
+     * quality (1-100), before clients receive them; 0 passes them unchanged. */
+    uint32_t webp_quality;
 } bcwebmux_engine_config;
 
 /* A request is a borrowed, length-delimited view.  method is ASCII (GET,

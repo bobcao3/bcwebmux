@@ -3,6 +3,10 @@ const ghostty = @import("ghostty-vt");
 const Graphics = @import("Adapter.zig");
 const Self = @This();
 
+/// Kitty's f= value for raw and PNG sources, or this for a WebP payload,
+/// which arrives as f=100.
+pub const webp_format = 101;
+
 pub const Resource = extern struct {
     screen: u32,
     image_id: u32,
@@ -83,7 +87,7 @@ fn append(
             .format = switch (resource_source.format) {
                 .rgb => 24,
                 .rgba => 32,
-                .png => 100,
+                .png => if (resource_source.codec == .webp) webp_format else 100,
                 .gray_alpha, .gray => unreachable,
             },
             .compression = if (resource_source.compression == .none) 0 else 1,

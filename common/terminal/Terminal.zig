@@ -610,7 +610,7 @@ fn freeSnapshotStaging(self: *Self) void {
 fn configuredHandler(value: *ghostty.Terminal) Handler {
     var handler = value.vtHandler();
     handler.kitty_graphics = effectGraphics;
-    handler.apc_handler.max_bytes.put(.kitty, 1024 * 1024);
+    handler.apc_handler.max_bytes.put(.kitty, Graphics.apc_limit);
     handler.terminfo_name = "xterm-256color";
     handler.effects.write_pty = effectWritePty;
     handler.effects.device_attributes = effectDeviceAttributes;

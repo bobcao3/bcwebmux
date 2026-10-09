@@ -23,6 +23,11 @@
             .url = "git+https://github.com/facebook/zstd.git#f8745da6ff1ad1e7bab384bd1f9d742439278e99",
             .hash = "N-V-__8AAGxifwAAGwXwvsnl_aOXFGLZTeYCu0WBhuEXr96u",
         },
+        // libwebp v1.6.0.
+        .libwebp = .{
+            .url = "https://github.com/webmproject/libwebp/archive/5339483509d998936c3f184ec5a95e8c1bb4a5d9.tar.gz",
+            .hash = "N-V-__8AAO6QfAD3E1INXsYxjCOt2DbY8UfTT6I68xTlsaoJ",
+        },
         .jetbrains_mono_nerd_font = .{
             .url = "https://github.com/ryanoasis/nerd-fonts/releases/download/v3.5.0/JetBrainsMono.tar.xz",
             .hash = "N-V-__8AAOAWRg4izSfnAMaMM1IV6_UEYFtw9NtPpHjN8F4s",
