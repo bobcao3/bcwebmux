@@ -52,10 +52,8 @@ try {
     resolve(executable),
     [
       "--auth=false",
-      "--host",
-      "127.0.0.1",
-      "--port",
-      String(port),
+      "--listen",
+      `127.0.0.1:${port}`,
       "--origin",
       origin,
       "--tls-cert",

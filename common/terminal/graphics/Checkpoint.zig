@@ -117,7 +117,7 @@ pub fn encode(alloc: std.mem.Allocator, writer: *std.Io.Writer, terminal: *const
     }
 }
 
-pub fn restore(alloc: std.mem.Allocator, terminal: *ghostty.Terminal, bytes: []const u8) !void {
+pub fn restore(alloc: std.mem.Allocator, terminal: *ghostty.Terminal, bytes: []const u8, history_rows: std.EnumMap(ghostty.ScreenSet.Key, u64)) !void {
     if (bytes.len > max_bytes or bytes.len < 8 or !std.mem.eql(u8, bytes[0..4], "KGCP")) return error.InvalidCheckpoint;
     var reader: Reader = .{ .data = bytes, .offset = 4 };
     if (try reader.take(u32) != 1) return error.InvalidCheckpoint;
@@ -127,6 +127,10 @@ pub fn restore(alloc: std.mem.Allocator, terminal: *ghostty.Terminal, bytes: []c
         if (present == 0) continue;
         if (present != 1) return error.InvalidCheckpoint;
         const screen = terminal.screens.get(key) orelse return error.InvalidCheckpoint;
+        // Snapshot decoding can discard old history to satisfy the client's byte limit.
+        const source_history = history_rows.get(key) orelse return error.InvalidCheckpoint;
+        const restored_history = screen.pages.scrollbar().total - terminal.rows;
+        const dropped_rows = source_history -| restored_history;
         const storage = &screen.kitty_images;
         const limit = try reader.take(u32);
         const next_image_id = try reader.take(u32);
@@ -201,12 +205,13 @@ pub fn restore(alloc: std.mem.Allocator, terminal: *ghostty.Terminal, bytes: []c
             };
             placement.location = switch (kind) {
                 0, 3 => location: {
-                    const point = if (kind == 3)
+                    const garbage = kind == 3 or b < dropped_rows;
+                    const point = if (garbage)
                         screen.pages.getTopLeft(.screen)
                     else
-                        screen.pages.pin(.{ .screen = .{ .x = std.math.cast(u16, a) orelse return error.InvalidCheckpoint, .y = b } }) orelse return error.InvalidCheckpoint;
+                        screen.pages.pin(.{ .screen = .{ .x = std.math.cast(u16, a) orelse return error.InvalidCheckpoint, .y = std.math.cast(u32, b - dropped_rows) orelse return error.InvalidCheckpoint } }) orelse return error.InvalidCheckpoint;
                     const pin = try screen.pages.trackPin(point);
-                    if (kind == 3) pin.garbage = true;
+                    if (garbage) pin.garbage = true;
                     break :location .{ .pin = pin };
                 },
                 1 => .virtual,

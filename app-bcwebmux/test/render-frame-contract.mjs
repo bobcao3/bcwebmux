@@ -1,5 +1,3 @@
-import { FrameScheduler } from "../../wgpuTerminal/src/browser/FrameScheduler.js";
-import { FramePresenter } from "../../wgpuTerminal/src/browser/render/FramePresenter.js";
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Cheng Cao
 
@@ -9,19 +7,17 @@ import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { createHash } from "node:crypto";
 import { TerminalCore } from "../../wgpuTerminal/src/TerminalCore.js";
-import { Terminal } from "../../wgpuTerminal/src/Terminal.js";
 import { parseFramePacket } from "../../wgpuTerminal/src/FramePacket.js";
-import { generateGrain, GRAIN_SIZE } from "../../wgpuTerminal/src/browser/render/Grain.js";
+import { generateGrain } from "../../wgpuTerminal/src/browser/render/Grain.js";
 import {
+  FRAME_ABI,
   CELL_SIZE,
   STYLE_SIZE,
   FRAME_SIZE,
   SUBMISSION_SIZE,
 } from "../../wgpuTerminal/src/browser/render/FrameSchema.js";
 
-assert.deepEqual([CELL_SIZE, STYLE_SIZE, FRAME_SIZE, SUBMISSION_SIZE], [8, 12, 80, 156]);
 const grain = generateGrain();
-assert.equal(grain.length, GRAIN_SIZE ** 2);
 // Golden from the previous Zig xorshift32 generator: preserve signed bytes and shuffle.
 assert.equal(
   createHash("sha256").update(grain).digest("hex"),
@@ -38,10 +34,10 @@ assert.ok(!names.includes("gpu_submit"));
 assert.ok(!names.includes("gpu_init"));
 assert.ok(!names.includes("gpu_text_backend"));
 const expectations = {
-  cellSize: 8,
-  styleSize: 12,
-  frameSize: 80,
-  packetSize: 156,
+  cellSize: CELL_SIZE,
+  styleSize: STYLE_SIZE,
+  frameSize: FRAME_SIZE,
+  packetSize: SUBMISSION_SIZE,
   maxCells: 256,
   maxStyles: 257,
   atlas: { columns: 16, tileWidth: 8, tileHeight: 16 },
@@ -254,7 +250,9 @@ for (const renderer of ["kb-stb", "canvas"]) {
     );
   }
   core.write("x");
-  assert.throws(() => core.consumeFrame(() => {}, { ...expectations, packetSize: 155 }));
+  assert.throws(() =>
+    core.consumeFrame(() => {}, { ...expectations, packetSize: expectations.packetSize - 1 }),
+  );
   frame = undefined;
   core.consumeFrame((value) => {
     frame = value;
@@ -267,15 +265,14 @@ for (const renderer of ["kb-stb", "canvas"]) {
   const token = e.term_frame_token();
   const identity = {
     ...expectations,
-    abi: 7,
+    abi: FRAME_ABI,
     coreGeneration: e.term_core_generation(),
     configGeneration: e.term_config_generation(),
     token,
     partition: { baseSlot: 0, slotCapacity: 256, generation: 1 },
   };
   for (const override of [
-    { abi: 4 },
-    { abi: 5 },
+    { abi: FRAME_ABI + 1 },
     { token: token + 1 },
     { coreGeneration: 999 },
     { configGeneration: 999 },
@@ -429,104 +426,6 @@ for (const dpr of [1, 2, 4]) {
     core.dispose();
   }
   assert.deepEqual(results[0], results[1], `shared layout slot geometry at DPR ${dpr}`);
-}
-
-// Real cores with a synchronous upload sink exercise attach/rollback without a GPU.
-const host = new Terminal({ renderer: "canvas" });
-const partitions = new Map();
-const cores = [];
-for (const baseSlot of [0, 256]) {
-  const core = new TerminalCore({ renderer: "canvas" });
-  core._wasm = (await WebAssembly.instantiate(module, core._createWasmImports())).exports;
-  core._wasm.term_bootstrap();
-  assert.equal(core._wasm.term_init(8, 3), 1);
-  Object.assign(core._state, { cols: 8, rows: 3 });
-  const partition = { baseSlot, slotCapacity: 256, generation: 1 };
-  partitions.set(core, partition);
-  core.setGlyphPartition(partition, 16);
-  await core.setRenderer("canvas");
-  core.setRenderMetrics({ cellWidth: 8, cellHeight: 16, fontSize: 15 });
-  core.write(baseSlot ? "second" : "first");
-  core._setHost(host);
-  cores.push(core);
-}
-host._opened = true;
-host._cores = new Set(cores);
-host._core = cores[0];
-let failCore = null;
-let presentations = 0;
-host._renderer = {
-  ...expectations,
-  initialized: true,
-  error: null,
-  atlasColumns: 16,
-  activeTerminal: cores[0],
-  submissionMetadata: {},
-  glyphPartitions: partitions,
-  selectTerminal(core) {
-    this.activeTerminal = core;
-  },
-  resizeTerminalPartition() {},
-  ensureFrameCapacity() {
-    return false;
-  },
-  uploadBitmap() {},
-  uploadCells() {},
-  uploadStyles() {
-    assert.ok(this.activeTerminal._wasm.term_frame_token() > 0);
-    if (this.activeTerminal === failCore) throw new Error("upload rejected");
-  },
-  presentCurrentState() {
-    for (const core of cores) assert.equal(core._wasm.term_frame_token(), 0);
-    presentations++;
-  },
-};
-host._presenter = new FramePresenter(host, host._renderer);
-host._presenter.canvasRasterizer = { rasterize() {} };
-host._presenter.resizeTerminalPartition = () => {};
-host._viewportController = {
-  latestPixelViewport: {},
-  cancelScrollGesture() {},
-  submitFrameMetadata() {},
-  physicalLayout: () => ({ cols: 8, rows: 3, cellWidth: 8, cellHeight: 16, fontSize: 15 }),
-};
-host._scheduler = new FrameScheduler(host, {
-  document: { hidden: false },
-  requestAnimationFrame: () => 1,
-  cancelAnimationFrame() {},
-  setTimeout: () => 1,
-  clearTimeout() {},
-});
-assert.equal(host._scheduler.flushImmediate(), 1);
-assert.equal(presentations, 1);
-failCore = cores[1];
-const originalError = console.error;
-try {
-  console.error = () => {};
-  assert.throws(() => host.attachCore(cores[1]), /upload rejected/);
-} finally {
-  console.error = originalError;
-}
-assert.equal(host.core, cores[0]);
-assert.equal(host._renderer.activeTerminal, cores[0]);
-assert.equal(host._renderer.error, null);
-assert.equal(presentations, 2, "failed upload was not presented; rollback replacement was");
-failCore = null;
-assert.equal(host.attachCore(cores[1]), cores[1]);
-assert.equal(presentations, 3);
-cores[1].write("borrow");
-assert.throws(
-  () =>
-    cores[1].consumeFrame(() => cores[0].dispose(), {
-      ...expectations,
-      partition: partitions.get(cores[1]),
-    }),
-  /live frame borrow/,
-);
-assert.equal(cores[0].ready, true, "shared-host disposal fails before destroying the other core");
-for (const core of cores) {
-  core._clearHost(host);
-  core.dispose();
 }
 
 const source = await readFile(

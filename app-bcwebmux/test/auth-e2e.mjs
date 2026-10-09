@@ -43,7 +43,7 @@ const authFile = path.join(directory, "auth.json");
 const port = await freePort();
 const debugPort = await freePort();
 const origin = `http://localhost:${port}`;
-const listen = ["--listen", "127.0.0.1", "--listen", "::1"];
+const listen = ["--listen", `127.0.0.1:${port}`, "--listen", `[::1]:${port}`];
 const account = "bob@bcwebmux";
 let enrolling;
 let serving;
@@ -160,6 +160,8 @@ async function enrolTOTP() {
       "totp",
       "--config",
       "/dev/null",
+      "--listen",
+      `127.0.0.1:${port}`,
       "--auth-file",
       authFile,
       "--account",
@@ -302,8 +304,6 @@ try {
       "--auth-file",
       authFile,
       ...listen,
-      "--port",
-      String(port),
       "--origin",
       origin,
       "--web-root",

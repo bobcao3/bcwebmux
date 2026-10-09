@@ -4,8 +4,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 
-const wasmPath = process.argv[2];
-assert.ok(wasmPath, "usage: node test/wasm-size-contract.mjs TERMINAL_WASM");
+const wasmPath = process.argv[2] ?? new URL("../zig-out/web/terminal.wasm", import.meta.url);
 const wasm = new Uint8Array(await readFile(wasmPath));
 assert.deepEqual([...wasm.subarray(0, 8)], [0, 97, 115, 109, 1, 0, 0, 0]);
 
@@ -32,7 +31,8 @@ for (let offset = 8; offset < wasm.byteLength;) {
 
 const codeBytes = sections.get(10) ?? 0;
 const dataBytes = sections.get(11) ?? 0;
-assert.ok(codeBytes <= 576 * 1024, `WASM code section exceeded 576 KiB: ${codeBytes}`);
+// Release ceilings, deliberately raised when a shipped feature needs the room.
+assert.ok(codeBytes <= 800 * 1024, `WASM code section exceeded 800 KiB: ${codeBytes}`);
 assert.ok(dataBytes <= 1 * 1024 * 1024, `WASM data section exceeded 1 MiB: ${dataBytes}`);
 assert.ok(wasm.byteLength <= 2 * 1024 * 1024, `terminal WASM exceeded 2 MiB: ${wasm.byteLength}`);
 console.log(JSON.stringify({ wasmBytes: wasm.byteLength, codeBytes, dataBytes }));

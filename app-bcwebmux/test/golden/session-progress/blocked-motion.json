@@ -1,0 +1,51 @@
+{
+  "version": 1,
+  "codec": "av1",
+  "pixelFormat": "gbrp",
+  "crf": 2,
+  "fps": 5,
+  "width": 1024,
+  "height": 577,
+  "frames": [
+    {
+      "name": "blocked-motion-0-1",
+      "width": 1024,
+      "height": 577
+    },
+    {
+      "name": "blocked-motion-0.125-1",
+      "width": 1024,
+      "height": 577
+    },
+    {
+      "name": "blocked-motion-0.25-1",
+      "width": 1024,
+      "height": 577
+    },
+    {
+      "name": "blocked-motion-0.375-1",
+      "width": 1024,
+      "height": 577
+    },
+    {
+      "name": "blocked-motion-0.5-1",
+      "width": 1024,
+      "height": 577
+    },
+    {
+      "name": "blocked-motion-0.625-1",
+      "width": 1024,
+      "height": 577
+    },
+    {
+      "name": "blocked-motion-0.75-1",
+      "width": 1024,
+      "height": 577
+    },
+    {
+      "name": "blocked-motion-0.875-1",
+      "width": 1024,
+      "height": 577
+    }
+  ]
+}

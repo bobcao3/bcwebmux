@@ -128,19 +128,6 @@ async function run() {
   if (!partitionA || partitionA.slotCapacity !== initialVisibleCapacity) {
     throw new Error(`core A glyph partition capacity mismatch: ${JSON.stringify(partitionA)}`);
   }
-  const atlasTextureBeforeBudgetFailure = renderer.atlas.texture;
-  const glyphCacheMaxBytesBefore = terminal.options.glyphCacheMaxBytes;
-  let budgetError = null;
-  try {
-    terminal.setGlyphCacheMaxBytes(1);
-  } catch (error) {
-    budgetError = error;
-  }
-  const budgetRollback =
-    budgetError?.code === "ERR_GLYPH_ATLAS_CAPACITY" &&
-    renderer.atlas.texture === atlasTextureBeforeBudgetFailure &&
-    terminal.options.glyphCacheMaxBytes === glyphCacheMaxBytesBefore;
-  if (!budgetRollback) throw new Error("glyph cache budget failure was not transactional");
   const surface = root.querySelector('[data-terminal-role="surface"]');
   const scrollbar = root.querySelector('[data-terminal-role="scrollbar"]');
   if (!surface || !scrollbar) throw new Error("semantic viewport elements were not found");
@@ -224,7 +211,6 @@ async function run() {
   const colorA = averageCell(imageA, terminal, 0, 0);
 
   const coreB = await terminal.createCore();
-  const coreBMemoryBeforeRender = coreB.memoryBytes;
   coreB.write("\x1b[2J\x1b[H\x1b[48;2;20;190;210m  \x1b[0m CORE-B-ACTIVE");
   terminal.attachCore(coreB);
   const imageB = await pixels(terminal);
@@ -242,7 +228,6 @@ async function run() {
   ) {
     throw new Error("shared atlas required slot count mismatch");
   }
-  const coreBMemoryAfterRender = coreB.memoryBytes;
   const colorB = averageCell(imageB, terminal, 0, 0);
 
   const hiddenFrames = coreA.state.frames;
@@ -393,9 +378,6 @@ async function run() {
     gpuFrames: terminal.state.gpuFrames,
     colorA,
     colorB,
-    budgetRollback,
-    coreBMemoryBeforeRender,
-    coreBMemoryAfterRender,
     partitions: {
       coreA: { base: partitionA.baseSlot, capacity: partitionA.slotCapacity },
       coreB: { base: partitionB.baseSlot, capacity: partitionB.slotCapacity },

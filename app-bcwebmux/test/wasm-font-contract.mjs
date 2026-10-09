@@ -4,11 +4,7 @@
 import assert from "node:assert/strict";
 import { TerminalCore } from "../../wgpuTerminal/src/TerminalCore.js";
 import { Terminal } from "../../wgpuTerminal/src/Terminal.js";
-import {
-  DEFAULT_WASM_FONT_FILES,
-  loadWasmFontFaces,
-  resolveWasmFontUrls,
-} from "../../wgpuTerminal/src/WasmFonts.js";
+import { loadWasmFontFaces, resolveWasmFontUrls } from "../../wgpuTerminal/src/WasmFonts.js";
 
 const defaults = resolveWasmFontUrls("https://example.test/assets/terminal.wasm");
 for (const Constructor of [TerminalCore, Terminal]) {
@@ -29,10 +25,12 @@ for (const Constructor of [TerminalCore, Terminal]) {
     canvas.dispose();
   }
 }
-assert.deepEqual(
-  defaults,
-  DEFAULT_WASM_FONT_FILES.map((file) => `https://example.test/assets/fonts/${file}`),
-);
+assert.equal(defaults.length, 4, "regular, bold, italic, and bold-italic faces");
+for (const url of defaults) {
+  assert.ok(url.startsWith("https://example.test/assets/fonts/"), url);
+  assert.ok(url.endsWith(".ttf"), url);
+}
+assert.equal(new Set(defaults).size, defaults.length, "font faces are distinct files");
 assert.deepEqual(
   resolveWasmFontUrls("https://example.test/assets/terminal.wasm", [
     "a.ttf",
@@ -55,8 +53,9 @@ globalThis.fetch = async (url) => {
 try {
   const first = await loadWasmFontFaces(defaults);
   const second = await loadWasmFontFaces(defaults);
-  assert.equal(fetches, 4);
-  for (let index = 0; index < 4; index += 1) assert.strictEqual(first[index], second[index]);
+  assert.equal(fetches, defaults.length);
+  for (let index = 0; index < defaults.length; index += 1)
+    assert.strictEqual(first[index], second[index]);
 } finally {
   globalThis.fetch = originalFetch;
 }

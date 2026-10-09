@@ -83,8 +83,6 @@ export class Terminal {
     this._opened = false;
     this._disposed = false;
     this._opening = null;
-    this._addons = new Set();
-    this._activeAddons = new Set();
     this._cores = new Set();
     this._core = null;
     this._renderingCore = null;
@@ -204,22 +202,6 @@ export class Terminal {
     return this._errorEmitter.event(listener);
   }
 
-  loadAddon(addon) {
-    if (!addon || typeof addon.activate !== "function" || typeof addon.dispose !== "function") {
-      throw new TypeError("terminal addon must implement activate() and dispose()");
-    }
-    if (this._disposed) throw new Error("terminal is disposed");
-    if (this._addons.has(addon)) return;
-    this._addons.add(addon);
-    if (this._opened) this._activateAddon(addon);
-  }
-
-  _activateAddon(addon) {
-    if (this._activeAddons.has(addon)) return;
-    addon.activate(this);
-    this._activeAddons.add(addon);
-  }
-
   async open(parent) {
     if (this._disposed) throw new Error("terminal is disposed");
     if (this._opened) throw new Error("terminal is already open");
@@ -228,7 +210,6 @@ export class Terminal {
     try {
       await this._opening;
       this._opened = true;
-      for (const addon of this._addons) this._activateAddon(addon);
       this._scheduler.schedule();
       return this;
     } catch (error) {
@@ -879,40 +860,6 @@ export class Terminal {
     if (!this._recovering && !this._renderer?.error) this._renderer?.setGrainStrength(strength);
   }
 
-  setGlyphCacheMaxBytes(value) {
-    const normalized = normalizeByteLimit(
-      value,
-      ABSOLUTE_GLYPH_CACHE_MAX_BYTES,
-      "glyph cache byte limit",
-    );
-    if (!this._renderer) {
-      this.options.glyphCacheMaxBytes = normalized;
-      return normalized;
-    }
-    if (this._recovering || this._renderer.error) throw new Error("renderer unavailable");
-    const oldBudget = this._renderer.glyphCacheMaxBytes;
-    this._renderer.glyphCacheMaxBytes = normalized;
-    try {
-      const layout = this._renderMetrics;
-      this._renderer.reconfigureGlyphAtlas(
-        {
-          width: layout.cellWidth,
-          height: layout.cellHeight,
-          fontSize: layout.fontSize,
-          columns: layout.cols,
-        },
-        this._activeTextRenderer,
-        getComputedStyle(this._terminalElement).fontFamily,
-      );
-    } catch (error) {
-      this._renderer.glyphCacheMaxBytes = oldBudget;
-      throw error;
-    }
-    this._installGlyphPartitions();
-    this.options.glyphCacheMaxBytes = normalized;
-    return normalized;
-  }
-
   _reloadRendererFont() {
     if (!this._renderer) return;
     if (this._presenter) this._presenter.canvasRasterizer = null;
@@ -1174,15 +1121,6 @@ export class Terminal {
     this._assertMutable();
     if (this._disposed) return;
     this._disposed = true;
-    for (const addon of [...this._addons].reverse()) {
-      try {
-        addon.dispose();
-      } catch (error) {
-        console.error("terminal addon disposal failed", error);
-      }
-    }
-    this._addons.clear();
-    this._activeAddons.clear();
     this._disposeRuntime();
     for (const emitter of [
       this._dataEmitter,

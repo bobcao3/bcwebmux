@@ -130,7 +130,7 @@
 
 #link-dialog button:focus-visible,
 #notification-dialog button:focus-visible {
-  outline: 2px solid var(--color-accent);
+  outline: var(--focus-ring-width) solid var(--color-accent);
   outline-offset: 2px;
 }
 
@@ -201,7 +201,7 @@
 }
 
 #settings-dialog [role="tab"][aria-selected="true"] { background: var(--color-accent); color: var(--color-background); }
-#settings-dialog [role="tab"]:focus-visible { outline: 2px solid var(--color-foreground); outline-offset: -5px; }
+#settings-dialog [role="tab"]:focus-visible { outline: var(--focus-ring-width) solid var(--color-foreground); outline-offset: -5px; }
 
 #settings-dialog [role="tabpanel"] {
   max-height: calc(min(80vh, 720px) - 94px);
@@ -305,7 +305,7 @@
 .font-size-stepper button { cursor: pointer; }
 .font-size-stepper button:hover,
 .font-size-stepper button:focus-visible { border-color: var(--color-foreground); background: var(--color-foreground); color: var(--color-background); }
-.font-size-stepper button:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
+.font-size-stepper button:focus-visible { outline: var(--focus-ring-width) solid var(--color-accent); outline-offset: 2px; }
 .font-size-stepper button:active { border-color: var(--color-accent); background: var(--color-accent); color: var(--color-background); }
 .font-size-stepper button:disabled { border-color: var(--color-muted); background: var(--color-muted); color: var(--color-background); cursor: not-allowed; opacity: .5; }
 .font-fallbacks { grid-column: 1 / -1; display: grid; grid-template-columns: 1fr; gap: 8px; }
@@ -434,7 +434,7 @@
 }
 #glyph-atlas-open:disabled, #glyph-atlas-refresh:disabled { opacity: .5; cursor: wait; }
 #glyph-atlas-dialog :focus-visible, #glyph-atlas-open:focus-visible {
-  outline: 2px solid var(--color-accent);
+  outline: var(--focus-ring-width) solid var(--color-accent);
   outline-offset: -3px;
 }
 #glyph-atlas-status { padding: 0 12px 12px; overflow-wrap: anywhere; }
@@ -490,7 +490,7 @@
   font: 400 13px/1.4 var(--terminal-font);
   text-transform: none;
 }
-.auth-key-label input:focus-visible { border-color: var(--color-accent); outline: 2px solid var(--color-accent); outline-offset: 1px; }
+.auth-key-label input:focus-visible { border-color: var(--color-accent); outline: var(--focus-ring-width) solid var(--color-accent); outline-offset: 1px; }
 /* Code field that arms key management when the session signed in with the
    authenticator app and has no key of its own to assert. */
 #auth-stepup-row { margin-bottom: 12px; }
@@ -508,7 +508,7 @@
   letter-spacing: .18em;
   text-align: center;
 }
-#auth-stepup-form input:focus-visible { border-color: var(--color-accent); outline: 2px solid var(--color-accent); outline-offset: 1px; }
+#auth-stepup-form input:focus-visible { border-color: var(--color-accent); outline: var(--focus-ring-width) solid var(--color-accent); outline-offset: 1px; }
 #auth-stepup-form button {
   flex: 0 0 auto;
   min-height: 40px;

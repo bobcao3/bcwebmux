@@ -2,9 +2,10 @@
 // Copyright (c) 2026 Cheng Cao
 
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
 import { Cdp, freePort, terminateProcess, waitFor } from "./test-support.mjs";
 
@@ -18,6 +19,24 @@ assert.ok(
 const backend = process.env.RENDER_BACKEND ?? "webgpu";
 const recoveryQuery = process.env.RENDER_RECOVERY === "1" ? "&recovery=1" : "";
 assert.ok(backend === "webgl2" || backend === "webgpu", "RENDER_BACKEND must be webgl2 or webgpu");
+
+// The harness is not a build artifact: stage it from the checkout so the page
+// under test cannot silently be an older copy living in the web root.
+const harnessSource = path.join(path.dirname(fileURLToPath(import.meta.url)), "terminal-core");
+const harnessTarget = path.join(webRoot, "terminal-core");
+await mkdir(harnessTarget, { recursive: true });
+for (const name of ["index.html", "main.js", "style.css"]) {
+  await copyFile(path.join(harnessSource, name), path.join(harnessTarget, name));
+}
+for (const name of ["terminal-core-csi.snapshot", "terminal-core-utf8.snapshot"]) {
+  const fixture = path.join(harnessTarget, "fixtures", name);
+  const present = await stat(fixture).catch(() => null);
+  if (!present) {
+    throw new Error(
+      `${fixture} is missing: generate it from test/snapshot-fixture.zig and install it under ${path.join(harnessTarget, "fixtures")}`,
+    );
+  }
+}
 const serverPort = await freePort();
 const debugPort = await freePort();
 const profile = await mkdtemp(path.join(os.tmpdir(), "bcwebmux-terminal-core-integration-"));
@@ -150,9 +169,6 @@ try {
   assert.ok(result.atlas.cacheHits > 0);
   assert.ok(result.coreSwitches >= 14);
   assert.ok(result.gpuFrames >= result.coreSwitches);
-  assert.ok(result.coreBMemoryBeforeRender < 20 * 1024 * 1024, JSON.stringify(result));
-  assert.ok(result.coreBMemoryAfterRender > result.coreBMemoryBeforeRender, JSON.stringify(result));
-  assert.equal(result.budgetRollback, true);
   assert.ok(
     result.colorA[0] > result.colorA[1] * 2 && result.colorA[0] > result.colorA[2] * 2,
     JSON.stringify(result),

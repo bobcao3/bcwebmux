@@ -2,6 +2,9 @@
 // Copyright (c) 2026 Cheng Cao
 
 import {
+  FRAME_ABI,
+  CELL_SIZE,
+  STYLE_SIZE,
   SUBMISSION_SIZE,
   FRAME_SIZE,
   CANVAS_REQUEST_SIZE,
@@ -62,9 +65,9 @@ export function decodeCanvasText(bytes, offset, length) {
 export function parseFramePacket(memory, submissionPtr, expectations) {
   const { partition, abi, coreGeneration, configGeneration, token } = expectations;
   if (
-    abi !== 7 ||
-    expectations.cellSize !== 8 ||
-    expectations.styleSize !== 12 ||
+    abi !== FRAME_ABI ||
+    expectations.cellSize !== CELL_SIZE ||
+    expectations.styleSize !== STYLE_SIZE ||
     expectations.frameSize !== FRAME_SIZE ||
     expectations.packetSize !== SUBMISSION_SIZE
   ) {
@@ -109,7 +112,7 @@ export function parseFramePacket(memory, submissionPtr, expectations) {
   const header = new DataView(memory, submissionPtr, SUBMISSION_SIZE);
   if (
     header.getUint32(0, true) !== 0x5355424d ||
-    header.getUint32(4, true) !== 7 ||
+    header.getUint32(4, true) !== FRAME_ABI ||
     header.getUint32(8, true) !== SUBMISSION_SIZE ||
     header.getUint32(12, true) !== CANVAS_TEXT_UNIT_SIZE
   ) {

@@ -23,8 +23,6 @@ const r8Settings = computeGlyphAtlasLimits({
   cellHeight: 72,
   configuredMaxBytes: 16 * mib,
 });
-assert.equal(r8.bytesPerSlot, 2160);
-assert.equal(r8.slotLimit, Math.floor((32 * mib) / 2160));
 assert.equal(
   computeGlyphAtlasLimits({
     maxTextureDimension: 65536,
@@ -35,14 +33,22 @@ assert.equal(
   ABSOLUTE_GLYPH_CACHE_MAX_BYTES,
 );
 
-const exact = planGlyphAtlasGeometry(r8, 528, { preferredColumns: 66 });
-assert.deepEqual(exact, {
-  columns: 66,
-  rows: 8,
-  textureSlots: 528,
-  byteLength: 528 * 2160,
-  paddingSlots: 0,
-});
+const requestedSlots = 528;
+const exact = planGlyphAtlasGeometry(r8, requestedSlots, { preferredColumns: 66 });
+assert.equal(exact.columns, 66, "planned columns honor the preferred width");
+assert.ok(exact.textureSlots >= requestedSlots, "plan covers the requested slots");
+assert.equal(exact.textureSlots % exact.columns, 0, "rows are whole tiles");
+assert.equal(
+  exact.byteLength,
+  exact.textureSlots * r8.bytesPerSlot,
+  "byte length follows the slot layout",
+);
+assert.ok(exact.byteLength <= r8.byteLimit, "plan fits the configured byte budget");
+assert.equal(
+  exact.paddingSlots,
+  exact.textureSlots - requestedSlots,
+  "padding covers exactly the unwritten slots",
+);
 
 const partitions = new GlyphAtlasPartitions(r8, 66);
 const terminalA = {};

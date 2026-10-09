@@ -2,6 +2,7 @@
 // Copyright (c) 2026 Cheng Cao
 
 import { parseFramePacket } from "./FramePacket.js";
+import { FRAME_ABI } from "./browser/render/FrameSchema.js";
 import { EventEmitter } from "./common/EventEmitter.js";
 import {
   DEFAULT_FONT,
@@ -87,12 +88,6 @@ export class TerminalCore {
 
   get ready() {
     return this._wasm !== null;
-  }
-  get memoryBytes() {
-    return this._wasm?.memory.buffer.byteLength ?? 0;
-  }
-  get opened() {
-    return this._opened;
   }
   get disposed() {
     return this._disposed;
@@ -327,12 +322,12 @@ export class TerminalCore {
       if (ptr < 0) throw new Error(`frame preparation failed: ${ptr}`);
       token = this._wasm.term_frame_token();
       const packet = parseFramePacket(this._wasm.memory.buffer, ptr, {
-        abi: 7,
+        ...expectations,
+        abi: FRAME_ABI,
         coreGeneration: this._wasm.term_core_generation(),
         configGeneration: this._wasm.term_config_generation(),
         partition: this._partition,
         token,
-        ...expectations,
       });
       const result = consumer(packet);
       if (result != null && typeof result.then === "function") {

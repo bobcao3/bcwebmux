@@ -83,29 +83,26 @@
   display: grid;
   grid-template-columns: minmax(0, 1fr) 44px;
   min-height: 56px;
-  border: 2px solid transparent;
+  --session-row-border: transparent;
+  --session-row-emphasis: var(--color-border);
+  border: 2px solid var(--session-row-border);
   background: var(--color-background);
   overflow: hidden;
   user-select: none;
   -webkit-touch-callout: none;
 }
 
-.session-row:focus-within,
-.session-row:hover {
-  border-color: var(--color-border);
-}
-
-.session-row.is-unread:not(.is-active) {
-  border-color: color-mix(in srgb, #c6b8e8 60%, var(--color-background));
+.session-row:focus-within {
+  border-color: var(--session-row-emphasis);
 }
 
 .session-row.is-active {
-  border-color: var(--color-accent);
+  --session-row-border: var(--color-accent);
+  --session-row-emphasis: var(--color-accent);
 }
 
-.session-row.is-active:focus-within,
-.session-row.is-active:hover {
-  border-color: var(--color-accent);
+.session-row:hover {
+  border-color: var(--color-foreground);
 }
 
 .session-tab,
@@ -158,6 +155,17 @@
   display: block;
   font-size: 12px;
   font-weight: 700;
+}
+
+.session-row.is-unread:not(.is-active) .session-name::after {
+  content: "";
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin-left: 6px;
+  border-radius: 50%;
+  background: var(--color-success);
+  vertical-align: middle;
 }
 
 .session-detail {
@@ -322,7 +330,7 @@
 
 .session-tab:focus-visible,
 #session-drawer button:focus-visible {
-  outline: 2px solid var(--color-accent);
+  outline: var(--focus-ring-width) solid var(--color-accent);
   outline-offset: -4px;
 }
 
@@ -377,7 +385,7 @@
 
 #session-context-menu .session-context-rename:focus-visible,
 #session-context-menu .session-context-lifecycle:focus-visible {
-  outline: 2px solid var(--color-accent);
+  outline: var(--focus-ring-width) solid var(--color-accent);
   outline-offset: -3px;
 }
 
@@ -443,7 +451,7 @@
 }
 
 #session-toggle:focus-visible {
-  outline: 2px solid var(--color-accent);
+  outline: var(--focus-ring-width) solid var(--color-accent);
   outline-offset: -2px;
 }
 

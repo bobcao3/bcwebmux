@@ -8,6 +8,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { VideoGoldens } from "./video-goldens.mjs";
+import { compareScreenshot } from "./visual-compare.mjs";
 import { Cdp, freePort, terminateProcess, waitFor, delay } from "./test-support.mjs";
 
 const [serverPath, webRoot, outputArgument] = process.argv.slice(2);
@@ -29,7 +30,8 @@ let chromiumError;
 let page;
 let browser;
 let cleanupPromise = null;
-const progressGoldenCounts = new Map();
+const goldenCounts = new Map();
+const stillGoldenDir = path.join(path.dirname(fileURLToPath(import.meta.url)), "golden");
 const videoGoldens = new VideoGoldens({
   goldenDir: path.join(path.dirname(fileURLToPath(import.meta.url)), "golden", "session-progress"),
   outputDir: screenshotDir,
@@ -142,8 +144,16 @@ try {
     "notification dialog did not close",
   );
   const firstId = await evaluate("window.bcwebmux.activeSessionId");
+  const peerIds = await seedStatusPeers();
+  await evaluate(`window.bcwebmux.switchSession(${JSON.stringify(firstId)})`);
+  await waitBrowser(
+    `window.bcwebmux.activeSessionId === ${JSON.stringify(firstId)} && window.bcwebmux.connected`,
+    10000,
+    "the progress demo session did not reactivate",
+  );
   await verifyLegacyProgress(firstId);
   await verifyProgramStatus(firstId);
+  await removeStatusPeers(peerIds, firstId);
   await evaluate(
     `window.bcwebmux.write("A=L4-; printf '\\\\033]0;ALPHA\\\\007'; echo \${A}ALPHA; (sleep 4; printf '\\\\033]0;INACTIVE-ALPHA\\\\007'; printf '\\\\033]7501;state=blocked:kind=permission:progress=40\\\\007\\\\033]9;4;1;73\\\\007'; echo \${A}INACTIVE)&\\n")`,
   );
@@ -205,7 +215,7 @@ try {
     5000,
     "inactive card did not receive the server's program status",
   );
-  await verifyStatusAnimation(firstId, "blocked");
+  await verifyStatusAnimation(firstId, "blocked", "inactive-blocked-motion");
   await verifyProgressPresentation(firstId, 40);
   assert.deepEqual((await sessionMetadata(firstId)).progressReport, { state: "set", progress: 73 });
   assert.equal(
@@ -363,14 +373,14 @@ try {
   await evaluate(
     `(() => { const tab = document.querySelector('.session-row[data-session-id="${secondId}"] .session-tab'); const rect = tab.getBoundingClientRect(); tab.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerId: 41, pointerType: 'touch', button: 0, buttons: 0, isPrimary: true, clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2 })); })()`,
   );
-  await progressGolden("context-menu");
+  await stillGolden("session-context-menu");
   await evaluate("document.querySelector('.session-context-rename').click()");
   await waitBrowser(
     "document.querySelector('#session-rename-dialog').open",
     1000,
     "context rename dialog did not open",
   );
-  await progressGolden("rename-dialog");
+  await stillGolden("session-rename-dialog");
   await evaluate("document.querySelector('#session-rename-cancel').click()");
   await waitBrowser(
     "!document.querySelector('#session-rename-dialog').open",
@@ -536,7 +546,7 @@ try {
       10000,
       `session ${name} did not activate`,
     );
-    if (name === "Gamma") await progressGolden("three-sessions");
+    if (name === "Gamma") await stillGolden("session-drawer");
   }
   const sampledCoreCount = await evaluate(
     "clearInterval(window.__bcwebmuxCoreCountTimer); window.__bcwebmuxCoreCountMax",
@@ -612,8 +622,8 @@ try {
     "exited cards must retain the lifecycle label alongside the completed program status",
   );
   await evaluate("document.querySelector('.session-row.is-active .session-tab').focus()");
-  await progressGolden("exited-done-card", ".session-row.is-active");
-  await progressGolden("exited-done-bar", "#terminal-chrome");
+  await stillGolden("session-exited-card", ".session-row.is-active");
+  await stillGolden("session-exited-bar", "#terminal-chrome");
   await evaluate(
     `(() => { const lifecycle = document.querySelector('.session-row[data-session-id="${secondId}"] .session-lifecycle'); lifecycle.focus(); lifecycle.click(); })()`,
   );
@@ -671,10 +681,13 @@ try {
   await cleanup();
 }
 
-async function progressGolden(name, selector = null) {
-  const count = (progressGoldenCounts.get(name) ?? 0) + 1;
-  progressGoldenCounts.set(name, count);
-  const scenario = `${name}-${count}`;
+function goldenName(name) {
+  const count = (goldenCounts.get(name) ?? 0) + 1;
+  goldenCounts.set(name, count);
+  return `${name}-${count}`;
+}
+
+async function capturePng(selector) {
   await evaluate("document.fonts.ready");
   if (!goldenStyleSheet) {
     await page.call("DOM.enable");
@@ -683,7 +696,7 @@ async function progressGolden(name, selector = null) {
     goldenStyleSheet = (await page.call("CSS.createStyleSheet", { frameId: frameTree.frame.id }))
       .styleSheetId;
   }
-  // Terminal output and telemetry are volatile; card and bottom-bar titles remain visible.
+  // Terminal output and telemetry are volatile; cards, dialogs, and bars are not.
   await page.call("CSS.setStyleSheetText", {
     styleSheetId: goldenStyleSheet,
     text: "#surface, #screen, #input, #composition, #perf { visibility: hidden !important; }",
@@ -705,15 +718,31 @@ async function progressGolden(name, selector = null) {
       fromSurface: true,
       ...(clip ? { clip } : {}),
     });
-    await videoGoldens.add({
-      png: Buffer.from(data, "base64"),
-      name: `progress-${scenario}`,
-      width,
-      height,
-    });
+    return { png: Buffer.from(data, "base64"), width, height };
   } finally {
     await page.call("CSS.setStyleSheetText", { styleSheetId: goldenStyleSheet, text: "" });
   }
+}
+
+// An animation group is recorded as its own video, one video per group.
+async function motionGolden(group, name, selector = null) {
+  const { png, width, height } = await capturePng(selector);
+  await videoGoldens.add({ png, name: goldenName(name), width, height, group });
+}
+
+async function stillGolden(name, selector = null) {
+  const { png, width, height } = await capturePng(selector);
+  const golden = goldenName(name);
+  await compareScreenshot({
+    png,
+    name: golden,
+    goldenName: golden,
+    goldenDir: stillGoldenDir,
+    outputDir: screenshotDir,
+    width,
+    height,
+    update: process.env.UPDATE_GOLDEN === "1",
+  });
 }
 
 async function verifyProgressPresentation(id, progress) {
@@ -735,8 +764,8 @@ async function verifyProgressPresentation(id, progress) {
   const state = await evaluate(
     `(() => { const s = window.bcwebmux.sessions.find(s => s.id === ${JSON.stringify(id)}); return s.programStatus?.state ?? s.progressReport.state; })()`,
   );
-  await progressGolden(
-    `${active ? "active" : "inactive"}-${state}-${progress}-${await evaluate("innerWidth")}`,
+  await stillGolden(
+    `session-progress-${active ? "active" : "inactive"}-${state}-${progress}-${await evaluate("innerWidth")}`,
   );
 }
 
@@ -758,7 +787,7 @@ async function verifyLegacyProgress(id) {
       "OSC 9;4 report did not reach the UI",
     );
   };
-  await progressGolden("absent");
+  await stillGolden("session-progress-absent");
   for (const progress of [0, 25, 73, 100]) {
     await report(`1;${progress}`, { state: "set", progress });
     await verifyProgressPresentation(id, progress);
@@ -769,7 +798,7 @@ async function verifyLegacyProgress(id) {
   await report("4;60", { state: "pause", progress: 60 });
   await verifyProgressPresentation(id, 60);
   await evaluate("document.querySelector('#softkeys-toggle').click()");
-  await progressGolden("softkeys-progress");
+  await stillGolden("session-progress-softkeys");
   await evaluate("document.querySelector('#softkeys-toggle').click()");
   await page.call("Emulation.setEmulatedMedia", {
     features: [{ name: "prefers-reduced-motion", value: "no-preference" }],
@@ -805,7 +834,7 @@ async function verifyLegacyProgress(id) {
         animation.currentTime = animation.effect.getComputedTiming().duration * ${phase};
       }
     })()`);
-    await progressGolden(`indeterminate-motion-${phase}`);
+    await motionGolden("indeterminate-motion", `indeterminate-motion-${phase}`);
   }
   await page.call("Emulation.setEmulatedMedia", {
     features: [{ name: "prefers-reduced-motion", value: "reduce" }],
@@ -815,9 +844,9 @@ async function verifyLegacyProgress(id) {
     0,
     "reduced motion must disable indeterminate bottom progress",
   );
-  await progressGolden("indeterminate-reduced");
+  await stillGolden("session-progress-indeterminate-reduced");
   await report("0", null);
-  await progressGolden("removed");
+  await stillGolden("session-progress-removed");
   await report("1;200", { state: "set", progress: 100 });
   await report("9;20", { state: "set", progress: 100 });
   await evaluate(`window.bcwebmux.write(${JSON.stringify("printf '\\033]133;A\\007'\n")})`);
@@ -838,10 +867,10 @@ async function verifyLegacyProgress(id) {
     5000,
     "reset must hide bottom progress",
   );
-  await progressGolden("reset");
+  await stillGolden("session-progress-reset");
 }
 
-async function verifyStatusAnimation(id, state) {
+async function verifyStatusAnimation(id, state, group) {
   await page.call("Emulation.setEmulatedMedia", {
     features: [{ name: "prefers-reduced-motion", value: "no-preference" }],
   });
@@ -871,7 +900,7 @@ async function verifyStatusAnimation(id, state) {
         animation.currentTime = animation.effect.getComputedTiming().duration * ${phase};
       }
     })()`);
-    await progressGolden(`${state}-motion-${phase}`);
+    await motionGolden(group, `${state}-motion-${phase}`);
   }
   if (await evaluate(`window.bcwebmux.activeSessionId === ${JSON.stringify(id)}`)) {
     const original = await evaluate(
@@ -952,8 +981,9 @@ async function verifyProgramStatus(id) {
       `state=${state}${state === "blocked" ? ":kind=permission" : ""}${state === "working" ? ":progress=0" : ""}`,
       expected,
     );
-    if (state === "working" || state === "blocked") await verifyStatusAnimation(id, state);
-    await progressGolden(`osc7501-${state}-reduced`);
+    if (state === "working" || state === "blocked")
+      await verifyStatusAnimation(id, state, `${state}-motion`);
+    await stillGolden(`session-progress-osc7501-${state}-reduced`);
   }
   await report("state=working:id=build:progress=25", {
     state: "error",
@@ -995,6 +1025,73 @@ async function verifyProgramStatus(id) {
     `!document.querySelector('.session-row[data-session-id="${id}"]')?.hasAttribute('data-program-status')`,
     5000,
     "reset must remove the card tint",
+  );
+}
+
+async function writeActiveOsc(code) {
+  await evaluate(`window.bcwebmux.write(${JSON.stringify(`printf '\\033]${code}\\007'\n`)})`);
+}
+
+// seedStatusPeers fills the drawer with sessions already in distinct states so
+// the progress scenarios on the selected session are recorded alongside them.
+async function seedStatusPeers() {
+  const peers = [
+    ["Tests", "7501;state=done", (metadata) => metadata.programStatus?.state === "done"],
+    [
+      "Build",
+      "7501;state=working:progress=42",
+      (metadata) => metadata.programStatus?.state === "working",
+    ],
+    ["Lint", "7501;state=idle", (metadata) => metadata.programStatus?.state === "idle"],
+    [
+      "Deploy",
+      "7501;state=blocked:kind=permission",
+      (metadata) => metadata.programStatus?.state === "blocked",
+    ],
+    ["Docs", "7501;state=error", (metadata) => metadata.programStatus?.state === "error"],
+  ];
+  const ids = [];
+  for (const [name, code, reached] of peers) {
+    await evaluate(`window.bcwebmux.createSession({ name: ${JSON.stringify(name)} })`);
+    await waitBrowser(
+      `window.bcwebmux.sessions.some(session => session.name === ${JSON.stringify(name)}) && window.bcwebmux.connected`,
+      10000,
+      `peer session ${name} did not activate`,
+    );
+    const id = await evaluate(
+      `window.bcwebmux.sessions.find(session => session.name === ${JSON.stringify(name)})?.id`,
+    );
+    await evaluate(`window.bcwebmux.switchSession(${JSON.stringify(id)})`);
+    await waitBrowser(
+      `window.bcwebmux.activeSessionId === ${JSON.stringify(id)} && window.bcwebmux.connected`,
+      10000,
+      `peer session ${name} did not become active`,
+    );
+    await writeActiveOsc(code);
+    await waitFor(
+      async () => reached(await sessionMetadata(id)),
+      5000,
+      `peer session ${name} did not report its status`,
+    );
+    ids.push(id);
+  }
+  return ids;
+}
+
+async function removeStatusPeers(ids, keepId) {
+  for (const id of ids) {
+    await evaluate(`window.bcwebmux.terminateSession(${JSON.stringify(id)})`);
+    await waitFor(
+      async () => (await sessionMetadata(id)).state === "exited",
+      8000,
+      `peer session ${id} did not exit`,
+    );
+    await evaluate(`window.bcwebmux.deleteSession(${JSON.stringify(id)})`);
+  }
+  await waitBrowser(
+    `window.bcwebmux.sessions.length === 1 && window.bcwebmux.activeSessionId === ${JSON.stringify(keepId)}`,
+    10000,
+    "peer sessions were not removed",
   );
 }
 

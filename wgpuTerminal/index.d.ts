@@ -118,10 +118,6 @@ export interface TerminalCoreOptions {
   clipboardWrite?: (text: string) => void | Promise<void>;
 }
 
-export interface TerminalAddon extends IDisposable {
-  activate(terminal: Terminal): void;
-}
-
 export interface TerminalSelectionModeEvent {
   active: boolean;
   flush: boolean;
@@ -163,10 +159,6 @@ export interface GlyphPartition {
 }
 
 export interface FrameExpectations {
-  abi?: 5;
-  coreGeneration?: number;
-  configGeneration?: number;
-  partition?: GlyphPartition;
   cellSize: number;
   styleSize: number;
   frameSize: number;
@@ -231,10 +223,8 @@ export interface FramePacket {
 export declare class TerminalCore implements IDisposable {
   constructor(options?: TerminalCoreOptions);
   readonly options: TerminalCoreOptions;
-  readonly opened: boolean;
   readonly disposed: boolean;
   readonly ready: boolean;
-  readonly memoryBytes: number;
   readonly cols: number;
   readonly rows: number;
   readonly state: TerminalCoreState;
@@ -321,7 +311,6 @@ export declare class Terminal implements IDisposable {
   ): IDisposable;
   onError(listener: (error: unknown) => void): IDisposable;
 
-  loadAddon(addon: TerminalAddon): void;
   open(parent: HTMLElement): Promise<this>;
   createCore(options?: TerminalCoreOptions): Promise<TerminalCore>;
   attachCore(core: TerminalCore): TerminalCore;
@@ -332,7 +321,6 @@ export declare class Terminal implements IDisposable {
   setFont(font: Partial<TerminalFont>): Promise<void>;
   setRenderer(renderer: TerminalRenderer): Promise<TerminalRenderer>;
   setGrainStrength(value: number): void;
-  setGlyphCacheMaxBytes(value: number): number;
   setSoftModifiers(value: number): void;
   clearSoftModifiers(): void;
   sendKey(code: string, key: string, modifiers?: number): number;

@@ -119,10 +119,6 @@ export class ViewportController {
     return { cols, rows };
   }
 
-  get cellMetrics() {
-    return this.cssCellMetrics;
-  }
-
   start() {
     if (this.started) return;
     this.started = true;

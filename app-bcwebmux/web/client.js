@@ -537,10 +537,32 @@ const drawer = new SessionDrawer({
 drawer.init();
 if (query.has("gpu-test")) drawer.close();
 const terminalProgress = document.querySelector("#terminal-progress");
+const PROGRESS_AUTOHIDE_MS = 4000;
+let progressAutoHideTimer = null;
+let progressCompleteKey = null;
 function renderTerminalProgress() {
   const status = sessionStatus(sessionController.activeSession);
   const progress = applySessionStatus(terminalProgress, status);
-  terminalProgress.hidden = !status || status.state === "idle";
+  const complete = status != null && (status.state === "done" || progress === 100);
+  const key = complete
+    ? `${sessionController.activeSession?.id ?? ""}:${status.state}:${progress}`
+    : null;
+  if (!complete) {
+    if (progressAutoHideTimer !== null) clearTimeout(progressAutoHideTimer);
+    progressAutoHideTimer = null;
+    progressCompleteKey = null;
+    terminalProgress.hidden = !status || status.state === "idle";
+  } else if (progressCompleteKey !== key) {
+    if (progressAutoHideTimer !== null) clearTimeout(progressAutoHideTimer);
+    progressCompleteKey = key;
+    terminalProgress.hidden = false;
+    progressAutoHideTimer = setTimeout(() => {
+      progressAutoHideTimer = null;
+      terminalProgress.hidden = true;
+    }, PROGRESS_AUTOHIDE_MS);
+  } else {
+    terminalProgress.hidden = progressAutoHideTimer === null;
+  }
   terminalProgress.classList.toggle("is-indeterminate", status != null && progress === null);
   if (progress === null) terminalProgress.removeAttribute("aria-valuenow");
   else terminalProgress.setAttribute("aria-valuenow", String(progress));

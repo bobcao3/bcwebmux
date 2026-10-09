@@ -271,7 +271,7 @@ pub fn term_snapshot_restore(self: *Self, len: u32) i32 {
     var replacement_owned = true;
     defer if (replacement_owned) replacement_terminal.deinit(alloc);
     replacement_terminal.setKittyGraphicsSizeLimit(alloc, 16 * 1024 * 1024);
-    if (metadata) |bytes| GraphicsCheckpoint.restore(alloc, &replacement_terminal, bytes) catch |err| {
+    if (metadata) |bytes| GraphicsCheckpoint.restore(alloc, &replacement_terminal, bytes, decoded.history_rows) catch |err| {
         std.log.err("terminal graphics checkpoint restore failed: {s}", .{@errorName(err)});
         return 0;
     };
