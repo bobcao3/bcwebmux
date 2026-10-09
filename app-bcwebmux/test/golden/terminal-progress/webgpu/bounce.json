@@ -1,0 +1,131 @@
+{
+  "version": 1,
+  "codec": "av1",
+  "pixelFormat": "gbrp",
+  "crf": 2,
+  "fps": 5,
+  "width": 1024,
+  "height": 4,
+  "frames": [
+    {
+      "name": "bounce-00",
+      "width": 1024,
+      "height": 4
+    },
+    {
+      "name": "bounce-01",
+      "width": 1024,
+      "height": 4
+    },
+    {
+      "name": "bounce-02",
+      "width": 1024,
+      "height": 4
+    },
+    {
+      "name": "bounce-03",
+      "width": 1024,
+      "height": 4
+    },
+    {
+      "name": "bounce-04",
+      "width": 1024,
+      "height": 4
+    },
+    {
+      "name": "bounce-05",
+      "width": 1024,
+      "height": 4
+    },
+    {
+      "name": "bounce-06",
+      "width": 1024,
+      "height": 4
+    },
+    {
+      "name": "bounce-07",
+      "width": 1024,
+      "height": 4
+    },
+    {
+      "name": "bounce-08",
+      "width": 1024,
+      "height": 4
+    },
+    {
+      "name": "bounce-09",
+      "width": 1024,
+      "height": 4
+    },
+    {
+      "name": "bounce-10",
+      "width": 1024,
+      "height": 4
+    },
+    {
+      "name": "bounce-11",
+      "width": 1024,
+      "height": 4
+    },
+    {
+      "name": "bounce-12",
+      "width": 1024,
+      "height": 4
+    },
+    {
+      "name": "bounce-13",
+      "width": 1024,
+      "height": 4
+    },
+    {
+      "name": "bounce-14",
+      "width": 1024,
+      "height": 4
+    },
+    {
+      "name": "bounce-15",
+      "width": 1024,
+      "height": 4
+    },
+    {
+      "name": "bounce-16",
+      "width": 1024,
+      "height": 4
+    },
+    {
+      "name": "bounce-17",
+      "width": 1024,
+      "height": 4
+    },
+    {
+      "name": "bounce-18",
+      "width": 1024,
+      "height": 4
+    },
+    {
+      "name": "bounce-19",
+      "width": 1024,
+      "height": 4
+    },
+    {
+      "name": "bounce-20",
+      "width": 1024,
+      "height": 4
+    },
+    {
+      "name": "bounce-21",
+      "width": 1024,
+      "height": 4
+    },
+    {
+      "name": "bounce-22",
+      "width": 1024,
+      "height": 4
+    },
+    {
+      "name": "bounce-23",
+      "width": 1024,
+      "height": 4
+    }
+  ]
+}

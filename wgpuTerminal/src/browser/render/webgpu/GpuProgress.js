@@ -15,7 +15,7 @@ export function initGpuProgress(renderer, source) {
     primitive: { topology: "triangle-list" },
   });
   renderer.progressUniform = device.createBuffer({
-    size: 32,
+    size: 48,
     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
   });
 }

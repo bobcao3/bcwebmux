@@ -49,11 +49,11 @@
   --color-foreground: #f7f4e8;
   --color-surface: #25232c;
   --color-border: #736c82;
-  --color-accent: #d8d2f2;
+  --color-accent: #d2cbf0;
   --color-muted: #b5adba;
-  --color-success: #b8d7b8;
-  --color-danger: #f2c9d9;
-  --color-warning: #ffd58a;
+  --color-success: #add1ad;
+  --color-danger: #f0c1d3;
+  --color-warning: #ffcf78;
   --focus-ring-width: 1.5px;
   --terminal-font: "JetBrains Mono Nerd Font", ui-monospace, "Cascadia Mono", "SFMono-Regular", Consolas, monospace;
   font-family: var(--terminal-font);

@@ -13,7 +13,7 @@ const FRAGMENT = `#version 300 es
 precision highp float;
 precision highp int;
 uniform highp sampler2D u_scene;
-uniform vec4 u_progress[2];
+uniform vec4 u_progress[3];
 out vec4 output_color;
 
 vec3 srgb_to_linear(vec3 value) {
@@ -55,35 +55,26 @@ vec3 oklab_to_linear(vec3 value) {
   return rgb;
 }
 
-vec2 cube_bounds(float value) {
-  const float levels[6] = float[6](0.0, 95.0 / 255.0, 135.0 / 255.0,
-                                 175.0 / 255.0, 215.0 / 255.0, 1.0);
-  for (int i = 1; i < 6; i++) {
-    if (value <= levels[i]) return vec2(levels[i - 1], levels[i]);
-  }
-  return vec2(levels[4], levels[5]);
+vec3 snap_palette(vec3 value) {
+  return floor(clamp(value, 0.0, 1.0) * 5.0 + 0.5) / 5.0;
 }
 
 vec3 quantize(vec3 value, ivec2 pixel) {
-  const int bayer[16] = int[16](0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5);
-  float threshold = (float(bayer[(pixel.y & 3) * 4 + (pixel.x & 3)]) + 0.5) / 16.0;
-  vec2 red = cube_bounds(value.r);
-  vec2 green = cube_bounds(value.g);
-  vec2 blue = cube_bounds(value.b);
-  vec3 low = vec3(red.x, green.x, blue.x);
-  vec3 high = vec3(red.y, green.y, blue.y);
-  vec3 position = (value - low) / (high - low);
-  vec3 nearest_cube = mix(low, high, greaterThan(position, vec3(0.5)));
-  vec3 cube_delta = value - nearest_cube;
-  float mean = (value.r + value.g + value.b) / 3.0;
-  float gray_index = (mean * 255.0 - 8.0) / 10.0;
-  float nearest_gray = (8.0 + 10.0 * clamp(floor(gray_index + 0.5), 0.0, 23.0)) / 255.0;
-  vec3 gray_delta = value - nearest_gray;
-  if (dot(gray_delta, gray_delta) <= dot(cube_delta, cube_delta)) {
-    float index = clamp(floor(gray_index + threshold), 0.0, 23.0);
-    return vec3((8.0 + 10.0 * index) / 255.0);
-  }
-  return mix(low, high, greaterThan(position, vec3(threshold)));
+  const int bayer[64] = int[64](
+    0, 32, 8, 40, 2, 34, 10, 42,
+    48, 16, 56, 24, 50, 18, 58, 26,
+    12, 44, 4, 36, 14, 46, 6, 38,
+    60, 28, 52, 20, 62, 30, 54, 22,
+    3, 35, 11, 43, 1, 33, 9, 41,
+    51, 19, 59, 27, 49, 17, 57, 25,
+    15, 47, 7, 39, 13, 45, 5, 37,
+    63, 31, 55, 23, 61, 29, 53, 21
+  );
+  ivec2 dither_pixel = pixel / ivec2(u_progress[0].zw);
+  float threshold = (float(bayer[(dither_pixel.y & 7) * 8 + (dither_pixel.x & 7)]) + 0.5) / 64.0;
+  vec3 levels = vec3(5.0);
+  vec3 scaled = value * levels;
+  return (floor(scaled) + mix(vec3(0.0), vec3(1.0), greaterThan(fract(scaled), vec3(threshold)))) / levels;
 }
 
 float bounce_integral(float seconds, float limit) {
@@ -115,15 +106,13 @@ void main() {
   vec2 pixel = vec2(gl_FragCoord.x, u_progress[0].y - gl_FragCoord.y);
   float width = u_progress[0].x;
   float height = u_progress[0].y;
-  float cell_width = u_progress[0].z;
-  float h = max(1.0, 0.2 * u_progress[0].w);
-  if (width <= 2.0 * cell_width || height < h ||
-      pixel.x < cell_width || pixel.x >= width - cell_width ||
+  float h = u_progress[2].x;
+  if (width <= 0.0 || height < h ||
       pixel.y < height - h || pixel.y >= height) {
     output_color = source;
     return;
   }
-  float t = (pixel.x - cell_width) / (width - 2.0 * cell_width);
+  float t = pixel.x / width;
   float fraction = u_progress[1].x;
   float seconds = u_progress[1].y;
   bool animate = u_progress[1].z > 0.5;
@@ -136,17 +125,25 @@ void main() {
   } else {
     coverage = t < fraction ? 1.0 : 0.0;
   }
-  vec3 color = source.rgb;
+  vec3 color = snap_palette(source.rgb);
   if (coverage > 0.0) {
-    vec3 lab = to_oklab(color);
+    vec3 lab = to_oklab(source.rgb);
     lab.x = mix(lab.x, 1.0 - lab.x, 0.6);
-    if (fraction >= 0.0 && animate) {
-      lab.x += 0.12 * sin(6.283185307179586 * (2.0 * t - seconds / 1.2)) * sinc(3.141592653589793 * shutter / 1.2);
-    }
     lab.x = clamp(lab.x, 0.0, 1.0);
-    color = clamp(linear_to_srgb(mix(srgb_to_linear(source.rgb), oklab_to_linear(lab), coverage)), 0.0, 1.0);
+    vec3 low = snap_palette(clamp(linear_to_srgb(oklab_to_linear(lab)), 0.0, 1.0));
+    float brightness = u_progress[2].y;
+    if (fraction >= 0.0 && animate) {
+      float wave_t = (floor(pixel.x / u_progress[0].z) + 0.5) * u_progress[0].z / width;
+      float wave = sin(6.283185307179586 * (2.0 * wave_t - seconds / 1.2)) * sinc(3.141592653589793 * shutter / 1.2);
+      brightness = max(0.0, wave);
+    }
+    lab.x = clamp(lab.x + 0.12, 0.0, 1.0);
+    vec3 high = snap_palette(clamp(linear_to_srgb(oklab_to_linear(lab)), 0.0, 1.0));
+    vec3 filled_color = mix(low, high, brightness);
+    color = coverage == 1.0 ? filled_color :
+      linear_to_srgb(mix(srgb_to_linear(color), srgb_to_linear(filled_color), coverage));
   }
-  output_color = vec4(quantize(color, ivec2(pixel)), source.a);
+  output_color = vec4(quantize(color, ivec2(pixel.x, pixel.y - height + h)), source.a);
 }
 `;
 

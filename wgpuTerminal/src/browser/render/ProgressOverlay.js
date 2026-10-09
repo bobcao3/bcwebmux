@@ -9,7 +9,7 @@ export class ProgressOverlay {
     this.startedAt = 0;
     this.reducedMotion = false;
     this.lastPresentedAt = null;
-    this.data = new Float32Array(8);
+    this.data = new Float32Array(12);
   }
 
   get visible() {
@@ -60,15 +60,25 @@ export class ProgressOverlay {
     const interval = this.lastPresentedAt === null ? 1 / 60 : (now - this.lastPresentedAt) / 1000;
     const shutter = this.animated ? 0.5 * Math.max(0, interval) : 0;
     this.lastPresentedAt = this.animated ? now : null;
+    const blockWidth = Math.max(1, Math.round(2 * renderer.pixelScaleX));
+    const blockHeight = Math.max(1, Math.round(2 * renderer.pixelScaleY));
+    const barHeight =
+      2 *
+      blockHeight *
+      Math.max(1, Math.round((0.2 * renderer.physicalCellHeight) / (2 * blockHeight)));
     this.data.set([
       renderer.canvas.width,
       renderer.canvas.height,
-      renderer.physicalCellWidth,
-      renderer.physicalCellHeight,
+      blockWidth,
+      blockHeight,
       this.status?.progress == null ? -1 : this.status.progress / 100,
       Math.max(0, (now - this.startedAt) / 1000) % 120,
       this.animated ? 1 : 0,
       shutter,
+      barHeight,
+      this.status?.state === "done" ? 1 : 0,
+      0,
+      0,
     ]);
     return this.data;
   }

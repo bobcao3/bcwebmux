@@ -3,25 +3,30 @@
 
 struct Progress {
   viewport: vec2<f32>,
-  cell: vec2<f32>,
+  block: vec2<f32>,
   fraction: f32,
   seconds: f32,
   animate: f32,
   shutter: f32,
+  barHeight: f32,
+  completed: f32,
+  reserved: vec2<f32>,
 };
 
 @group(0) @binding(0) var<uniform> progress: Progress;
 @group(0) @binding(1) var scene: texture_2d<f32>;
 
 const PI = 3.141592653589793;
-const BAYER = array<f32, 16>(
-  0.0, 8.0, 2.0, 10.0,
-  12.0, 4.0, 14.0, 6.0,
-  3.0, 11.0, 1.0, 9.0,
-  15.0, 7.0, 13.0, 5.0,
+const BAYER = array<f32, 64>(
+  0.0, 32.0, 8.0, 40.0, 2.0, 34.0, 10.0, 42.0,
+  48.0, 16.0, 56.0, 24.0, 50.0, 18.0, 58.0, 26.0,
+  12.0, 44.0, 4.0, 36.0, 14.0, 46.0, 6.0, 38.0,
+  60.0, 28.0, 52.0, 20.0, 62.0, 30.0, 54.0, 22.0,
+  3.0, 35.0, 11.0, 43.0, 1.0, 33.0, 9.0, 41.0,
+  51.0, 19.0, 59.0, 27.0, 49.0, 17.0, 57.0, 25.0,
+  15.0, 47.0, 7.0, 39.0, 13.0, 45.0, 5.0, 37.0,
+  63.0, 31.0, 55.0, 23.0, 61.0, 29.0, 53.0, 21.0,
 );
-const CUBE = array<f32, 6>(0.0, 95.0 / 255.0, 135.0 / 255.0, 175.0 / 255.0, 215.0 / 255.0, 1.0);
-
 @vertex fn vertex(@builtin(vertex_index) index: u32) -> @builtin(position) vec4<f32> {
   let x = select(-1.0, 3.0, index == 1u);
   let y = select(-1.0, 3.0, index == 2u);
@@ -65,42 +70,14 @@ fn oklabToLinear(lab: vec3<f32>) -> vec3<f32> {
   );
 }
 
-fn nearestCube(value: f32) -> f32 {
-  var nearest = CUBE[0];
-  var distance = abs(value - nearest);
-  for (var index = 1u; index < 6u; index += 1u) {
-    let candidateDistance = abs(value - CUBE[index]);
-    if (candidateDistance < distance) {
-      nearest = CUBE[index];
-      distance = candidateDistance;
-    }
-  }
-  return nearest;
-}
-
-fn ditherCube(value: f32, threshold: f32) -> f32 {
-  for (var index = 1u; index < 6u; index += 1u) {
-    if (value <= CUBE[index]) {
-      let lower = CUBE[index - 1u];
-      let upper = CUBE[index];
-      return select(lower, upper, (value - lower) / (upper - lower) > threshold);
-    }
-  }
-  return 1.0;
-}
-
 fn quantize(value: vec3<f32>, threshold: f32) -> vec3<f32> {
-  let cube = vec3<f32>(nearestCube(value.r), nearestCube(value.g), nearestCube(value.b));
-  let mean = (value.r + value.g + value.b) / 3.0;
-  let grayIndex = clamp(floor((mean * 255.0 - 8.0) / 10.0 + 0.5), 0.0, 23.0);
-  let gray = vec3<f32>((8.0 + 10.0 * grayIndex) / 255.0);
-  let cubeDelta = value - cube;
-  let grayDelta = value - gray;
-  if (dot(grayDelta, grayDelta) <= dot(cubeDelta, cubeDelta)) {
-    let index = clamp(floor((mean * 255.0 - 8.0) / 10.0 + threshold), 0.0, 23.0);
-    return vec3<f32>((8.0 + 10.0 * index) / 255.0);
-  }
-  return vec3<f32>(ditherCube(value.r, threshold), ditherCube(value.g, threshold), ditherCube(value.b, threshold));
+  let levels = vec3<f32>(5.0);
+  let scaled = value * levels;
+  return (floor(scaled) + select(vec3<f32>(0.0), vec3<f32>(1.0), fract(scaled) > vec3<f32>(threshold))) / levels;
+}
+
+fn snapPalette(value: vec3<f32>) -> vec3<f32> {
+  return floor(clamp(value, vec3<f32>(0.0), vec3<f32>(1.0)) * 5.0 + 0.5) / 5.0;
 }
 
 fn bounceIntegral(seconds: f32, limit: f32) -> f32 {
@@ -130,14 +107,13 @@ fn sinc(value: f32) -> f32 {
 @fragment fn fragment(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
   let pixel = vec2<i32>(position.xy);
   let source = textureLoad(scene, pixel, 0);
-  let h = max(1.0, 0.2 * progress.cell.y);
-  let width = progress.viewport.x - 2.0 * progress.cell.x;
+  let h = progress.barHeight;
+  let width = progress.viewport.x;
   if (width <= 0.0 || progress.viewport.y < h ||
-      position.x < progress.cell.x || position.x >= progress.viewport.x - progress.cell.x ||
       position.y < progress.viewport.y - h || position.y >= progress.viewport.y) {
     return source;
   }
-  let t = (position.x - progress.cell.x) / width;
+  let t = position.x / width;
   var coverage = select(0.0, 1.0, t < progress.fraction);
   if (progress.fraction < 0.0) {
     var offset = 1.0 / 3.0;
@@ -149,17 +125,31 @@ fn sinc(value: f32) -> f32 {
       coverage = bounceCoverage(t, progress.seconds, progress.shutter);
     }
   }
-  var color = source.rgb;
+  var color = snapPalette(source.rgb);
   if (coverage > 0.0) {
-    var lab = linearToOklab(srgbToLinear(color));
+    var lab = linearToOklab(srgbToLinear(source.rgb));
     lab.x = mix(lab.x, 1.0 - lab.x, 0.6);
-    if (progress.fraction >= 0.0 && progress.animate == 1.0) {
-      lab.x += 0.12 * sin(2.0 * PI * (2.0 * t - progress.seconds / 1.2)) * sinc(PI * progress.shutter / 1.2);
-    }
     lab.x = clamp(lab.x, 0.0, 1.0);
-    color = linearToSrgb(mix(srgbToLinear(source.rgb), oklabToLinear(lab), coverage));
+    let low = snapPalette(linearToSrgb(oklabToLinear(lab)));
+    lab.x += 0.12;
+    lab.x = clamp(lab.x, 0.0, 1.0);
+    let high = snapPalette(linearToSrgb(oklabToLinear(lab)));
+    var brightness = progress.completed;
+    if (progress.fraction >= 0.0 && progress.animate == 1.0) {
+      let waveT = (floor(position.x / progress.block.x) + 0.5) * progress.block.x / width;
+      let wave = sin(2.0 * PI * (2.0 * waveT - progress.seconds / 1.2)) * sinc(PI * progress.shutter / 1.2);
+      brightness = max(0.0, wave);
+    }
+    let filledColor = mix(low, high, brightness);
+    if (coverage == 1.0) {
+      color = filledColor;
+    } else {
+      color = linearToSrgb(mix(srgbToLinear(color), srgbToLinear(filledColor), coverage));
+    }
   }
-  let index = (u32(pixel.y) % 4u) * 4u + u32(pixel.x) % 4u;
-  let threshold = (BAYER[index] + 0.5) / 16.0;
+  let barTop = i32(progress.viewport.y - h);
+  let ditherPixel = vec2<u32>(pixel - vec2<i32>(0, barTop)) / vec2<u32>(progress.block);
+  let index = (ditherPixel.y % 8u) * 8u + ditherPixel.x % 8u;
+  let threshold = (BAYER[index] + 0.5) / 64.0;
   return vec4<f32>(quantize(color, threshold), source.a);
 }

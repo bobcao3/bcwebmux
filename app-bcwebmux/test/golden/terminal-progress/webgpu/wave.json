@@ -1,0 +1,131 @@
+{
+  "version": 1,
+  "codec": "av1",
+  "pixelFormat": "gbrp",
+  "crf": 2,
+  "fps": 5,
+  "width": 1024,
+  "height": 4,
+  "frames": [
+    {
+      "name": "wave-00",
+      "width": 1024,
+      "height": 4
+    },
+    {
+      "name": "wave-01",
+      "width": 1024,
+      "height": 4
+    },
+    {
+      "name": "wave-02",
+      "width": 1024,
+      "height": 4
+    },
+    {
+      "name": "wave-03",
+      "width": 1024,
+      "height": 4
+    },
+    {
+      "name": "wave-04",
+      "width": 1024,
+      "height": 4
+    },
+    {
+      "name": "wave-05",
+      "width": 1024,
+      "height": 4
+    },
+    {
+      "name": "wave-06",
+      "width": 1024,
+      "height": 4
+    },
+    {
+      "name": "wave-07",
+      "width": 1024,
+      "height": 4
+    },
+    {
+      "name": "wave-08",
+      "width": 1024,
+      "height": 4
+    },
+    {
+      "name": "wave-09",
+      "width": 1024,
+      "height": 4
+    },
+    {
+      "name": "wave-10",
+      "width": 1024,
+      "height": 4
+    },
+    {
+      "name": "wave-11",
+      "width": 1024,
+      "height": 4
+    },
+    {
+      "name": "wave-12",
+      "width": 1024,
+      "height": 4
+    },
+    {
+      "name": "wave-13",
+      "width": 1024,
+      "height": 4
+    },
+    {
+      "name": "wave-14",
+      "width": 1024,
+      "height": 4
+    },
+    {
+      "name": "wave-15",
+      "width": 1024,
+      "height": 4
+    },
+    {
+      "name": "wave-16",
+      "width": 1024,
+      "height": 4
+    },
+    {
+      "name": "wave-17",
+      "width": 1024,
+      "height": 4
+    },
+    {
+      "name": "wave-18",
+      "width": 1024,
+      "height": 4
+    },
+    {
+      "name": "wave-19",
+      "width": 1024,
+      "height": 4
+    },
+    {
+      "name": "wave-20",
+      "width": 1024,
+      "height": 4
+    },
+    {
+      "name": "wave-21",
+      "width": 1024,
+      "height": 4
+    },
+    {
+      "name": "wave-22",
+      "width": 1024,
+      "height": 4
+    },
+    {
+      "name": "wave-23",
+      "width": 1024,
+      "height": 4
+    }
+  ]
+}

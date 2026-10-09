@@ -8,6 +8,7 @@ import os from "node:os";
 import path from "node:path";
 import sharp from "sharp";
 import { Cdp, delay, freePort, terminateProcess, waitFor } from "./test-support.mjs";
+import { recordProgressVideos } from "./progress-video.mjs";
 
 const [serverPath, webRoot] = process.argv.slice(2);
 assert.ok(serverPath && webRoot, "usage: progress-renderer-e2e.mjs SERVER WEB_ROOT");
@@ -88,6 +89,7 @@ async function run(backend) {
         "--no-sandbox",
         "--disable-dev-shm-usage",
         "--window-size=1024,720",
+        "--force-device-scale-factor=1.5",
         "--enable-unsafe-webgpu",
         "--use-angle=vulkan",
         "--ignore-gpu-blocklist",
@@ -113,7 +115,7 @@ async function run(backend) {
       features: [{ name: "prefers-reduced-motion", value: "reduce" }],
     });
     await page.call("Page.addScriptToEvaluateOnNewDocument", {
-      source: `localStorage.setItem('bcwebmux.settings.v1', JSON.stringify({selected:'custom',custom:{background:'#242424'},renderer:'canvas',grainStrength:0,perfMode:'off'}));`,
+      source: `localStorage.setItem('bcwebmux.settings.v1', JSON.stringify({selected:'custom',custom:{background:'#240000'},renderer:'canvas',grainStrength:0,perfMode:'off'}));`,
     });
     await page.call("Page.navigate", {
       url: `${base}/?session-test=1&renderer=canvas&backend=${backend}`,
@@ -144,8 +146,10 @@ async function run(backend) {
     );
     for (const { width, dpr } of [
       { width: 1024, dpr: 1 },
+      { width: 1024, dpr: 1.25 },
       { width: 1024, dpr: 2 },
       { width: 390, dpr: 1 },
+      { width: 390, dpr: 1.5 },
       { width: 390, dpr: 2 },
     ]) {
       await page.call("Emulation.setDeviceMetricsOverride", {
@@ -155,17 +159,28 @@ async function run(backend) {
         mobile: false,
       });
       await until(
-        `devicePixelRatio === ${dpr} && window.bcwebmux.state.gpuError === null`,
+        `Math.abs(devicePixelRatio - ${dpr}) < 0.000001 && window.bcwebmux.state.gpuError === null`,
         "resize failed",
       );
       if (width < 721) await evaluate("window.bcwebmux.closeDrawer()");
       await delay(150);
       const sample = await evaluate("progressProbe.sample()");
       assertGeometry(sample);
+      assert.equal(sample.colors.length, 2, "filled and unfilled progress must each be solid");
+      assert.equal(sample.blockErrors, 0);
       assert.ok(
         Math.abs(sample.activeFraction - 0.65) <= 1 / sample.barWidth,
         JSON.stringify(sample),
       );
+      await page.call("Emulation.setEmulatedMedia", {
+        features: [{ name: "prefers-reduced-motion", value: "no-preference" }],
+      });
+      await delay(100);
+      assert.equal((await evaluate("progressProbe.sample()")).blockErrors, 0);
+      await page.call("Emulation.setEmulatedMedia", {
+        features: [{ name: "prefers-reduced-motion", value: "reduce" }],
+      });
+      await delay(50);
       await assertDisplayedGeometry(page, evaluate);
       await evaluate("document.querySelector('#softkeys-toggle').click()");
       await evaluate(
@@ -238,7 +253,7 @@ async function run(backend) {
         middle.centroid > 0.45 &&
         middle.centroid < 0.65 &&
         right.centroid > 0.78,
-      "indeterminate work must bounce across the canvas",
+      `indeterminate work must bounce across the canvas: ${JSON.stringify([left.centroid, middle.centroid, right.centroid])}`,
     );
     await page.call("Emulation.setEmulatedMedia", {
       features: [{ name: "prefers-reduced-motion", value: "reduce" }],
@@ -294,7 +309,9 @@ async function run(backend) {
       "\\033]9;4;0\\007\\033]7501;state=done\\007",
       "document.querySelector('#terminal-progress').getAttribute('aria-valuenow') === '100'",
     );
-    assert.equal((await evaluate("progressProbe.sample()")).activeFraction, 1);
+    const completed = await evaluate("progressProbe.sample()");
+    assert.equal(completed.activeFraction, 1);
+    assert.equal(completed.colors.length, 1, "completed progress must be solid with no dither");
     await until(
       "document.querySelector('#terminal-progress').hidden",
       "complete progress did not auto-hide",
@@ -319,6 +336,7 @@ async function run(backend) {
       "clearing progress must restore every canvas pixel",
     );
     assert.equal(await evaluate("document.querySelector('#client-error').hidden"), true);
+    await recordProgressVideos({ page, evaluate, report, backend });
     console.log(`${backend}: progress geometry, wave, bounce, pause, resize, and auto-hide passed`);
   } finally {
     page?.close();
@@ -341,7 +359,7 @@ async function assertDisplayedGeometry(page, evaluate) {
       viewportBottom: document.querySelector('#terminal-viewport').getBoundingClientRect().bottom,
       chromeTop: document.querySelector('#terminal-chrome').getBoundingClientRect().top,
       adjacentTop: document.querySelector(softkeys ? '#softkeys' : '#terminal-controls').getBoundingClientRect().top,
-      width: canvas.width, height: canvas.height, dpr: devicePixelRatio
+      width: canvas.width, height: canvas.height, dpr: Math.round(devicePixelRatio * 1000000) / 1000000
     };
   })()`);
   assert.equal(
@@ -356,13 +374,40 @@ async function assertDisplayedGeometry(page, evaluate) {
     "canvas must touch the adjacent controls row",
   );
   const x = Math.floor(layout.width * 0.25);
+  const screenshotX = Math.floor(
+    (layout.canvas.left + ((x + 0.5) * layout.canvas.width) / layout.width) * layout.dpr,
+  );
+  const screenshotY = Math.ceil(layout.canvas.bottom * layout.dpr) - 1;
+  const sourceX =
+    (screenshotX + 0.5 - layout.canvas.left * layout.dpr) *
+      (layout.width / (layout.canvas.width * layout.dpr)) -
+    0.5;
+  const sourceY =
+    (screenshotY + 0.5 - (layout.canvas.bottom - layout.canvas.height) * layout.dpr) *
+      (layout.height / (layout.canvas.height * layout.dpr)) -
+    0.5;
   const readExpected = () =>
     evaluate(`(async () => {
     const frame = await window.bcwebmux.readPixels();
-    const i = ((frame.height - 1) * frame.width + ${x}) * 4;
-    const rgb = Array.from(frame.data.slice(i, i + 3));
-    if (frame.format.startsWith('bgra')) rgb.reverse();
-    return rgb;
+    const sourceX = ${sourceX};
+    const sourceY = ${sourceY};
+    const x0 = Math.floor(sourceX), y0 = Math.floor(sourceY);
+    const tx = sourceX - x0, ty = sourceY - y0;
+    const pixel = (x, y) => {
+      x = Math.max(0, Math.min(frame.width - 1, x));
+      y = Math.max(0, Math.min(frame.height - 1, y));
+      const i = (y * frame.width + x) * 4;
+      const rgb = Array.from(frame.data.slice(i, i + 3));
+      if (frame.format.startsWith('bgra')) rgb.reverse();
+      return rgb;
+    };
+    const samples = [pixel(x0, y0), pixel(x0 + 1, y0), pixel(x0, y0 + 1), pixel(x0 + 1, y0 + 1)];
+    return [0, 1, 2].map(channel =>
+      samples[0][channel] * (1 - tx) * (1 - ty) +
+      samples[1][channel] * tx * (1 - ty) +
+      samples[2][channel] * (1 - tx) * ty +
+      samples[3][channel] * tx * ty
+    );
   })()`);
   let expected;
   await waitFor(
@@ -382,10 +427,6 @@ async function assertDisplayedGeometry(page, evaluate) {
     .removeAlpha()
     .raw()
     .toBuffer({ resolveWithObject: true });
-  const screenshotX = Math.floor(
-    (layout.canvas.left + ((x + 0.5) * layout.canvas.width) / layout.width) * layout.dpr,
-  );
-  const screenshotY = Math.ceil(layout.canvas.bottom * layout.dpr) - 1;
   const i = (screenshotY * info.width + screenshotX) * info.channels;
   const actual = Array.from(data.subarray(i, i + 3));
   assert.ok(
@@ -395,23 +436,27 @@ async function assertDisplayedGeometry(page, evaluate) {
 }
 
 function assertGeometry(sample) {
-  assert.equal(sample.minX, sample.cellWidth);
-  assert.equal(sample.maxX, sample.width - sample.cellWidth - 1);
-  assert.ok(Math.abs(sample.maxY - sample.minY + 1 - sample.lineHeight * 0.2) <= 1);
+  assert.equal(sample.minX, 0, "the progress bar must touch the left canvas edge");
+  assert.equal(sample.maxX, sample.width - 1, "the progress bar must touch the right canvas edge");
+  const actualBarHeight = sample.maxY - sample.minY + 1;
+  assert.equal(actualBarHeight % (2 * sample.blockHeight), 0);
+  assert.ok(actualBarHeight >= 2 * sample.blockHeight);
+  assert.ok(Math.abs(actualBarHeight - sample.lineHeight * 0.2) <= sample.blockHeight);
+  assert.equal(sample.changedPixels, sample.width * actualBarHeight);
   assert.equal(
     sample.maxY,
     sample.height - 1,
     "the progress bar must touch the canvas bottom edge",
   );
-  assert.equal(
-    sample.outsideChanges,
-    0,
-    "postprocessing must preserve pixels outside the inset bar",
-  );
+  for (const [red, green, blue] of sample.colors) {
+    assert.ok([0, 51, 102, 153, 204, 255].includes(red), `unexpected red level: ${red}`);
+    assert.ok([0, 51, 102, 153, 204, 255].includes(green), `unexpected green level: ${green}`);
+    assert.ok([0, 51, 102, 153, 204, 255].includes(blue), `unexpected blue level: ${blue}`);
+  }
 }
 
 function installProbe() {
-  const background = [36, 36, 36];
+  const background = [36, 0, 0];
   const read = async () => {
     const frame = await window.bcwebmux.readPixels();
     if (frame.format.startsWith("bgra")) {
@@ -423,49 +468,70 @@ function installProbe() {
   return {
     async sample() {
       const { width, height, data } = await read();
-      const { physicalCellWidth: cellWidth, physicalCellHeight: lineHeight } =
-        window.bcwebmux.state;
+      const canvas = document.querySelector("#screen");
+      const blockWidth = Math.max(1, Math.round((2 * width) / canvas.clientWidth));
+      const blockHeight = Math.max(1, Math.round((2 * height) / canvas.clientHeight));
+      const { physicalCellHeight: lineHeight } = window.bcwebmux.state;
+      const colors = new Set();
       let minX = width,
         maxX = -1,
         minY = height,
         maxY = -1;
       let changedPixels = 0,
-        outsideChanges = 0,
         active = 0,
         sumX = 0,
         hash = 2166136261;
-      const h = lineHeight * 0.2;
       for (let y = 0; y < height; y++)
         for (let x = 0; x < width; x++) {
           const i = (y * width + x) * 4;
-          const rgb = Array.from(data.slice(i, i + 3));
-          if (rgb.every((v, channel) => v === background[channel])) continue;
+          if (
+            data[i] === background[0] &&
+            data[i + 1] === background[1] &&
+            data[i + 2] === background[2]
+          )
+            continue;
+          const rgb = [data[i], data[i + 1], data[i + 2]];
+          colors.add(rgb.join(","));
           changedPixels++;
           minX = Math.min(minX, x);
           maxX = Math.max(maxX, x);
           minY = Math.min(minY, y);
           maxY = Math.max(maxY, y);
-          if (x < cellWidth || x >= width - cellWidth || y + 0.5 < height - h || y + 0.5 >= height)
-            outsideChanges++;
           for (const v of rgb) hash = Math.imul(hash ^ v, 16777619) >>> 0;
-          if (rgb[0] > 38) {
+          if (rgb[2] > 0) {
             active++;
-            sumX += x + 0.5 - cellWidth;
+            sumX += x + 0.5;
           }
         }
-      const barWidth = width - 2 * cellWidth;
+      const barWidth = width;
+      let blockErrors = 0;
+      for (let y = minY; y < height; y++)
+        for (let x = 0; x < width * 0.6; x++) {
+          const i = (y * width + x) * 4;
+          const blockX = x - (x % blockWidth);
+          const blockY = y - ((y - minY) % blockHeight);
+          const reference = (blockY * width + blockX) * 4;
+          if (
+            data[i] !== data[reference] ||
+            data[i + 1] !== data[reference + 1] ||
+            data[i + 2] !== data[reference + 2]
+          )
+            blockErrors++;
+        }
       return {
         width,
         height,
-        cellWidth,
         lineHeight,
+        blockWidth,
+        blockHeight,
         minX,
         maxX,
         minY,
         maxY,
         changedPixels,
-        outsideChanges,
         barWidth,
+        blockErrors,
+        colors: [...colors].map((rgb) => rgb.split(",").map(Number)),
         activeFraction: active / changedPixels,
         centroid: sumX / active / barWidth,
         hash,
