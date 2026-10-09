@@ -74,19 +74,15 @@ pub const MessageQueue = struct {
     }
 };
 
+// The embedding transport (the Go frontend, through the C ABI) drains complete
+// messages from a bounded queue; this socket never writes to a network peer.
 pub const Transport = struct {
-    pub const ControlOpcode = enum { ping, pong, connection_close, binary };
     context: ?*anyopaque,
     send_binary_fn: *const fn (?*anyopaque, []const u8) anyerror!void,
-    send_control_fn: *const fn (?*anyopaque, []const u8, ControlOpcode) anyerror!void,
     close_fn: *const fn (?*anyopaque) anyerror!void,
 
     pub fn sendBinary(self: Transport, payload: []const u8) !void {
         return self.send_binary_fn(self.context, payload);
-    }
-
-    pub fn sendControl(self: Transport, payload: []const u8, opcode: ControlOpcode) !void {
-        return self.send_control_fn(self.context, payload, opcode);
     }
 
     pub fn close(self: Transport) !void {
@@ -98,17 +94,7 @@ pub fn queueTransport(queue: *MessageQueue) Transport {
     return .{
         .context = queue,
         .send_binary_fn = queueSendBinary,
-        .send_control_fn = queueSendControl,
         .close_fn = queueClose,
-    };
-}
-
-pub fn legacyTransport(websocket: *std.http.Server.WebSocket) Transport {
-    return .{
-        .context = websocket,
-        .send_binary_fn = legacySendBinary,
-        .send_control_fn = legacySendControl,
-        .close_fn = legacyClose,
     };
 }
 
@@ -117,36 +103,9 @@ fn queueSendBinary(context: ?*anyopaque, payload: []const u8) !void {
     try queue.push(payload);
 }
 
-fn queueSendControl(context: ?*anyopaque, payload: []const u8, opcode: Transport.ControlOpcode) !void {
-    const queue: *MessageQueue = @ptrCast(@alignCast(context.?));
-    _ = payload;
-    if (opcode == .connection_close) queue.close();
-}
-
 fn queueClose(context: ?*anyopaque) !void {
     const queue: *MessageQueue = @ptrCast(@alignCast(context.?));
     queue.close();
-}
-
-fn legacySendBinary(context: ?*anyopaque, payload: []const u8) !void {
-    const websocket: *std.http.Server.WebSocket = @ptrCast(@alignCast(context.?));
-    try websocket.writeMessage(payload, .binary);
-}
-
-fn legacySendControl(context: ?*anyopaque, payload: []const u8, opcode: Transport.ControlOpcode) !void {
-    const websocket: *std.http.Server.WebSocket = @ptrCast(@alignCast(context.?));
-    const native_opcode: std.http.Server.WebSocket.Opcode = switch (opcode) {
-        .ping => .ping,
-        .pong => .pong,
-        .connection_close => .connection_close,
-        .binary => .binary,
-    };
-    try websocket.writeMessage(payload, native_opcode);
-}
-
-fn legacyClose(context: ?*anyopaque) !void {
-    const websocket: *std.http.Server.WebSocket = @ptrCast(@alignCast(context.?));
-    try websocket.writeMessage(&.{}, .connection_close);
 }
 
 const OutputCompressor = struct {
@@ -254,7 +213,6 @@ allocator: std.mem.Allocator,
 io: std.Io,
 registry: *Registry,
 transport: Transport,
-websocket: ?*std.http.Server.WebSocket,
 connection_id: u64,
 client_id: Session.Id = zero_id,
 state_mutex: std.Io.Mutex = .init,
@@ -297,22 +255,13 @@ test "heartbeat accepts a late nonce without superseding outstanding state" {
     try std.testing.expect(!heartbeat.pong(200));
 }
 
-pub fn init(
-    allocator: std.mem.Allocator,
-    io: std.Io,
-    registry: *Registry,
-    websocket: *std.http.Server.WebSocket,
-) !Self {
-    return initTransport(allocator, io, registry, legacyTransport(websocket), websocket);
-}
-
 pub fn initBuffered(
     allocator: std.mem.Allocator,
     io: std.Io,
     registry: *Registry,
     queue: *MessageQueue,
 ) !Self {
-    return initTransport(allocator, io, registry, queueTransport(queue), null);
+    return initTransport(allocator, io, registry, queueTransport(queue));
 }
 
 fn initTransport(
@@ -320,7 +269,6 @@ fn initTransport(
     io: std.Io,
     registry: *Registry,
     transport: Transport,
-    websocket: ?*std.http.Server.WebSocket,
 ) !Self {
     var random: [8]u8 = undefined;
     try io.randomSecure(&random);
@@ -332,7 +280,6 @@ fn initTransport(
         .io = io,
         .registry = registry,
         .transport = transport,
-        .websocket = websocket,
         .connection_id = connection_id,
         .output_compressors = blk: {
             var compressors: [manifest.max_connection_attachments]OutputCompressor = undefined;
@@ -361,24 +308,6 @@ pub fn deinit(self: *Self) void {
     for (0..self.attachments.len) |index| self.detachIndex(index);
     _ = self.transport.close() catch {};
     self.deinitOutputCompressors();
-}
-
-pub fn serve(self: *Self) !void {
-    defer self.deinit();
-    const websocket = self.websocket orelse return error.LegacyTransportRequired;
-    const first_message = try websocket.readSmallMessage();
-    if (first_message.opcode != .binary) return error.HelloRequired;
-    try self.receiveBinary(first_message.data);
-    var publisher = try self.io.concurrent(publishLoop, .{self});
-    defer publisher.cancel(self.io);
-    while (!self.stopped.load(.acquire)) {
-        const message = websocket.readSmallMessage() catch return;
-        switch (message.opcode) {
-            .ping => try self.sendWebSocketControl(message.data, .pong),
-            .binary => try self.receiveBinary(message.data),
-            else => return error.UnexpectedWebSocketMessage,
-        }
-    }
 }
 
 pub fn tick(self: *Self) !void {
@@ -780,40 +709,6 @@ fn sendParts(
         offset += part.len;
     }
     try self.transport.sendBinary(payload);
-}
-
-fn sendWebSocketControl(self: *Self, data: []const u8, opcode: std.http.Server.WebSocket.Opcode) !void {
-    const transport_opcode: Transport.ControlOpcode = switch (opcode) {
-        .ping => .ping,
-        .pong => .pong,
-        .connection_close => .connection_close,
-        .binary => .binary,
-        .continuation, .text => .binary,
-        else => .binary,
-    };
-    try self.send_mutex.lock(self.io);
-    defer self.send_mutex.unlock(self.io);
-    try self.transport.sendControl(data, transport_opcode);
-}
-
-fn publishLoop(self: *Self) void {
-    while (!self.stopped.load(.acquire)) {
-        self.publishControl() catch |err| {
-            self.stopped.store(true, .release);
-            // Do not start another potentially blocking write after consuming cancellation.
-            if (err == error.Canceled) return;
-            _ = self.sendWebSocketControl(&.{}, .connection_close) catch {};
-            return;
-        };
-        for (0..self.attachments.len) |index| self.publishSlot(index) catch |err| {
-            if (err == error.StaleAttachment) continue;
-            self.stopped.store(true, .release);
-            if (err == error.Canceled) return;
-            _ = self.sendWebSocketControl(&.{}, .connection_close) catch {};
-            return;
-        };
-        self.io.sleep(.fromMilliseconds(manifest.publish_interval_ms), .awake) catch return;
-    }
 }
 
 fn publishControl(self: *Self) !void {

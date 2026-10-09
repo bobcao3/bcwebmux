@@ -80,10 +80,13 @@ bcwebmux-server auth remove --all         # drop every factor
 
 Removing the last factor deletes the session signing key with it, so every
 issued session dies at once, and the running service re-reads the file within a
-second — no restart. Deleting the state file does the same thing. Rotating the
-secret with `--rotate` is not a reset: sessions issued before the rotation stay
-valid until they expire, so revoke them with `auth remove --totp` when the old
-secret may have leaked.
+second — no restart. Deleting the state file does the same thing.
+
+Removing the app, or rotating its secret with `--rotate`, revokes every session
+and step-up the app signed in, even when a security key keeps the service
+closed and the app is enrolled again later: the state file counts app
+generations, and a token names the generation it was issued under. Sessions
+signed in with a security key are not affected by changes to the app.
 
 ## Security keys (optional)
 
@@ -136,18 +139,21 @@ startup, and an origin that cannot host a ceremony is reported with the reason.
 
 Both factors issue the same session cookie:
 
-| Property | Value                                                                            |
-| -------- | -------------------------------------------------------------------------------- |
-| Name     | `bcwebmux_session`                                                               |
-| Content  | base64url payload + HMAC-SHA256 signature                                        |
-| Payload  | version, factor, relying party and credential (keys only), issued-at, expires-at |
-| Flags    | `HttpOnly`, `SameSite=Strict`, `Path=/`, `Secure` for `https` origins            |
-| Lifetime | `--auth-session-ttl`, default 168h, re-issued after half its lifetime            |
+| Property | Value                                                                                                                  |
+| -------- | ---------------------------------------------------------------------------------------------------------------------- |
+| Name     | `bcwebmux_session`                                                                                                     |
+| Content  | base64url payload + HMAC-SHA256 signature                                                                              |
+| Payload  | version, factor, relying party and credential (keys only), app generation (app only), first sign-in, issued-at, expires-at |
+| Flags    | `HttpOnly`, `SameSite=Strict`, `Path=/`, `Secure` for `https` origins                                                  |
+| Lifetime | `--auth-session-ttl`, default 168h, re-issued after half its lifetime                                                  |
+| Maximum  | `--auth-session-max-age`, default 720h after the first sign-in, however often the session is renewed                   |
 
 The signing key is a random 32-byte value in the state file. A session is
-re-validated on every request: the signature, the expiry, and the presence of
-the factor it was issued to must all hold, and sessions outlive a service
-restart because that key is on disk. An authenticator-app session works at every
+re-validated on every request: the signature, the expiry, the absolute maximum
+age, and the presence of the factor it was issued to must all hold, and sessions
+outlive a service restart because that key is on disk. Renewal carries the first
+sign-in time forward and shortens the last cookie to end at the maximum age, so
+a cookie that is used continuously still forces a fresh sign-in once a month. An authenticator-app session works at every
 address the server answers on, because the browser scopes each cookie to the
 host that issued it; a key session is additionally bound to the relying party it
 was issued for.
@@ -188,7 +194,9 @@ serving unauthenticated.
 ## Limits
 
 - **Sessions are bearer tokens.** A browser that is already signed in stays
-  signed in for up to the session lifetime without a new code.
+  signed in without a new code for as long as it keeps being used, up to the
+  absolute maximum age; a stolen cookie is a shell for that long unless the
+  factor it was issued to is removed or rotated.
 - **Attestation is not verified.** The server requests `attestation: "none"`, so
   it cannot enforce a policy such as "hardware keys only".
 - **The authenticator secret is a single factor.** Anyone who can read the state

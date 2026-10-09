@@ -349,3 +349,79 @@ func enrollTOTP(t *testing.T, manager *authManager, factor authTOTP) authTOTP {
 	}
 	return stored
 }
+
+func TestTOTPRemovalRevokesItsSessionsAcrossReenrollment(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "auth.json")
+	manager, err := newAuthManager(file, time.Hour, []string{"http://localhost:8443"}, discardLogger())
+	if err != nil {
+		t.Fatal(err)
+	}
+	factor, err := newTOTPFactor("user@host", manager.now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	enrollTOTP(t, manager, factor)
+	// A security key keeps the signing key alive across the app's removal, so
+	// the removal itself has to leave the app's tokens behind.
+	authenticator := newTestAuthenticator(t)
+	enrollRecord(t, manager, authenticator, "usb key")
+	keySession, err := manager.issueKeyToken(authTokenSession, "localhost", authenticator.credID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, err := manager.issueTOTPToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stepUp, err := manager.issueTOTPStepUpToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := manager.verifyToken(authTokenSession, session); !ok {
+		t.Fatal("fresh app session did not verify")
+	}
+	if _, found, err := manager.removeTOTP(); err != nil || !found {
+		t.Fatalf("removeTOTP = %v, %v", found, err)
+	}
+	replacement, err := newTOTPFactor("user@host", manager.now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	enrollTOTP(t, manager, replacement)
+	if _, ok := manager.verifyToken(authTokenSession, session); ok {
+		t.Fatal("app session issued before the removal verified after re-enrollment")
+	}
+	if _, ok := manager.verifyToken(authTokenStepUp, stepUp); ok {
+		t.Fatal("app step-up issued before the removal verified after re-enrollment")
+	}
+	if _, ok := manager.verifyToken(authTokenSession, keySession); !ok {
+		t.Fatal("security key session was revoked by an app change")
+	}
+	// Rotating the secret in place revokes the old secret's sessions as well.
+	current, err := manager.issueTOTPToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	rotated, err := newTOTPFactor("user@host", manager.now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	enrollTOTP(t, manager, rotated)
+	if _, ok := manager.verifyToken(authTokenSession, current); ok {
+		t.Fatal("app session survived a secret rotation")
+	}
+	after, err := manager.issueTOTPToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := manager.verifyToken(authTokenSession, after); !ok {
+		t.Fatal("app session issued after the rotation did not verify")
+	}
+	state, err := loadAuthState(file, discardLogger())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.TOTPGeneration != 2 {
+		t.Fatalf("app generation = %d, want 2", state.TOTPGeneration)
+	}
+}

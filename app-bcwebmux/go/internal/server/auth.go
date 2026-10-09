@@ -48,6 +48,10 @@ const (
 	authChallengeLimit = 64
 	// authSessionTTLDefault is the browser session lifetime when unset.
 	authSessionTTLDefault = 7 * 24 * time.Hour
+	// authSessionMaxAgeDefault bounds a session across renewals when
+	// --auth-session-max-age is unset: however actively a browser is used, it
+	// signs in again this long after it first did.
+	authSessionMaxAgeDefault = 30 * 24 * time.Hour
 	// authStepUpTTL bounds how long a fresh user verification authorizes
 	// credential changes from the browser.
 	authStepUpTTL = 5 * time.Minute
@@ -98,6 +102,11 @@ type authState struct {
 	// at every address including IP literals.
 	TOTP        *authTOTP        `json:"totp,omitempty"`
 	Credentials []authCredential `json:"credentials"`
+	// TOTPGeneration counts removals and rotations of the authenticator app.
+	// Tokens the app signed in carry the generation they were issued under, so
+	// removing the app revokes them even when a security key keeps the signing
+	// key alive and the app is enrolled again afterwards.
+	TOTPGeneration uint64 `json:"totpGeneration,omitempty"`
 }
 
 // authChallenge is a ceremony that has begun but not finished. Session data is
@@ -124,11 +133,20 @@ type authToken struct {
 	CredID  string `json:"cid,omitempty"`
 	Issued  int64  `json:"iat"`
 	Expires int64  `json:"exp"`
+	// First is when the chain of renewals this token belongs to signed in.
+	// Issued moves with every renewal; First never does, and the absolute
+	// session lifetime is measured from it.
+	First int64 `json:"fia,omitempty"`
+	// Gen is the authenticator-app generation a TOTP token was issued under.
+	Gen uint64 `json:"gen,omitempty"`
 }
 
 type authManager struct {
-	path    string
-	ttl     time.Duration
+	path string
+	ttl  time.Duration
+	// maxAge is the absolute session lifetime: renewals extend a session, but
+	// never past this long after its first sign-in.
+	maxAge  time.Duration
 	origins []string
 	logger  *slog.Logger
 	// now is replaceable so tests can advance time without sleeping.
@@ -169,7 +187,7 @@ func newAuthManager(path string, ttl time.Duration, origins []string, logger *sl
 		logger = slog.New(slog.NewTextHandler(nil, nil))
 	}
 	manager := &authManager{
-		path: path, ttl: ttl, origins: append([]string(nil), origins...), logger: logger,
+		path: path, ttl: ttl, maxAge: authSessionMaxAgeDefault, origins: append([]string(nil), origins...), logger: logger,
 		now: time.Now, challenges: map[string]*authChallenge{}, webauthns: map[string]*webauthn.WebAuthn{},
 	}
 	state, err := loadAuthState(path, logger)
@@ -194,7 +212,14 @@ func newAuthManagerFor(cfg Config, origins []string) (*authManager, error) {
 	if ttl <= 0 {
 		ttl = authSessionTTLDefault
 	}
-	return newAuthManager(cfg.AuthFile, ttl, origins, cfg.Logger)
+	manager, err := newAuthManager(cfg.AuthFile, ttl, origins, cfg.Logger)
+	if err != nil {
+		return nil, err
+	}
+	if cfg.AuthSessionMaxAge > 0 {
+		manager.maxAge = cfg.AuthSessionMaxAge
+	}
+	return manager, nil
 }
 
 func (m *authManager) credentialsFor(rpID string) []authCredential {
@@ -784,29 +809,63 @@ func (m *authManager) issueTOTPStepUpToken() (string, error) {
 }
 
 func (m *authManager) issueToken(kind, factor, rpID string, credentialID []byte) (string, error) {
+	value, _, err := m.signToken(kind, factor, rpID, credentialID, 0)
+	return value, err
+}
+
+// errSessionLifetimeExhausted marks a renewal that would outlive the absolute
+// session lifetime; the browser signs in again instead.
+var errSessionLifetimeExhausted = errors.New("session has reached its absolute lifetime")
+
+// renewToken re-signs a verified session with a fresh expiry. The first
+// sign-in time is carried over, so renewals cannot push a session past the
+// absolute lifetime measured from it. The returned duration is the new cookie
+// lifetime, which shrinks as that deadline approaches.
+func (m *authManager) renewToken(token authToken) (string, time.Duration, error) {
+	credentialID, _ := token.credentialID()
+	return m.signToken(authTokenSession, token.Factor, token.RPID, credentialID, token.First)
+}
+
+func (m *authManager) signToken(kind, factor, rpID string, credentialID []byte, first int64) (string, time.Duration, error) {
 	m.refresh()
 	m.mu.Lock()
 	secret := append([]byte(nil), m.state.SessionSecret...)
+	generation := m.state.TOTPGeneration
 	m.mu.Unlock()
 
 	if len(secret) == 0 {
-		return "", errors.New("authentication state has no session secret")
+		return "", 0, errors.New("authentication state has no session secret")
 	}
 	ttl := m.ttl
 	if kind == authTokenStepUp {
 		ttl = authStepUpTTL
 	}
-	now := m.now()
+	now := m.now().Unix()
+	if first == 0 {
+		first = now
+	}
+	expires := now + int64(ttl.Seconds())
+	if kind == authTokenSession && m.maxAge > 0 {
+		if deadline := first + int64(m.maxAge.Seconds()); deadline < expires {
+			expires = deadline
+		}
+		if expires <= now {
+			return "", 0, errSessionLifetimeExhausted
+		}
+	}
 	token := authToken{
 		Version: 1, Factor: factor, RPID: rpID, CredID: base64.RawURLEncoding.EncodeToString(credentialID),
-		Issued: now.Unix(), Expires: now.Add(ttl).Unix(),
+		Issued: now, Expires: expires, First: first,
+	}
+	if factor == authFactorTOTP {
+		token.Gen = generation
 	}
 	encoded, err := json.Marshal(token)
 	if err != nil {
-		return "", err
+		return "", 0, err
 	}
 	payload := base64.RawURLEncoding.EncodeToString(encoded)
-	return payload + "." + signAuthToken(secret, kind, payload), nil
+	return payload + "." + signAuthToken(secret, kind, payload), time.Duration(expires-now) * time.Second, nil
 }
 
 func (m *authManager) verifyToken(kind, value string) (authToken, bool) {
@@ -815,6 +874,7 @@ func (m *authManager) verifyToken(kind, value string) (authToken, bool) {
 	m.refresh()
 	m.mu.Lock()
 	secret := append([]byte(nil), m.state.SessionSecret...)
+	generation := m.state.TOTPGeneration
 	m.mu.Unlock()
 	if len(secret) == 0 {
 		return authToken{}, false
@@ -836,7 +896,24 @@ func (m *authManager) verifyToken(kind, value string) (authToken, bool) {
 	if err := decoder.Decode(&token); err != nil {
 		return authToken{}, false
 	}
-	if token.Version != 1 || !token.consistent() || token.Expires <= m.now().Unix() {
+	now := m.now().Unix()
+	if token.Version != 1 || !token.consistent() || token.Expires <= now {
+		return authToken{}, false
+	}
+	if token.First == 0 {
+		// Tokens signed before renewals carried a first sign-in time started
+		// their chain when they were issued.
+		token.First = token.Issued
+	}
+	if token.First > token.Issued {
+		return authToken{}, false
+	}
+	if kind == authTokenSession && m.maxAge > 0 && token.First+int64(m.maxAge.Seconds()) <= now {
+		return authToken{}, false
+	}
+	// A TOTP token names the app generation it was issued under; removing or
+	// rotating the app moves the generation on and leaves such tokens behind.
+	if token.Factor == authFactorTOTP && token.Gen != generation {
 		return authToken{}, false
 	}
 	return token, true

@@ -8,8 +8,8 @@ pinned libghostty terminal. Clients reconnect from snapshots.
 ## Build and run
 
 First run: [repository quickstart](../README.md#run-it). Building
-needs Linux, Zig 0.16.0, Node/npm, and GNU tar plus network
-access; the build embeds the web UI, and any browser with WebGPU
+needs Linux, Zig 0.16.0, and Node/npm plus network access; the
+build embeds the web UI, and any browser with WebGPU
 or WebGL2 uses it.
 
 Before exposing the terminal remotely or reaching it from a

@@ -1,6 +1,12 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Cheng Cao
 
+// The session management API behind the frontend's /api routes. Requests
+// arrive through the C ABI as complete in-memory values that the transport has
+// already authenticated; responses are accumulated in the caller's allocator
+// because a full listing of retained sessions outgrows any fixed buffer worth
+// keeping on the stack.
+
 const std = @import("std");
 const Session = @import("Session.zig");
 const Registry = @import("SessionRegistry.zig");
@@ -23,7 +29,7 @@ const RenameBody = struct {
 
 const max_request_bytes = 4096;
 
-pub fn serve(registry: *Registry, expected_origin: []const u8, request: anytype) !bool {
+pub fn serve(registry: *Registry, expected_origin: []const u8, request: *MemoryRequest) !bool {
     const target = request.head.target[0 .. std.mem.indexOfScalar(u8, request.head.target, '?') orelse request.head.target.len];
     if (!std.mem.startsWith(u8, target, "/api/")) return false;
     if (isMutation(request.head.method) and !validOrigin(request, expected_origin)) {
@@ -75,10 +81,10 @@ pub fn serve(registry: *Registry, expected_origin: []const u8, request: anytype)
     return true;
 }
 
-fn respondServer(registry: *Registry, request: anytype) !void {
-    var output_buffer: [8192]u8 = undefined;
-    var writer: std.Io.Writer = .fixed(&output_buffer);
-    var json: std.json.Stringify = .{ .writer = &writer };
+fn respondServer(registry: *Registry, request: *MemoryRequest) !void {
+    var body: std.Io.Writer.Allocating = .init(request.response.allocator);
+    defer body.deinit();
+    var json: std.json.Stringify = .{ .writer = &body.writer };
     var server_id_buffer: [36]u8 = undefined;
     const limits = registry.limits;
     try json.beginObject();
@@ -137,15 +143,15 @@ fn respondServer(registry: *Registry, request: anytype) !void {
     try json.endObject();
     try writeField(&json, "revision", registry.currentRevision());
     try json.endObject();
-    try respondJson(request, .ok, writer.buffered(), null, false);
+    try respondJson(request, .ok, body.written(), null, false);
 }
 
-fn respondList(registry: *Registry, request: anytype) !void {
+fn respondList(registry: *Registry, request: *MemoryRequest) !void {
     var sessions: [64]Session.Metadata = undefined;
     const count = registry.list(&sessions);
-    var output_buffer: [64 * 1024]u8 = undefined;
-    var writer: std.Io.Writer = .fixed(&output_buffer);
-    var json: std.json.Stringify = .{ .writer = &writer };
+    var body: std.Io.Writer.Allocating = .init(request.response.allocator);
+    defer body.deinit();
+    var json: std.json.Stringify = .{ .writer = &body.writer };
     try json.beginObject();
     try writeField(&json, "revision", registry.currentRevision());
     try json.objectField("sessions");
@@ -153,10 +159,10 @@ fn respondList(registry: *Registry, request: anytype) !void {
     for (sessions[0..count]) |*metadata| try writeMetadata(&json, metadata, registry.currentRevision());
     try json.endArray();
     try json.endObject();
-    try respondJson(request, .ok, writer.buffered(), null, false);
+    try respondJson(request, .ok, body.written(), null, false);
 }
 
-fn respondCreate(registry: *Registry, request: anytype) !void {
+fn respondCreate(registry: *Registry, request: *MemoryRequest) !void {
     if (!jsonContentType(request)) return respondError(request, .unsupported_media_type, "content_type", "application/json is required");
     var idempotency_buffer: [128]u8 = undefined;
     const idempotency_key = copyIdempotencyKey(request, &idempotency_buffer) orelse {
@@ -192,23 +198,15 @@ fn respondCreate(registry: *Registry, request: anytype) !void {
     const id_text = Registry.formatId(result.metadata.id, &id_buffer);
     var location_buffer: [64]u8 = undefined;
     const location = try std.fmt.bufPrint(&location_buffer, "/api/sessions/{s}", .{id_text});
-    var output_buffer: [4096]u8 = undefined;
-    var writer: std.Io.Writer = .fixed(&output_buffer);
-    var json: std.json.Stringify = .{ .writer = &writer };
-    try writeMetadata(&json, &result.metadata, registry.currentRevision());
-    try respondJson(request, .created, writer.buffered(), location, result.replayed);
+    try respondMetadata(registry, request, .created, &result.metadata, location, result.replayed);
 }
 
-fn respondGet(registry: *Registry, request: anytype, id: Session.Id) !void {
-    var metadata = registry.get(id) orelse return respondError(request, .not_found, "not_found", "session not found");
-    var output_buffer: [4096]u8 = undefined;
-    var writer: std.Io.Writer = .fixed(&output_buffer);
-    var json: std.json.Stringify = .{ .writer = &writer };
-    try writeMetadata(&json, &metadata, registry.currentRevision());
-    try respondJson(request, .ok, writer.buffered(), null, false);
+fn respondGet(registry: *Registry, request: *MemoryRequest, id: Session.Id) !void {
+    const metadata = registry.get(id) orelse return respondError(request, .not_found, "not_found", "session not found");
+    try respondMetadata(registry, request, .ok, &metadata, null, false);
 }
 
-fn respondRename(registry: *Registry, request: anytype, id: Session.Id) !void {
+fn respondRename(registry: *Registry, request: *MemoryRequest, id: Session.Id) !void {
     if (!jsonContentType(request)) return respondError(request, .unsupported_media_type, "content_type", "application/json is required");
     if (idempotencyKey(request) == null)
         return respondError(request, .bad_request, "idempotency_key_required", "Idempotency-Key is required");
@@ -219,15 +217,11 @@ fn respondRename(registry: *Registry, request: anytype, id: Session.Id) !void {
     const parsed = std.json.parseFromSlice(RenameBody, arena.allocator(), body, .{}) catch
         return respondError(request, .bad_request, "invalid_json", "invalid rename request");
     defer parsed.deinit();
-    var metadata = registry.rename(id, parsed.value.name) catch |err| return respondRegistryError(request, err);
-    var output_buffer: [4096]u8 = undefined;
-    var writer: std.Io.Writer = .fixed(&output_buffer);
-    var json: std.json.Stringify = .{ .writer = &writer };
-    try writeMetadata(&json, &metadata, registry.currentRevision());
-    try respondJson(request, .ok, writer.buffered(), null, false);
+    const metadata = registry.rename(id, parsed.value.name) catch |err| return respondRegistryError(request, err);
+    try respondMetadata(registry, request, .ok, &metadata, null, false);
 }
 
-fn respondTerminate(registry: *Registry, request: anytype, id_text: []const u8) !void {
+fn respondTerminate(registry: *Registry, request: *MemoryRequest, id_text: []const u8) !void {
     var key_buffer: [128]u8 = undefined;
     const key = copyIdempotencyKey(request, &key_buffer) orelse
         return respondError(request, .bad_request, "idempotency_key_required", "Idempotency-Key is required");
@@ -237,14 +231,10 @@ fn respondTerminate(registry: *Registry, request: anytype, id_text: []const u8) 
     const body = readBody(request, registry.limits.max_request_bytes, &body_buffer) catch |err| return respondBodyError(request, err);
     if (body.len != 0) return respondError(request, .bad_request, "invalid_body", "request body could not be read");
     const result = registry.terminate(id, key, request_hash) catch |err| return respondRegistryError(request, err);
-    var output_buffer: [4096]u8 = undefined;
-    var writer: std.Io.Writer = .fixed(&output_buffer);
-    var json: std.json.Stringify = .{ .writer = &writer };
-    try writeMetadata(&json, &result.metadata, registry.currentRevision());
-    try respondJson(request, .accepted, writer.buffered(), null, result.replayed);
+    try respondMetadata(registry, request, .accepted, &result.metadata, null, result.replayed);
 }
 
-fn respondDelete(registry: *Registry, request: anytype, id: Session.Id) !void {
+fn respondDelete(registry: *Registry, request: *MemoryRequest, id: Session.Id) !void {
     if (idempotencyKey(request) == null)
         return respondError(request, .bad_request, "idempotency_key_required", "Idempotency-Key is required");
     var body_buffer: [max_request_bytes + 1]u8 = undefined;
@@ -252,7 +242,22 @@ fn respondDelete(registry: *Registry, request: anytype, id: Session.Id) !void {
     if (body.len != 0) return respondError(request, .bad_request, "invalid_body", "request body could not be read");
     registry.delete(id) catch |err| return respondRegistryError(request, err);
     const headers = noContentHeaders();
-    try request.respond("", .{ .status = .no_content, .extra_headers = &headers, .keep_alive = responseKeepAlive(request) });
+    try request.respond("", .{ .status = .no_content, .extra_headers = &headers });
+}
+
+fn respondMetadata(
+    registry: *Registry,
+    request: *MemoryRequest,
+    status: std.http.Status,
+    metadata: *const Session.Metadata,
+    location: ?[]const u8,
+    replayed: bool,
+) !void {
+    var body: std.Io.Writer.Allocating = .init(request.response.allocator);
+    defer body.deinit();
+    var json: std.json.Stringify = .{ .writer = &body.writer };
+    try writeMetadata(&json, metadata, registry.currentRevision());
+    try respondJson(request, status, body.written(), location, replayed);
 }
 
 fn writeMetadata(json: *std.json.Stringify, metadata: *const Session.Metadata, revision: u64) !void {
@@ -333,34 +338,18 @@ fn writeField(json: *std.json.Stringify, name: []const u8, value: anytype) !void
     try json.write(value);
 }
 
-fn readBody(request: anytype, limit: usize, output: []u8) ![]const u8 {
-    if (request.head.content_length) |content_length|
-        if (content_length > @as(u64, limit)) return error.BodyTooLarge;
-    if (request.head.content_length == null and request.head.transfer_encoding == .none and requestHasBody(request.head.method))
-        return output[0..0];
-    if (@hasDecl(@TypeOf(request.*), "memoryBody"))
-        return request.memoryBody(limit, output);
-    var reader_buffer: [4096]u8 = undefined;
-    if (request.head.expect != null) {
-        const reader = try request.readerExpectContinue(&reader_buffer);
-        const count = try reader.readSliceShort(output);
-        if (count > limit) return error.BodyTooLarge;
-        return output[0..count];
-    }
-    const reader = request.readerExpectNone(&reader_buffer);
-    const count = try reader.readSliceShort(output);
-    if (count > limit) return error.BodyTooLarge;
-    return output[0..count];
+fn readBody(request: *MemoryRequest, limit: usize, output: []u8) ![]const u8 {
+    return request.memoryBody(limit, output);
 }
 
-fn respondBodyError(request: anytype, err: anyerror) !void {
+fn respondBodyError(request: *MemoryRequest, err: anyerror) !void {
     return switch (err) {
         error.BodyTooLarge => respondError(request, .payload_too_large, "body_too_large", "request body is too large"),
         else => respondError(request, .bad_request, "invalid_body", "request body could not be read"),
     };
 }
 
-fn respondRegistryError(request: anytype, err: anyerror) !void {
+fn respondRegistryError(request: *MemoryRequest, err: anyerror) !void {
     return switch (err) {
         error.SessionNotFound => respondError(request, .not_found, "not_found", "session not found"),
         error.SessionRunning, error.SessionBusy => respondError(request, .conflict, "session_running", "session has not exited"),
@@ -377,7 +366,7 @@ fn respondRegistryError(request: anytype, err: anyerror) !void {
     };
 }
 
-fn respondError(request: anytype, status: std.http.Status, code: []const u8, message: []const u8) !void {
+fn respondError(request: *MemoryRequest, status: std.http.Status, code: []const u8, message: []const u8) !void {
     var output_buffer: [1024]u8 = undefined;
     var writer: std.Io.Writer = .fixed(&output_buffer);
     var json: std.json.Stringify = .{ .writer = &writer };
@@ -393,19 +382,19 @@ fn respondError(request: anytype, status: std.http.Status, code: []const u8, mes
     try respondJson(request, status, writer.buffered(), null, false);
 }
 
-fn respondJson(request: anytype, status: std.http.Status, body: []const u8, location: ?[]const u8, replayed: bool) !void {
+fn respondJson(request: *MemoryRequest, status: std.http.Status, body: []const u8, location: ?[]const u8, replayed: bool) !void {
     const base = responseHeaders();
     if (location) |value| {
         const headers = base ++ [_]std.http.Header{
             .{ .name = "Location", .value = value },
             .{ .name = "Idempotency-Replayed", .value = if (replayed) "true" else "false" },
         };
-        return request.respond(body, .{ .status = status, .extra_headers = &headers, .keep_alive = responseKeepAlive(request) });
+        return request.respond(body, .{ .status = status, .extra_headers = &headers });
     }
     const headers = base ++ [_]std.http.Header{
         .{ .name = "Idempotency-Replayed", .value = if (replayed) "true" else "false" },
     };
-    try request.respond(body, .{ .status = status, .extra_headers = &headers, .keep_alive = responseKeepAlive(request) });
+    try request.respond(body, .{ .status = status, .extra_headers = &headers });
 }
 
 fn responseHeaders() [5]std.http.Header {
@@ -427,7 +416,7 @@ fn noContentHeaders() [4]std.http.Header {
     };
 }
 
-fn methodNotAllowed(request: anytype) !void {
+fn methodNotAllowed(request: *MemoryRequest) !void {
     try respondError(request, .method_not_allowed, "method_not_allowed", "method not allowed");
 }
 
@@ -435,15 +424,7 @@ fn isMutation(method: std.http.Method) bool {
     return method == .POST or method == .PATCH or method == .DELETE;
 }
 
-fn requestHasBody(method: std.http.Method) bool {
-    return method == .POST or method == .PUT or method == .PATCH or method == .DELETE;
-}
-
-fn responseKeepAlive(request: anytype) bool {
-    return !(requestHasBody(request.head.method) and request.head.content_length == null and request.head.transfer_encoding == .none);
-}
-
-fn validOrigin(request: anytype, expected: []const u8) bool {
+fn validOrigin(request: *MemoryRequest, expected: []const u8) bool {
     if (expected.len == 0) return true;
     var headers = request.iterateHeaders();
     while (headers.next()) |header|
@@ -451,7 +432,7 @@ fn validOrigin(request: anytype, expected: []const u8) bool {
     return false;
 }
 
-fn idempotencyKey(request: anytype) ?[]const u8 {
+fn idempotencyKey(request: *MemoryRequest) ?[]const u8 {
     var headers = request.iterateHeaders();
     while (headers.next()) |header| {
         if (!std.ascii.eqlIgnoreCase(header.name, "Idempotency-Key")) continue;
@@ -461,14 +442,14 @@ fn idempotencyKey(request: anytype) ?[]const u8 {
     return null;
 }
 
-fn copyIdempotencyKey(request: anytype, buffer: []u8) ?[]const u8 {
+fn copyIdempotencyKey(request: *MemoryRequest, buffer: []u8) ?[]const u8 {
     const value = idempotencyKey(request) orelse return null;
     if (value.len > buffer.len) return null;
     @memcpy(buffer[0..value.len], value);
     return buffer[0..value.len];
 }
 
-fn jsonContentType(request: anytype) bool {
+fn jsonContentType(request: *MemoryRequest) bool {
     var headers = request.iterateHeaders();
     while (headers.next()) |header| {
         if (!std.ascii.eqlIgnoreCase(header.name, "Content-Type")) continue;
@@ -522,13 +503,10 @@ const MemoryHeaderIterator = struct {
     }
 };
 
-const MemoryRequest = struct {
+pub const MemoryRequest = struct {
     head: struct {
         method: std.http.Method,
         target: []const u8,
-        content_length: ?u64,
-        transfer_encoding: std.http.TransferEncoding,
-        expect: ?[]const u8,
     },
     headers: [3]std.http.Header = undefined,
     header_count: usize = 0,
@@ -537,13 +515,7 @@ const MemoryRequest = struct {
 
     fn init(input: MemoryInput, response: *MemoryResponse) MemoryRequest {
         var request = MemoryRequest{
-            .head = .{
-                .method = input.method,
-                .target = input.target,
-                .content_length = input.body.len,
-                .transfer_encoding = .none,
-                .expect = null,
-            },
+            .head = .{ .method = input.method, .target = input.target },
             .body = input.body,
             .response = response,
         };
@@ -615,4 +587,45 @@ pub fn serveMemory(
     var request = MemoryRequest.init(input, &response);
     if (!try serve(registry, expected_origin, &request)) return error.NotApi;
     return response;
+}
+
+test "a full listing of worst-case session metadata outgrows 64 KiB" {
+    // Every retained session may carry an 80-byte name and a 256-byte title
+    // that JSON escaping doubles; the listing used to be rendered into a fixed
+    // 64 KiB stack buffer and failed with 500 once enough sessions were kept.
+    const metadata = Session.Metadata{
+        .id = .{0} ** 16,
+        .generation = .{0} ** 16,
+        .name = .{'"'} ** 80,
+        .name_len = 80,
+        .title = .{'"'} ** 256,
+        .title_len = 256,
+        .state = .running,
+        .geometry = .{ .cols = 80, .rows = 24 },
+        .created_at_ms = 0,
+        .last_activity_ms = 0,
+        .exit_status = null,
+        .event_seq = 0,
+        .output_offset = 0,
+        .checkpoint_event_seq = 0,
+        .checkpoint_bytes = 0,
+        .attachment_count = 0,
+        .controller_attachment_id = 1,
+        .lease_epoch = 1,
+    };
+    var body: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer body.deinit();
+    var json: std.json.Stringify = .{ .writer = &body.writer };
+    try json.beginArray();
+    for (0..64) |_| try writeMetadata(&json, &metadata, 1);
+    try json.endArray();
+    try std.testing.expect(body.written().len > 64 * 1024);
+
+    // The in-memory transport carries a body of that size through intact.
+    var response = MemoryResponse{ .allocator = std.testing.allocator, .body = &.{}, .content_type = &.{}, .location = null, .status = .ok, .replayed = false };
+    defer response.deinit();
+    var request = MemoryRequest.init(.{ .method = .GET, .target = "/api/sessions" }, &response);
+    try respondJson(&request, .ok, body.written(), null, false);
+    try std.testing.expectEqual(body.written().len, response.body.len);
+    try std.testing.expectEqualStrings("application/json; charset=utf-8", response.content_type);
 }

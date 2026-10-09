@@ -66,22 +66,3 @@ pub fn add(
         .root_module = module,
     });
 }
-
-pub fn addCompressor(
-    b: *std.Build,
-    dep: *std.Build.Dependency,
-    optimize: std.builtin.OptimizeMode,
-) *std.Build.Step.Compile {
-    const module = b.createModule(.{
-        .target = b.graph.host,
-        .optimize = optimize,
-        .root_source_file = b.path("toolchains/zstd_compress.zig"),
-        .link_libc = true,
-    });
-    module.addIncludePath(dep.path("lib"));
-    module.linkLibrary(add(b, dep, b.graph.host, optimize));
-    return b.addExecutable(.{
-        .name = "bcwebmux-zstd-compress",
-        .root_module = module,
-    });
-}

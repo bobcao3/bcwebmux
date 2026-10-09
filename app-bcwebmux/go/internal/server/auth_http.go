@@ -250,8 +250,11 @@ func (s *Server) stepUpValid(r *http.Request, scope authScope) bool {
 	}
 	if token.Factor == authFactorTOTP {
 		// The authenticator app verifies at every address and is not bound to
-		// a relying party, so its step-up needs no credential to re-check.
-		return true
+		// a relying party, so its step-up has no credential to re-check; the
+		// app itself must still be enrolled, and verifyToken has already pinned
+		// the token to the app generation that issued it.
+		totp, _ := s.auth.factors()
+		return totp
 	}
 	if token.RPID != scope.rpID {
 		return false
@@ -296,7 +299,9 @@ func (s *Server) requireSession(w http.ResponseWriter, r *http.Request) bool {
 
 // renewSession re-issues a session cookie once it has passed half its
 // lifetime, so an actively used session does not expire mid-use while an idle
-// one still ages out.
+// one still ages out. Renewal never extends a session past the absolute
+// lifetime measured from its first sign-in: the last cookie before that
+// deadline is shortened to end exactly there.
 func (s *Server) renewSession(w http.ResponseWriter, r *http.Request, scope authScope) {
 	cookie, err := r.Cookie(authSessionCookie)
 	if err != nil {
@@ -309,20 +314,13 @@ func (s *Server) renewSession(w http.ResponseWriter, r *http.Request, scope auth
 	if s.auth.now().Unix()-token.Issued < int64((s.auth.ttl / 2).Seconds()) {
 		return
 	}
-	value := ""
-	if token.Factor == authFactorTOTP {
-		value, err = s.auth.issueTOTPToken()
-	} else {
-		credentialID, ok := token.credentialID()
-		if !ok {
-			return
-		}
-		value, err = s.auth.issueKeyToken(authTokenSession, token.RPID, credentialID)
-	}
+	value, lifetime, err := s.auth.renewToken(token)
 	if err != nil {
+		// At the absolute lifetime the current cookie runs out on its own and
+		// the next request after that lands on the login page.
 		return
 	}
-	http.SetCookie(w, authCookie(authSessionCookie, value, s.auth.ttl, scope.secure))
+	http.SetCookie(w, authCookie(authSessionCookie, value, lifetime, scope.secure))
 }
 
 func (s *Server) serveLoginBegin(w http.ResponseWriter, r *http.Request) {
@@ -611,7 +609,7 @@ func (s *Server) serveRegisterBegin(w http.ResponseWriter, r *http.Request) {
 		webauthn.WithRegistrationOrigin(scope.origin),
 		webauthn.WithConveyancePreference(protocol.PreferNoAttestation),
 		webauthn.WithAuthenticatorSelection(protocol.AuthenticatorSelection{
-			ResidentKey:      protocol.ResidentKeyRequirementPreferred,
+			ResidentKey: protocol.ResidentKeyRequirementPreferred,
 			// Every key is bound to whoever can unlock it on its own device,
 			// so the ceremony must verify a biometric or PIN.
 			UserVerification: protocol.VerificationRequired,
@@ -714,12 +712,12 @@ func (s *Server) serveCredentialList(w http.ResponseWriter, r *http.Request) {
 			transports = append(transports, string(transport))
 		}
 		entry := map[string]any{
-			"id":          base64.RawURLEncoding.EncodeToString(credential.Credential.ID),
-			"name":        credential.Name,
-			"rpId":        credential.RPID,
-			"createdAt":   credential.CreatedAt.UTC().Format(time.RFC3339),
-			"transports":  transports,
-			"current":     subtle.ConstantTimeCompare(current, credential.Credential.ID) == 1,
+			"id":         base64.RawURLEncoding.EncodeToString(credential.Credential.ID),
+			"name":       credential.Name,
+			"rpId":       credential.RPID,
+			"createdAt":  credential.CreatedAt.UTC().Format(time.RFC3339),
+			"transports": transports,
+			"current":    subtle.ConstantTimeCompare(current, credential.Credential.ID) == 1,
 		}
 		if !credential.LastUsedAt.IsZero() {
 			entry["lastUsedAt"] = credential.LastUsedAt.UTC().Format(time.RFC3339)

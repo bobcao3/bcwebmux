@@ -1062,3 +1062,63 @@ func beginChallengeForTest(t *testing.T, manager *authManager, rpID string) stri
 	}
 	return session.Challenge
 }
+
+func TestAuthSessionsHaveAnAbsoluteLifetime(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "auth.json")
+	manager, err := newAuthManager(file, time.Hour, []string{"http://localhost:8443"}, discardLogger())
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager.maxAge = 3 * time.Hour
+	authenticator := newTestAuthenticator(t)
+	enrollRecord(t, manager, authenticator, "usb key")
+	start := time.Now()
+	clock := start
+	manager.now = func() time.Time { return clock }
+	token, err := manager.issueKeyToken(authTokenSession, "localhost", authenticator.credID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, ok := manager.verifyToken(authTokenSession, token)
+	if !ok || parsed.First != start.Unix() {
+		t.Fatalf("issued token = %+v, %v", parsed, ok)
+	}
+	// Far from the cap a renewal keeps the first sign-in and a full lifetime.
+	clock = start.Add(40 * time.Minute)
+	renewed, lifetime, err := manager.renewToken(parsed)
+	if err != nil || lifetime != time.Hour {
+		t.Fatalf("renewal = %s, %v", lifetime, err)
+	}
+	parsed, ok = manager.verifyToken(authTokenSession, renewed)
+	if !ok || parsed.First != start.Unix() || parsed.Issued != clock.Unix() {
+		t.Fatalf("renewed token = %+v, %v", parsed, ok)
+	}
+	// Close to the cap the renewed cookie is shortened to end exactly there.
+	clock = start.Add(2*time.Hour + 30*time.Minute)
+	renewed, lifetime, err = manager.renewToken(parsed)
+	if err != nil || lifetime != 30*time.Minute {
+		t.Fatalf("capped renewal = %s, %v", lifetime, err)
+	}
+	parsed, ok = manager.verifyToken(authTokenSession, renewed)
+	if !ok || parsed.Expires != start.Add(3*time.Hour).Unix() {
+		t.Fatalf("capped token = %+v, %v", parsed, ok)
+	}
+	// At the cap neither the cookie nor another renewal gets through.
+	clock = start.Add(3 * time.Hour)
+	if _, ok := manager.verifyToken(authTokenSession, renewed); ok {
+		t.Fatal("session verified at its absolute lifetime")
+	}
+	if _, _, err := manager.renewToken(parsed); err == nil {
+		t.Fatal("renewal extended a session past its absolute lifetime")
+	}
+	// Step-up tokens are short-lived on their own and are not capped.
+	clock = start.Add(2*time.Hour + 59*time.Minute)
+	stepUp, err := manager.issueKeyToken(authTokenStepUp, "localhost", authenticator.credID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clock = start.Add(3*time.Hour + time.Minute)
+	if _, ok := manager.verifyToken(authTokenStepUp, stepUp); !ok {
+		t.Fatal("step-up token was capped by the session maximum age")
+	}
+}

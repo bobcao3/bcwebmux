@@ -14,7 +14,7 @@ cd app-bcwebmux && zig build -Doptimize=ReleaseSmall
 ```
 
 Open http://localhost:8080. Needs Linux, Zig 0.16.0, Node/npm,
-GNU tar, network. Factorless servers are open to the network:
+network. Factorless servers are open to the network:
 enroll before exposing ([application guide](app-bcwebmux/README.md)).
 
 ## Which piece do I need?

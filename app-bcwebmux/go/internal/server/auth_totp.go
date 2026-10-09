@@ -270,6 +270,11 @@ func (m *authManager) enrollTOTP(factor authTOTP, code string, now time.Time) (a
 		return authTOTP{}, err
 	}
 	err = m.updateLocked(func(state *authState) (bool, error) {
+		if state.TOTP != nil {
+			// Replacing the secret revokes the sessions the old one signed in;
+			// a secret is rotated because it may have leaked.
+			state.TOTPGeneration++
+		}
 		state.TOTP = &factor
 		if len(state.SessionSecret) == 0 {
 			state.SessionSecret = append([]byte(nil), m.state.SessionSecret...)
@@ -292,7 +297,9 @@ func (m *authManager) enrollTOTP(factor authTOTP, code string, now time.Time) (a
 	return factor, nil
 }
 
-// removeTOTP drops the authenticator-app factor.
+// removeTOTP drops the authenticator-app factor and revokes every session and
+// step-up it signed in. The generation moves on even when a security key keeps
+// the signing key alive, so enrolling the app again does not revive them.
 func (m *authManager) removeTOTP() (authTOTP, bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -304,6 +311,7 @@ func (m *authManager) removeTOTP() (authTOTP, bool, error) {
 		}
 		removed, found = *state.TOTP, true
 		state.TOTP = nil
+		state.TOTPGeneration++
 		if len(state.Credentials) == 0 {
 			state.SessionSecret, state.UserHandle = nil, nil
 		}

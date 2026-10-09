@@ -144,51 +144,6 @@ pub fn build(b: *std.Build) void {
     _ = web_assets.addCopyFile(wasm.getEmittedBin(), "terminal.wasm");
 
     const go_frontend = go_build.add(b, target, server_optimize, web_assets.getDirectory(), bcwebmux_core, target_zstd);
-    const tar = b.addSystemCommand(&.{
-        "tar",
-        "--format=ustar",
-        "--sort=name",
-        "--mtime=@0",
-        "--owner=0",
-        "--group=0",
-        "--numeric-owner",
-    });
-    tar.setCwd(web_assets.getDirectory());
-    tar.addArg("-cf");
-    const tar_file = tar.addOutputFileArg("web-assets.tar");
-    tar.addArg(".");
-
-    const zstd_compressor = zstd_build.addCompressor(b, zstd_dep, .ReleaseFast);
-    const zstd = b.addRunArtifact(zstd_compressor);
-    const compressed_assets = zstd.addOutputFileArg("web-assets.tar.zst");
-    zstd.addFileArg(tar_file);
-
-    const server_embeds = b.addWriteFiles();
-    _ = server_embeds.addCopyFile(compressed_assets, "web-assets.tar.zst");
-    const assets_module = b.createModule(.{
-        .root_source_file = server_embeds.add("assets.zig", "pub const data = @embedFile(\"web-assets.tar.zst\");\n"),
-        .target = target,
-        .optimize = server_optimize,
-    });
-    const server = b.addExecutable(.{
-        .name = "bcwebmux-server",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/server.zig"),
-            .target = target,
-            .optimize = server_optimize,
-            .imports = &.{ .{
-                .name = "web_assets",
-                .module = assets_module,
-            }, .{
-                .name = "ghostty-vt",
-                .module = native_ghostty.module("ghostty-vt"),
-            } },
-        }),
-    });
-    server.root_module.addIncludePath(zstd_dep.path("lib"));
-    server.root_module.link_libc = true;
-    server.root_module.linkSystemLibrary("util", .{});
-    server.root_module.linkLibrary(target_zstd);
     const go_install = b.addInstallBinFile(go_frontend.server, "bcwebmux-server");
     b.getInstallStep().dependOn(&go_install.step);
     b.installArtifact(bcwebmux_worker);
@@ -198,13 +153,6 @@ pub fn build(b: *std.Build) void {
     b.getInstallStep().dependOn(&header_install.step);
 
     b.installDirectory(.{ .source_dir = web_assets.getDirectory(), .install_dir = .prefix, .install_subdir = "web" });
-
-    const run_legacy = b.addRunArtifact(server);
-    if (b.args) |args| run_legacy.addArgs(args);
-    const legacy_build_step = b.step("legacy-build", "Build the legacy Zig server without running it");
-    legacy_build_step.dependOn(&server.step);
-    const legacy_step = b.step("legacy", "Build and run the legacy Zig PTY web server");
-    legacy_step.dependOn(&run_legacy.step);
 
     const run_server = b.addSystemCommand(&.{b.getInstallPath(.bin, "bcwebmux-server")});
     run_server.step.dependOn(b.getInstallStep());

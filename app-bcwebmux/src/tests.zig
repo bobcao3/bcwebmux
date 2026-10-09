@@ -5,7 +5,7 @@
 // per importing module and includes the C transport queue ownership checks.
 test {
     _ = @import("protocol.zig");
-    _ = @import("vfs.zig");
+    _ = @import("session_api.zig");
     _ = @import("Session.zig");
     _ = @import("terminal-graphics-checkpoint");
     _ = @import("SessionRegistry.zig");

@@ -54,9 +54,12 @@ type Config struct {
 	AuthEnabled    bool
 	AuthFile       string
 	AuthSessionTTL time.Duration
-	EmbeddedAssets fs.FS
-	Engine         native.Engine
-	Logger         *slog.Logger
+	// AuthSessionMaxAge is the absolute browser session lifetime: renewals
+	// extend a session, but never past this long after its first sign-in.
+	AuthSessionMaxAge time.Duration
+	EmbeddedAssets    fs.FS
+	Engine            native.Engine
+	Logger            *slog.Logger
 }
 
 // ParseConfig parses the server's stable command-line interface. It does not
@@ -80,6 +83,7 @@ func parseConfig(args []string, validateListeners bool) (Config, bool, error) {
 	flags.BoolVar(&cfg.AuthEnabled, "auth", cfg.AuthEnabled, "require a FIDO2 security key login once credentials are enrolled")
 	flags.StringVar(&cfg.AuthFile, "auth-file", "", "FIDO2 authentication state file")
 	flags.DurationVar(&cfg.AuthSessionTTL, "auth-session-ttl", 0, "browser login session lifetime (default 168h)")
+	flags.DurationVar(&cfg.AuthSessionMaxAge, "auth-session-max-age", 0, "absolute browser login lifetime across renewals (default 720h)")
 	var origins, listens []string
 	var configPath string
 	flags.StringVar(&configPath, "config", "", "TOML config file")
@@ -142,6 +146,8 @@ func parseConfig(args []string, validateListeners bool) (Config, bool, error) {
 			cfg.AuthFile = cli.AuthFile
 		case "auth-session-ttl":
 			cfg.AuthSessionTTL = cli.AuthSessionTTL
+		case "auth-session-max-age":
+			cfg.AuthSessionMaxAge = cli.AuthSessionMaxAge
 		case "max-sessions":
 			cfg.MaxSessions = cli.MaxSessions
 		case "tls-cert":
@@ -219,10 +225,31 @@ func parseConfig(args []string, validateListeners bool) (Config, bool, error) {
 	if cfg.AuthSessionTTL < 0 {
 		return Config{}, false, fmt.Errorf("invalid session lifetime %s", cfg.AuthSessionTTL)
 	}
+	if cfg.AuthSessionMaxAge < 0 {
+		return Config{}, false, fmt.Errorf("invalid session maximum age %s", cfg.AuthSessionMaxAge)
+	}
+	if err := validateSessionLifetimes(cfg.AuthSessionTTL, cfg.AuthSessionMaxAge); err != nil {
+		return Config{}, false, err
+	}
 	if cfg.AuthFile == "" {
 		cfg.AuthFile = defaultAuthFile()
 	}
 	return cfg, false, nil
+}
+
+// validateSessionLifetimes rejects a maximum age shorter than one session, which
+// would expire every session before its first renewal; zero means the default.
+func validateSessionLifetimes(ttl, maxAge time.Duration) error {
+	if ttl == 0 {
+		ttl = authSessionTTLDefault
+	}
+	if maxAge == 0 {
+		maxAge = authSessionMaxAgeDefault
+	}
+	if maxAge < ttl {
+		return fmt.Errorf("auth-session-max-age %s is shorter than auth-session-ttl %s", maxAge, ttl)
+	}
+	return nil
 }
 
 // ValidateHost rejects malformed bind names before they reach DNS or the
@@ -423,6 +450,9 @@ func Usage(program string) string {
 		"  --auth-file FILE             authentication state file\n"+
 		"                               (default: $XDG_STATE_HOME/bcwebmux/auth.json)\n"+
 		"  --auth-session-ttl DURATION  browser login lifetime (default: 168h)\n"+
+		"  --auth-session-max-age DURATION\n"+
+		"                               absolute login lifetime across renewals\n"+
+		"                               (default: 720h)\n"+
 		"  --kitty-graphics[=false]     advertise Kitty graphics to session shells\n"+
 		"                               (default: true)\n"+
 		"  --worker FILE                PTY worker executable\n"+

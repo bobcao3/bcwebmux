@@ -57,6 +57,7 @@ func loadConfig(cfg *Config, explicit string) error {
 			Auth              *bool    `toml:"auth"`
 			AuthFile          *string  `toml:"auth-file"`
 			AuthSessionTTL    *string  `toml:"auth-session-ttl"`
+			AuthSessionMaxAge *string  `toml:"auth-session-max-age"`
 			FileServiceURL    *string  `toml:"file-service-url"`
 			FileServicePrefix *string  `toml:"file-service-prefix"`
 		}
@@ -130,6 +131,13 @@ func loadConfig(cfg *Config, explicit string) error {
 				return fmt.Errorf("config %s: invalid auth-session-ttl %q", path, *file.AuthSessionTTL)
 			}
 			cfg.AuthSessionTTL = ttl
+		}
+		if file.AuthSessionMaxAge != nil {
+			maxAge, err := time.ParseDuration(*file.AuthSessionMaxAge)
+			if err != nil || maxAge < 0 {
+				return fmt.Errorf("config %s: invalid auth-session-max-age %q", path, *file.AuthSessionMaxAge)
+			}
+			cfg.AuthSessionMaxAge = maxAge
 		}
 		if file.FileServiceURL != nil {
 			cfg.FileServiceURL = *file.FileServiceURL

@@ -10,7 +10,9 @@ const (
 	MaxPayloadLength = 1024 * 1024
 	MaxFrameLength   = 64 + MaxPayloadLength
 	MaxRequestBytes  = 4096
-	MaxResponseBytes = 64 * 1024
+	// MaxResponseBytes bounds one management response. A full listing of 64
+	// retained sessions with maximal escaped titles is a few hundred KiB.
+	MaxResponseBytes = 1024 * 1024
 )
 
 var (
