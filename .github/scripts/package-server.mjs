@@ -11,6 +11,7 @@ if (!target || !outputDirectory || !/^[a-zA-Z0-9_-]+$/.test(target)) {
   throw new Error("usage: node .github/scripts/package-server.mjs TARGET OUTPUT_DIRECTORY");
 }
 const output = resolve(outputDirectory);
+const localCache = resolve(process.env.ZIG_LOCAL_CACHE_DIR ?? "app-bcwebmux/.zig-cache");
 const name = `bcwebmux-${target}`;
 const temporary = await mkdtemp(join(tmpdir(), "bcwebmux-package-"));
 const stage = join(temporary, name);
@@ -60,7 +61,7 @@ try {
       if (error.code !== "ENOENT") throw error;
     }
   }
-  await collectLicenses("app-bcwebmux/.zig-cache/go/modules", join(stage, "licenses/go-modules"));
+  await collectLicenses(join(localCache, "go/modules"), join(stage, "licenses/go-modules"));
   await copy(join(zigPath("lib_dir"), "libc/musl/COPYRIGHT"), join(stage, "licenses/musl.txt"));
   let zigLicenseFound = false;
   for (const source of [
@@ -81,8 +82,8 @@ try {
     await copy(join("app-bcwebmux/web/fonts", file), join(stage, "licenses", file));
   }
   let goLicenseFound = false;
-  for (const entry of await readdir("app-bcwebmux/.zig-cache/o")) {
-    const source = join("app-bcwebmux/.zig-cache/o", entry, "go-toolchain/LICENSE");
+  for (const entry of await readdir(join(localCache, "o"))) {
+    const source = join(localCache, "o", entry, "go-toolchain/LICENSE");
     try {
       await copy(source, join(stage, "licenses/Go.txt"));
       goLicenseFound = true;
