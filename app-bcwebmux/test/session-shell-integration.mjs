@@ -28,7 +28,7 @@ PROBE='${probe}'
 export PROBE
 printf '%s\\n' "$@" > "$PROBE.args"
 pwd -P > "$PROBE.cwd"
-env | grep -E '^(TERM|COLORTERM|TERM_PROGRAM|KITTY_WINDOW_ID)=' | sort > "$PROBE.env"
+env | grep -E '^(TERM|COLORTERM|TERM_PROGRAM|KITTY_WINDOW_ID)=' > "$PROBE.env"
 readlink "/proc/$PPID/cwd" > "$PROBE.worker-cwd"
 exec /bin/bash --noprofile --norc "$@" -c 'shopt -q login_shell || exit 42; pwd -P > "$PROBE.login"'
 `,
@@ -120,9 +120,19 @@ try {
           outside,
           "worker cwd must not change",
         );
-        assert.equal(
-          await readFile(`${probe}.env`, "utf8"),
-          `COLORTERM=truecolor\n${name === "explicit" ? "" : "KITTY_WINDOW_ID=1\n"}TERM_PROGRAM=bcwebmux\nTERM=${name === "explicit" ? "screen-256color" : "xterm-ghostty"}\n`,
+        assert.deepEqual(
+          Object.fromEntries(
+            (await readFile(`${probe}.env`, "utf8"))
+              .trim()
+              .split("\n")
+              .map((line) => line.split("=")),
+          ),
+          {
+            COLORTERM: "truecolor",
+            ...(name === "explicit" ? {} : { KITTY_WINDOW_ID: "1" }),
+            TERM_PROGRAM: "bcwebmux",
+            TERM: name === "explicit" ? "screen-256color" : "xterm-ghostty",
+          },
           name,
         );
       } else {
