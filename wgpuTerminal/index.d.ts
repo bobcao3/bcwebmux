@@ -238,6 +238,19 @@ export declare class TerminalCore implements IDisposable {
 
   open(size?: { cols?: number; rows?: number }): Promise<this>;
   write(data: string | ArrayBuffer | ArrayBufferView): void;
+  /** Starts a new zstd stream; its next chunk carries the frame header. */
+  resetZstdStream(): void;
+  /**
+   * Decodes and parses the next zstd stream chunk, which must end on a flush
+   * boundary and expand to exactly `length` bytes with CRC-32C `crc32c`.
+   */
+  writeZstd(data: ArrayBuffer | ArrayBufferView, length: number, crc32c: number): void;
+  /** Decodes complete zstd frames into `target`, sized to their exact output. */
+  decodeZstdFrame(
+    data: ArrayBuffer | ArrayBufferView,
+    target: Uint8Array,
+    crc32c: number,
+  ): Uint8Array;
   input(text: string, options?: { paste?: boolean }): void;
   paste(text: string): void;
   setTheme(theme: TerminalTheme): void;
@@ -315,6 +328,7 @@ export declare class Terminal implements IDisposable {
   createCore(options?: TerminalCoreOptions): Promise<TerminalCore>;
   attachCore(core: TerminalCore): TerminalCore;
   write(data: string | ArrayBuffer | ArrayBufferView): void;
+  writeZstd(data: ArrayBuffer | ArrayBufferView, length: number, crc32c: number): void;
   input(text: string, options?: { paste?: boolean }): void;
   paste(text: string): void;
   setTheme(theme: TerminalTheme): void;

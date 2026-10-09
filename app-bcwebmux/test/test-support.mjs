@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Cheng Cao
 
 import { once } from "node:events";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
@@ -10,6 +10,36 @@ import net from "node:net";
 import { setTimeout as delay } from "node:timers/promises";
 
 export { delay };
+
+const crcTable = (() => {
+  const table = new Uint32Array(256);
+  for (let index = 0; index < 256; index += 1) {
+    let value = index;
+    for (let bit = 0; bit < 8; bit += 1)
+      value = value & 1 ? 0x82f63b78 ^ (value >>> 1) : value >>> 1;
+    table[index] = value >>> 0;
+  }
+  return table;
+})();
+
+// CRC-32C, the checksum the session protocol carries for decoded bytes.
+export function crc32c(bytes) {
+  let crc = 0xffffffff;
+  for (const byte of bytes) crc = crcTable[(crc ^ byte) & 0xff] ^ (crc >>> 8);
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+// A real terminal core over `wasmPath`, without fonts or a rendering host.
+export async function openWasmCore(TerminalCore, wasmPath, cols = 80, rows = 24) {
+  const core = new TerminalCore({ renderer: "canvas" });
+  const module = await WebAssembly.compile(await readFile(wasmPath));
+  const instance = await WebAssembly.instantiate(module, core._createWasmImports());
+  core._wasm = instance.exports;
+  core._wasm.term_bootstrap();
+  if (core._wasm.term_init(cols, rows) !== 1)
+    throw new Error("terminal core initialization failed");
+  return core;
+}
 
 export async function localTls() {
   const dir = await mkdtemp(path.join(os.tmpdir(), "bcwebmux-tls-"));

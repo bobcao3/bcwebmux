@@ -7,6 +7,7 @@ const RenderFrame = @import("RenderFrame.zig");
 const Graphics = @import("graphics/Adapter.zig");
 const GraphicsCheckpoint = @import("graphics/Checkpoint.zig");
 const FontEngine = @import("FontEngine.zig");
+const ZstdDecoder = @import("ZstdDecoder.zig");
 
 const Self = @This();
 
@@ -42,6 +43,7 @@ hyperlink_snapshot: [4096]u8 = undefined,
 hyperlink_snapshot_len: u32 = 0,
 renderer: RenderFrame = .{},
 graphics: Graphics = undefined,
+zstd: ZstdDecoder = .{},
 
 extern "host" fn user_write(ptr: [*]const u8, len: usize) i32;
 extern "host" fn terminal_reply(ptr: [*]const u8, len: usize) i32;
@@ -73,6 +75,7 @@ pub fn bootstrap(self: *Self) void {
     self.render_requested = false;
     self.selection_gesture = .init;
     self.selection_snapshot = null;
+    self.zstd = .{};
     self.hyperlink_snapshot_len = 0;
     self.renderer.bootstrap();
 }
@@ -220,6 +223,7 @@ pub fn term_deinit(self: *Self) void {
     self.terminal = null;
     self.last_mouse_cell = null;
     self.freeSnapshotStaging();
+    self.zstd.deinit();
     self.renderer.deinit();
 }
 
@@ -332,6 +336,48 @@ pub fn term_feed(self: *Self, len: u32) i32 {
     defer self.finishBusy();
     value.nextSlice(self.staging[0..len]);
     return if (value.handler.semantic_failure) 0 else 1;
+}
+
+pub fn term_zstd_reserve(self: *Self, len: u32) u32 {
+    if (self.frame_token != 0 or self.busy) return 0;
+    const buffer = self.zstd.reserve(len) orelse return 0;
+    return @intCast(@intFromPtr(buffer.ptr));
+}
+
+pub fn term_zstd_stream_reset(self: *Self) i32 {
+    if (self.frame_token != 0 or self.busy) return 0;
+    self.zstd.resetStream() catch |err| return zstdStatus(err);
+    return 1;
+}
+
+pub fn term_zstd_stream_feed(self: *Self, len: u32, raw_len: u32, crc32c: u32) i32 {
+    if (self.frame_token != 0 or self.busy) return 0;
+    const value = if (self.stream) |*s| s else return 0;
+    const decoded = self.zstd.decodeStream(len, raw_len, crc32c) catch |err| return zstdStatus(err);
+    self.busy = true;
+    defer self.finishBusy();
+    value.nextSlice(decoded);
+    return if (value.handler.semantic_failure) 0 else 1;
+}
+
+pub fn term_zstd_frame_decode(self: *Self, len: u32, raw_len: u32, crc32c: u32) i32 {
+    if (self.frame_token != 0 or self.busy) return 0;
+    _ = self.zstd.decodeFrame(len, raw_len, crc32c) catch |err| return zstdStatus(err);
+    return 1;
+}
+
+pub fn term_zstd_output_ptr(self: *Self) u32 {
+    return @intCast(@intFromPtr(self.zstd.decoded().ptr));
+}
+
+// Negative statuses name the rejected input; 0 keeps meaning "not now".
+fn zstdStatus(err: ZstdDecoder.Error) i32 {
+    return switch (err) {
+        error.CorruptInput => -1,
+        error.LengthMismatch => -2,
+        error.ChecksumMismatch => -3,
+        error.OutOfMemory => -4,
+    };
 }
 
 pub fn term_resize(self: *Self, cols: u16, rows: u16, cell_width: u16, cell_height: u16, glyph_cell_width: u16, glyph_cell_height: u16, glyph_font_size_px: u16) i32 {

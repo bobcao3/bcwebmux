@@ -3,7 +3,7 @@
 
 pub const protocol = "bcw.sessions";
 pub const checkpoint_codec = "ghostty-snapshot+kitty-graphics-v1";
-pub const terminal_abi = "bcwebmux-graphics-frame-v7-checkpoint-v1-continuation-1m-glyph-cell-partitions-pty-zstd-stream-ghostty-acf31468a";
+pub const terminal_abi = "bcwebmux-graphics-frame-v7-checkpoint-v1-continuation-1m-glyph-cell-partitions-pty-zstd-stream-v2-ghostty-acf31468a";
 pub const terminal_config = "xterm-ghostty;grapheme-cluster=1;scrollback=8388608;continuation=1048576";
 pub const command_profile = "shell";
 pub const max_connection_attachments: usize = 8;

@@ -2,47 +2,34 @@
 // Copyright (c) 2026 Cheng Cao
 
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
-import { mkdtempSync, writeFileSync, readFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { zstdCompressSync } from "node:zlib";
+import { crc32c, openWasmCore } from "./test-support.mjs";
 
 const WEB_ROOT = process.argv[2];
-const ZSTD_COMPRESSOR = process.argv[3];
-assert.ok(
-  WEB_ROOT && ZSTD_COMPRESSOR,
-  "usage: node test/session-checkpoint-contract.mjs WEB_ROOT ZSTD_COMPRESSOR",
-);
+assert.ok(WEB_ROOT, "usage: node test/session-checkpoint-contract.mjs WEB_ROOT");
 const [
   { appendCheckpoint, ensureShadow, finishCheckpoint, resetCheckpointTransaction, rollbackShadow },
-  { crc32c },
   { COMPRESSED_FLAG, writeUint32LE },
+  { TerminalCore },
 ] = await Promise.all([
   import(pathToFileURL(path.resolve(WEB_ROOT, "SessionCheckpoint.js")).href),
-  import(pathToFileURL(path.resolve(WEB_ROOT, "SessionWire.js")).href),
   import(pathToFileURL(path.resolve(WEB_ROOT, "protocol.js")).href),
+  import(pathToFileURL(path.resolve(WEB_ROOT, "wgpuTerminal/src/TerminalCore.js")).href),
 ]);
+// Chunks decode in the receiving core's WASM, as in the browser.
+const decoderCore = await openWasmCore(TerminalCore, path.resolve(WEB_ROOT, "terminal.wasm"));
 
 function makeChunk(raw, offset, crcOverride = crc32c(raw)) {
-  const temp = mkdtempSync(path.join(tmpdir(), "bcwebmux-checkpoint-"));
-  const INPUT = path.join(temp, "input");
-  const OUTPUT = path.join(temp, "output");
-  try {
-    writeFileSync(INPUT, raw);
-    const encoded = spawnSync(ZSTD_COMPRESSOR, [OUTPUT, INPUT]);
-    assert.equal(encoded.status, 0, encoded.stderr?.toString() || "zstd failed");
-    const compressed = readFileSync(OUTPUT);
-    const payload = new Uint8Array(16 + compressed.byteLength);
-    writeUint32LE(payload, 0, offset);
-    writeUint32LE(payload, 4, raw.byteLength);
-    writeUint32LE(payload, 8, crcOverride);
-    writeUint32LE(payload, 12, compressed.byteLength);
-    payload.set(compressed, 16);
-    return payload;
-  } finally {
-    rmSync(temp, { recursive: true, force: true });
-  }
+  const compressed = zstdCompressSync(raw);
+  const payload = new Uint8Array(16 + compressed.byteLength);
+  writeUint32LE(payload, 0, offset);
+  writeUint32LE(payload, 4, raw.byteLength);
+  writeUint32LE(payload, 8, crcOverride);
+  writeUint32LE(payload, 12, compressed.byteLength);
+  payload.set(compressed, 16);
+  return payload;
 }
 
 const first = Uint8Array.from({ length: 4096 }, (_, index) => index & 0xff);
@@ -54,7 +41,7 @@ const secondChunk = makeChunk(raw, first.byteLength);
 
 const totalBytes = first.byteLength + raw.byteLength;
 const checkpoint = new Uint8Array(totalBytes);
-const record = { checkpoint, checkpointOffset: 0 };
+const record = { core: decoderCore, checkpoint, checkpointOffset: 0 };
 const firstRestored = appendCheckpoint(record, { flags: COMPRESSED_FLAG, payload: firstChunk });
 const secondRestored = appendCheckpoint(record, { flags: COMPRESSED_FLAG, payload: secondChunk });
 assert.equal(firstRestored, first.byteLength);
@@ -63,16 +50,26 @@ assert.equal(record.checkpointOffset, totalBytes);
 assert.ok(Buffer.from(checkpoint.subarray(0, first.byteLength)).equals(Buffer.from(first)));
 assert.ok(Buffer.from(checkpoint.subarray(first.byteLength)).equals(Buffer.from(raw)));
 
-const corruptRecord = { checkpoint: new Uint8Array(raw.byteLength), checkpointOffset: 0 };
-assert.throws(() =>
-  appendCheckpoint(corruptRecord, {
-    flags: COMPRESSED_FLAG,
-    payload: makeChunk(raw, 0, crc32c(raw) ^ 1),
-  }),
+const corruptRecord = {
+  core: decoderCore,
+  checkpoint: new Uint8Array(raw.byteLength),
+  checkpointOffset: 0,
+};
+assert.throws(
+  () =>
+    appendCheckpoint(corruptRecord, {
+      flags: COMPRESSED_FLAG,
+      payload: makeChunk(raw, 0, (crc32c(raw) ^ 1) >>> 0),
+    }),
+  /corrupt checkpoint chunk/,
 );
 assert.equal(corruptRecord.checkpointOffset, 0);
 
-const gapRecord = { checkpoint: new Uint8Array(raw.byteLength), checkpointOffset: 0 };
+const gapRecord = {
+  core: decoderCore,
+  checkpoint: new Uint8Array(raw.byteLength),
+  checkpointOffset: 0,
+};
 assert.throws(() =>
   appendCheckpoint(gapRecord, {
     flags: COMPRESSED_FLAG,

@@ -140,12 +140,11 @@ try {
   const bundledResponses = await Promise.all([
     fetch(`http://127.0.0.1:${bundledPort}/`),
     fetch(`http://127.0.0.1:${bundledPort}/client.js`),
-    fetch(`http://127.0.0.1:${bundledPort}/fzstd.js`),
     fetch(`http://127.0.0.1:${bundledPort}/terminal.wasm`),
     fetch(`http://127.0.0.1:${bundledPort}/fonts/OFL.txt`),
     fetch(`http://127.0.0.1:${bundledPort}/fonts/NotoEmoji-Regular.woff2`),
   ]);
-  const [bundledIndex, bundledClient, bundledFzstd, bundledWasm, bundledLicense, bundledEmojiFont] =
+  const [bundledIndex, bundledClient, bundledWasm, bundledLicense, bundledEmojiFont] =
     bundledResponses;
   for (const response of bundledResponses) {
     assert.ok(response.ok, `bundled request failed: ${response.status}`);
@@ -155,10 +154,6 @@ try {
   assert.match(bundledIndex.headers.get("content-type") || "", /^text\/html(?:;|$)/);
   assert.match(
     bundledClient.headers.get("content-type") || "",
-    /^(?:text\/javascript|application\/javascript)(?:;|$)/,
-  );
-  assert.match(
-    bundledFzstd.headers.get("content-type") || "",
     /^(?:text\/javascript|application\/javascript)(?:;|$)/,
   );
   assert.match(bundledWasm.headers.get("content-type") || "", /^application\/wasm(?:;|$)/);
@@ -174,10 +169,6 @@ try {
   assert.match(bundledIndexText, /bcwebmux/);
   assert.doesNotMatch(bundledIndexText, /fonts\.googleapis\.com|Fira\+Code/);
   assert.equal(await bundledClient.text(), await readFile(path.join(webRoot, "client.js"), "utf8"));
-  assert.equal(
-    await bundledFzstd.text(),
-    await readFile(path.join("..", "node_modules", "fzstd", "esm", "index.mjs"), "utf8"),
-  );
   assert.deepEqual(
     Buffer.from(await bundledWasm.arrayBuffer()),
     await readFile(path.join(webRoot, "terminal.wasm")),

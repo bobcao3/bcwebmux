@@ -71,8 +71,10 @@ this project's build and are not distributed here.
 - **Copyright:** Copyright (c) Meta Platforms, Inc. and affiliates. All rights
   reserved.
 - **Used as:** pinned v1.5.7 in `app-bcwebmux/build.zig.zon`, linked into
-  `bcwebmux-server` by `app-bcwebmux/build/zstd.zig`.
-- **License text:** ships in the fetched package as `zig-pkg/N-V-*/LICENSE`.
+  `bcwebmux-server` by `app-bcwebmux/build/zstd.zig`; its decoder is also
+  compiled into `terminal.wasm`, the browser-side zstd decompressor.
+- **License text:** ships in the fetched package as `zig-pkg/N-V-*/LICENSE`,
+  also installed to `zig-out/wgpu-terminal/licenses/zstd.txt`.
 
 ### JetBrains Mono Nerd Font
 
@@ -93,14 +95,6 @@ this project's build and are not distributed here.
 - **License text:**
   [app-bcwebmux/web/fonts/NotoEmoji-OFL.txt](app-bcwebmux/web/fonts/NotoEmoji-OFL.txt),
   which is also served next to the font.
-
-### fzstd
-
-- **License:** MIT
-- **Copyright:** Copyright (c) 2020 Arjun Barrett
-- **Used as:** the browser-side zstd decompressor, copied into the served assets
-  as `fzstd.js` from the `fzstd` npm package.
-- **License text:** `node_modules/fzstd/LICENSE` (installed by `npm install`).
 
 ### Go dependencies
 
@@ -143,8 +137,8 @@ included in the artifacts:
 - **Ghostty build helpers** `aro` (MIT, Copyright (c) 2021 Veikka Tuominen) and
   `translate_c`.
 - **npm dependencies** — `npm install` resolves the workspace packages plus
-  `@fontsource/noto-emoji` and `fzstd` (both covered above) and the
-  build/test-only `sharp` (Apache-2.0) and its transitive dependencies.
+  `@fontsource/noto-emoji` (covered above) and the build/test-only `sharp`
+  (Apache-2.0) and its transitive dependencies.
 - **Chromium** and **OpenSSL**, used by the browser and HTTPS test suites.
 
 ## Referenced at runtime

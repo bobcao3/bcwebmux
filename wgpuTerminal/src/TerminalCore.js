@@ -18,6 +18,12 @@ import {
 import { loadWasmFontFaces, resolveWasmFontUrls } from "./WasmFonts.js";
 
 const WASM_STAGING_CAPACITY = 64 * 1024;
+const ZSTD_ERRORS = new Map([
+  [-1, "corrupt zstd input"],
+  [-2, "zstd input length mismatch"],
+  [-3, "zstd input checksum mismatch"],
+  [-4, "WASM zstd decoder is out of memory"],
+]);
 const TEXT_STAGING_CHUNK = 48 * 1024;
 const moduleCache = new Map();
 
@@ -449,6 +455,57 @@ export class TerminalCore {
     this._sampleMetric("wasmParseMs", performance.now() - parseStartedAt);
     this._state.rxBytes += bytes.length;
     this._schedule(true);
+  }
+
+  // Starts a new zstd stream for writeZstd; its next chunk carries the frame header.
+  resetZstdStream() {
+    this.assertMutable();
+    if (!this._wasm) throw new Error("terminal core is not open");
+    const status = this._invoke("term_zstd_stream_reset");
+    if (status !== 1) throw new Error(ZSTD_ERRORS.get(status) ?? "WASM zstd stream reset failed");
+  }
+
+  // Decodes and parses the next chunk of the zstd stream. The chunk must end
+  // on a flush boundary and expand to exactly `length` bytes with CRC-32C
+  // `crc32c`; nothing is parsed unless both match.
+  writeZstd(data, length, crc32c) {
+    this.assertMutable();
+    if (!this._wasm) throw new Error("terminal core is not open");
+    const bytes = normalizeBinary(data);
+    if (!this._pendingRxAt) this._pendingRxAt = performance.now();
+    const parseStartedAt = performance.now();
+    this._stageZstd(bytes);
+    const status = this._invoke("term_zstd_stream_feed", bytes.length, length, crc32c >>> 0);
+    if (status !== 1) throw new Error(ZSTD_ERRORS.get(status) ?? "WASM terminal feed failed");
+    if (this._disposed) return;
+    this._sampleMetric("wasmParseMs", performance.now() - parseStartedAt);
+    this._state.rxBytes += length;
+    this._schedule(true);
+  }
+
+  // Decodes complete zstd frames into `target`, which must be exactly their
+  // decoded size, with CRC-32C `crc32c`. The terminal and stream are untouched.
+  decodeZstdFrame(data, target, crc32c) {
+    this.assertMutable();
+    if (!this._wasm) throw new Error("terminal core is not open");
+    const bytes = normalizeBinary(data);
+    this._stageZstd(bytes);
+    const status = this._invoke(
+      "term_zstd_frame_decode",
+      bytes.length,
+      target.length,
+      crc32c >>> 0,
+    );
+    if (status !== 1) throw new Error(ZSTD_ERRORS.get(status) ?? "WASM zstd frame decode failed");
+    const ptr = this._invoke("term_zstd_output_ptr");
+    target.set(new Uint8Array(this._wasm.memory.buffer, ptr, target.length));
+    return target;
+  }
+
+  _stageZstd(bytes) {
+    const ptr = bytes.length ? this._invoke("term_zstd_reserve", bytes.length) : 0;
+    if (!ptr) throw new Error("WASM zstd input buffer exhausted");
+    new Uint8Array(this._wasm.memory.buffer, ptr, bytes.length).set(bytes);
   }
 
   _input(text, paste) {

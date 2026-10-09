@@ -112,6 +112,26 @@ export fn term_feed(len: u32) i32 {
     return terminal.term_feed(len);
 }
 
+export fn term_zstd_reserve(len: u32) u32 {
+    return terminal.term_zstd_reserve(len);
+}
+
+export fn term_zstd_stream_reset() i32 {
+    return terminal.term_zstd_stream_reset();
+}
+
+export fn term_zstd_stream_feed(len: u32, raw_len: u32, crc32c: u32) i32 {
+    return terminal.term_zstd_stream_feed(len, raw_len, crc32c);
+}
+
+export fn term_zstd_frame_decode(len: u32, raw_len: u32, crc32c: u32) i32 {
+    return terminal.term_zstd_frame_decode(len, raw_len, crc32c);
+}
+
+export fn term_zstd_output_ptr() u32 {
+    return terminal.term_zstd_output_ptr();
+}
+
 export fn term_resize(cols: u16, rows: u16, cell_width: u16, cell_height: u16, glyph_cell_width: u16, glyph_cell_height: u16, glyph_font_size_px: u16) i32 {
     return terminal.term_resize(cols, rows, cell_width, cell_height, glyph_cell_width, glyph_cell_height, glyph_font_size_px);
 }

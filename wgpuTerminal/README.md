@@ -49,6 +49,13 @@ await terminal.open(document.querySelector("#terminal-container"));
 Playback-only example (no PTY, needs prepared assets):
 [asciinema_playback.html](../example-terminal/asciinema_playback.html).
 
+Compressed input: call `core.resetZstdStream()` when a zstd
+stream starts, then `terminal.writeZstd(chunk, length, crc32c)`
+per chunk. Each chunk must end on a flush (`ZSTD_e_flush`) and
+expand to exactly `length` bytes with that CRC-32C; windows up
+to 8 MiB are accepted. `core.decodeZstdFrame` decodes
+standalone frames, such as a compressed snapshot.
+
 ## Text paths and fonts
 
 `terminal.wasm` holds no fonts. `kb-stb` (the default) shapes

@@ -13,7 +13,6 @@ const Self = @This();
 const zero_id: Session.Id = .{0} ** 16;
 const event_prefix_length = 32;
 const checkpoint_chunk_prefix_length = 16;
-const output_stream_preamble = "bcwebmux persistent PTY zstd stream preamble; discard before output\n";
 
 pub const MessageQueue = struct {
     pub const Message = struct {
@@ -110,14 +109,13 @@ fn queueClose(context: ?*anyopaque) !void {
 
 const OutputCompressor = struct {
     ctx: *c.ZSTD_CCtx,
-    needs_preamble: bool = true,
 
     fn init() !OutputCompressor {
         const ctx = c.ZSTD_createCCtx() orelse return error.ZstdContextCreationFailed;
         errdefer _ = c.ZSTD_freeCCtx(ctx);
         var result = c.ZSTD_CCtx_setParameter(ctx, c.ZSTD_c_compressionLevel, 1);
         if (c.ZSTD_isError(result) != 0) return error.ZstdParameterFailed;
-        result = c.ZSTD_CCtx_setParameter(ctx, c.ZSTD_c_windowLog, 17);
+        result = c.ZSTD_CCtx_setParameter(ctx, c.ZSTD_c_windowLog, 21);
         if (c.ZSTD_isError(result) != 0) return error.ZstdParameterFailed;
         result = c.ZSTD_CCtx_setParameter(ctx, c.ZSTD_c_checksumFlag, 0);
         if (c.ZSTD_isError(result) != 0) return error.ZstdParameterFailed;
@@ -127,7 +125,6 @@ const OutputCompressor = struct {
     fn reset(self: *OutputCompressor) !void {
         const result = c.ZSTD_CCtx_reset(self.ctx, c.ZSTD_reset_session_only);
         if (c.ZSTD_isError(result) != 0) return error.ZstdResetFailed;
-        self.needs_preamble = true;
     }
 
     fn deinit(self: *OutputCompressor) void {
@@ -135,20 +132,9 @@ const OutputCompressor = struct {
     }
 
     fn compressFlush(self: *OutputCompressor, allocator: std.mem.Allocator, bytes: []const u8) ![]u8 {
-        var combined: ?[]u8 = null;
-        defer if (combined) |value| allocator.free(value);
-        var input_bytes = bytes;
-        if (self.needs_preamble) {
-            const combined_length = std.math.add(usize, output_stream_preamble.len, bytes.len) catch return error.ZstdInputTooLarge;
-            const value = try allocator.alloc(u8, combined_length);
-            @memcpy(value[0..output_stream_preamble.len], output_stream_preamble);
-            @memcpy(value[output_stream_preamble.len..], bytes);
-            combined = value;
-            input_bytes = value;
-        }
         var output = try allocator.alloc(u8, @max(@as(usize, 64), c.ZSTD_compressBound(bytes.len)));
         errdefer allocator.free(output);
-        var input = c.ZSTD_inBuffer{ .src = input_bytes.ptr, .size = input_bytes.len, .pos = 0 };
+        var input = c.ZSTD_inBuffer{ .src = bytes.ptr, .size = bytes.len, .pos = 0 };
         var written: usize = 0;
         while (true) {
             if (written == output.len) {
@@ -165,11 +151,7 @@ const OutputCompressor = struct {
             const result = c.ZSTD_compressStream2(self.ctx, &destination, &input, c.ZSTD_e_flush);
             if (c.ZSTD_isError(result) != 0) return error.ZstdCompressionFailed;
             written += destination.pos;
-            if (input.pos == input.size and result == 0) {
-                const complete = try allocator.realloc(output, written);
-                self.needs_preamble = false;
-                return complete;
-            }
+            if (input.pos == input.size and result == 0) return allocator.realloc(output, written);
             if (input.pos == input_before and destination.pos == 0) return error.ZstdNoProgress;
         }
     }

@@ -6,7 +6,7 @@ import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { test } from "node:test";
 
-// Use installed assets: fzstd.js is produced by the normal web build.
+// Use installed assets, laid out as the normal web build produces them.
 const root = resolve(process.env.BCWEBMUX_TEST_WEB_ROOT ?? process.argv[2] ?? "zig-out/web");
 const load = (name) => import(pathToFileURL(resolve(root, name)).href);
 const { SessionTransport, CONNECTION_PROFILE: PROFILE } = await load("SessionTransport.js");
@@ -126,6 +126,9 @@ class Core {
   setReplayMode() {}
   resizeCanonical() {}
   reset() {}
+  resetZstdStream() {
+    this.zstdStreams = (this.zstdStreams ?? 0) + 1;
+  }
   write(bytes) {
     this.writes.push(bytes.slice());
   }

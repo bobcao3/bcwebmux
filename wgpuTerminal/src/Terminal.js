@@ -873,6 +873,12 @@ export class Terminal {
     this._core.write(data);
   }
 
+  writeZstd(data, length, crc32c) {
+    if (!this._core) throw new Error("terminal is not open");
+    if (!this._pendingRxAt) this._pendingRxAt = performance.now();
+    this._core.writeZstd(data, length, crc32c);
+  }
+
   _input(text, paste) {
     const core = this._core;
     if (!core) throw new Error("terminal is not open");

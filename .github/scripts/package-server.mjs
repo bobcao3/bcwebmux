@@ -77,7 +77,6 @@ try {
     }
   }
   if (!zigLicenseFound) throw new Error("The Zig runtime license is missing");
-  await copy("node_modules/fzstd/LICENSE", join(stage, "licenses/fzstd.txt"));
   for (const file of ["OFL.txt", "NotoEmoji-OFL.txt"]) {
     await copy(join("app-bcwebmux/web/fonts", file), join(stage, "licenses", file));
   }

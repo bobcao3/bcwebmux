@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Cheng Cao
 
-import { Decompress } from "./fzstd.js";
 import {
   appendCheckpoint,
   beginCheckpoint,
@@ -14,7 +13,6 @@ import {
   ABI_DIGEST,
   acceptAttachmentEpoch,
   bytesUuid,
-  crc32c,
   createEmitter,
   equalBytes,
   handleInputStatus,
@@ -69,9 +67,6 @@ export const CONNECTION_PROFILE = Object.freeze({
   retryCeilingMs: 10000,
 });
 const textDecoder = new TextDecoder("utf-8", { fatal: true });
-const OUTPUT_STREAM_PREAMBLE = new TextEncoder().encode(
-  "bcwebmux persistent PTY zstd stream preamble; discard before output\n",
-);
 
 export class SessionTransport {
   #url;
@@ -116,7 +111,6 @@ export class SessionTransport {
   #restoreJobs = { core: { active: 0, waiters: [] }, digest: { active: 0, waiters: [] } };
   #sessionChangedEmitter = createEmitter();
   #errorEmitter = createEmitter();
-  #eventScratch = null;
   #state = {
     connected: false,
     serverInstance: null,
@@ -555,10 +549,7 @@ export class SessionTransport {
       previousWasHostActive: false,
       frozen: [],
       frozenBytes: 0,
-      outputDecoder: null,
-      outputDecodeTarget: null,
-      outputDecodeOffset: 0,
-      outputPreambleOffset: 0,
+      outputStreamCore: null,
       claim: options.claim !== false,
       preserveCore: options.preserveCore !== false,
       resolve: null,
@@ -654,7 +645,6 @@ export class SessionTransport {
     for (const disposable of this.#terminalDisposables.splice(0)) disposable.dispose?.();
     for (const record of [...this.#records.values()])
       this.#removeRecord(record, new Error("session transport disposed"));
-    this.#eventScratch = null;
     this.#setStatus("disposed", false);
     this.#statusEmitter.clear();
     this.#attachmentEmitter.clear();
@@ -909,7 +899,7 @@ export class SessionTransport {
     )
       throw new Error("invalid ATTACH_BEGIN");
     acceptAttachmentEpoch(record, frame);
-    this.#resetOutputDecoder(record);
+    record.outputStreamCore = null;
     const previousGeneration = record.generation;
     record.generation = frame.payload.slice(0, 16);
     const mode = frame.payload[16];
@@ -955,6 +945,9 @@ export class SessionTransport {
     } else if (mode !== 1) {
       throw new Error("invalid attach mode");
     }
+    // This epoch's output stream decodes inside the core that receives it.
+    record.core.resetZstdStream();
+    record.outputStreamCore = record.core;
     if (record.active && this.#current(record.attempt))
       this.#attachmentEmitter.emit(record, "attaching");
   }
@@ -1032,13 +1025,12 @@ export class SessionTransport {
     if (kind === 0) {
       if (flags !== COMPRESSED_FLAG) throw new Error("output event is not stream-compressed");
       if (rawLength > MAX_EVENT_RAW_BYTES) throw new Error("output event is too large");
-      const raw = this.#decodeOutput(record, body, rawLength);
-      if (crc32c(raw) !== crc) throw new Error("corrupt output event");
+      if (record.outputStreamCore !== record.core) throw new Error("output decoder is unavailable");
       if (record === this.#activeRecord && this.#terminal?.core === record.core)
-        this.#terminal.write(raw);
-      else record.core.write(raw);
-      record.outputOffset += BigInt(raw.byteLength);
-      this.#state.rxBytes += raw.byteLength;
+        this.#terminal.writeZstd(body, rawLength, crc);
+      else record.core.writeZstd(body, rawLength, crc);
+      record.outputOffset += BigInt(rawLength);
+      this.#state.rxBytes += rawLength;
     } else if (kind === 1) {
       if (flags !== 0 || rawLength !== 8 || body.byteLength !== 8)
         throw new Error("invalid resize event");
@@ -1619,51 +1611,6 @@ export class SessionTransport {
     for (const event of frozen) this.#applyEvent(record, event.flags, event.payload);
   }
 
-  #resetOutputDecoder(record) {
-    record.outputDecodeTarget = null;
-    record.outputDecodeOffset = 0;
-    record.outputPreambleOffset = 0;
-    record.outputDecoder = new Decompress((chunk) => {
-      const target = record.outputDecodeTarget;
-      if (!target) throw new Error("output decoded outside a decode operation");
-      let offset = 0;
-      while (
-        offset < chunk.byteLength &&
-        record.outputPreambleOffset < OUTPUT_STREAM_PREAMBLE.byteLength
-      ) {
-        if (chunk[offset] !== OUTPUT_STREAM_PREAMBLE[record.outputPreambleOffset])
-          throw new Error("invalid output stream preamble");
-        offset++;
-        record.outputPreambleOffset++;
-      }
-      const output = chunk.subarray(offset);
-      if (record.outputDecodeOffset + output.byteLength > target.byteLength)
-        throw new Error("output decoder overflow");
-      target.set(output, record.outputDecodeOffset);
-      record.outputDecodeOffset += output.byteLength;
-    });
-  }
-
-  #decodeOutput(record, body, rawLength) {
-    if (!record.outputDecoder) throw new Error("output decoder is unavailable");
-    if (!this.#eventScratch || this.#eventScratch.byteLength < rawLength)
-      this.#eventScratch = new Uint8Array(rawLength);
-    const target = this.#eventScratch.subarray(0, rawLength);
-    record.outputDecodeTarget = target;
-    record.outputDecodeOffset = 0;
-    try {
-      record.outputDecoder.push(body, false);
-      if (
-        record.outputPreambleOffset !== OUTPUT_STREAM_PREAMBLE.byteLength ||
-        record.outputDecodeOffset !== rawLength
-      )
-        throw new Error("output decoder length mismatch");
-      return target;
-    } finally {
-      record.outputDecodeTarget = null;
-    }
-  }
-
   #current(attempt) {
     return (
       !!attempt && attempt === this.#attempt && !attempt.retired && !this.#disposed && !this.#fatal
@@ -1715,8 +1662,7 @@ export class SessionTransport {
       markRecordDetached(record);
       record.bindingLive = false;
       record.attempt = null;
-      record.outputDecoder = null;
-      record.outputDecodeTarget = null;
+      record.outputStreamCore = null;
       record.pendingCredit = 0;
     }
     if (!this.#disposed && !this.#fatal) {
@@ -1805,10 +1751,7 @@ export class SessionTransport {
     this.#cancelRecordSends(record);
     rememberStaleAttachment(this.#staleAttachmentIds, record);
     record.active = false;
-    record.outputDecoder = null;
-    record.outputDecodeTarget = null;
-    record.outputDecodeOffset = 0;
-    record.outputPreambleOffset = 0;
+    record.outputStreamCore = null;
     markRecordDetached(record);
     record.bindingLive = false;
     resetCheckpointTransaction(record);

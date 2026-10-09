@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Cheng Cao
 
-import { decompress } from "./fzstd.js";
 import { COMPRESSED_FLAG, readUint32LE, readUint64LE } from "./protocol.js";
-import { crc32c, equalBytes } from "./SessionWire.js";
+import { equalBytes } from "./SessionWire.js";
 
 const MAX_CHECKPOINT_BYTES = 16 * 1024 * 1024;
 
@@ -166,12 +165,14 @@ export function appendCheckpoint(record, frame) {
   if (rawLength > 256 * 1024 || offset + rawLength > record.checkpoint.byteLength) {
     throw new Error("corrupt checkpoint chunk");
   }
-  const raw = decompress(
-    frame.payload.subarray(16),
-    record.checkpoint.subarray(offset, offset + rawLength),
-  );
-  if (raw.byteLength !== rawLength || crc32c(raw) !== crc) {
-    throw new Error("corrupt checkpoint chunk");
+  try {
+    record.core.decodeZstdFrame(
+      frame.payload.subarray(16),
+      record.checkpoint.subarray(offset, offset + rawLength),
+      crc,
+    );
+  } catch (cause) {
+    throw new Error("corrupt checkpoint chunk", { cause });
   }
   record.checkpointOffset += rawLength;
   return rawLength;

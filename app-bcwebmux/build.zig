@@ -100,6 +100,8 @@ pub fn build(b: *std.Build) void {
     wasm.root_module.addIncludePath(b.path("../common/terminal"));
     wasm.root_module.addIncludePath(kb.path(""));
     wasm.root_module.addIncludePath(stb.path(""));
+    wasm.root_module.addIncludePath(zstd_dep.path("lib"));
+    wasm.root_module.linkLibrary(zstd_build.addWasmDecoder(b, zstd_dep, wasm_target, wasm_optimize, b.path("../common/terminal/zstd_libc")));
     wasm.entry = .disabled;
     wasm.rdynamic = true;
     wasm.export_memory = true;
@@ -111,7 +113,6 @@ pub fn build(b: *std.Build) void {
     _ = web_assets.addCopyDirectory(b.path("web"), "", .{ .exclude_extensions = &.{".woff2"} });
     _ = web_assets.addCopyDirectory(b.path("../wgpuTerminal/src"), "wgpuTerminal/src", .{});
     _ = web_assets.addCopyDirectory(b.path("../wgpuTerminal/css"), "wgpuTerminal/css", .{});
-    _ = web_assets.addCopyFile(b.path("../node_modules/fzstd/esm/index.mjs"), "fzstd.js");
     for (terminal_font_styles) |style| {
         const basename = b.fmt("JetBrainsMonoNerdFontMono-{s}", .{style});
         const font = jetbrains_mono_nerd_font.path(b.fmt("{s}.ttf", .{basename}));
@@ -130,6 +131,7 @@ pub fn build(b: *std.Build) void {
     _ = terminal_licenses.addCopyFile(ghostty.builder.dependency("uucode", .{}).path("LICENSE.md"), "uucode.txt");
     _ = terminal_licenses.addCopyFile(kb.path("LICENSE"), "kb.txt");
     _ = terminal_licenses.addCopyFile(stb.path("LICENSE"), "stb.txt");
+    _ = terminal_licenses.addCopyFile(zstd_dep.path("LICENSE"), "zstd.txt");
     const terminal_licenses_install = b.addInstallDirectory(.{
         .source_dir = terminal_licenses.getDirectory(),
         .install_dir = .prefix,

@@ -4,7 +4,7 @@
 import { readUint16LE, readUint32LE, readUint64LE, writeUint16LE } from "./protocol.js";
 
 export const ABI_DIGEST = hexBytes(
-  "3ac72d911b15f9479cafcb2d687afe33258e5e7ed621a4e8d003b8eba4fb3560",
+  "729bf9fe68baf34670aa43d041509c7edfcb47a9a454dee09a0a2d09744682e7",
 );
 
 export function createEmitter() {
@@ -115,23 +115,6 @@ export function validWelcomeCapabilities(payload, maxFrameLength, maxCredit) {
     payload[71] === 0 &&
     readUint64LE(payload, 80) !== 0n
   );
-}
-
-const crcTable = (() => {
-  const table = new Uint32Array(256);
-  for (let index = 0; index < 256; index += 1) {
-    let value = index;
-    for (let bit = 0; bit < 8; bit += 1)
-      value = value & 1 ? 0x82f63b78 ^ (value >>> 1) : value >>> 1;
-    table[index] = value >>> 0;
-  }
-  return table;
-})();
-
-export function crc32c(bytes) {
-  let crc = 0xffffffff;
-  for (const byte of bytes) crc = crcTable[(crc ^ byte) & 0xff] ^ (crc >>> 8);
-  return (crc ^ 0xffffffff) >>> 0;
 }
 
 export function updateRtt(state, sample) {

@@ -6,9 +6,15 @@ import { createHash, randomBytes } from "node:crypto";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import net from "node:net";
-import { Decompress, decompress } from "fzstd";
+import { createZstdDecompress, zstdDecompressSync } from "node:zlib";
 import * as Protocol from "../web/protocol.js";
-import { freePort, terminateProcess, waitFor as poll, delay as wait } from "./test-support.mjs";
+import {
+  crc32c,
+  freePort,
+  terminateProcess,
+  waitFor as poll,
+  delay as wait,
+} from "./test-support.mjs";
 const waitFor = (check, timeout, message) => poll(check, timeout, message, 25);
 const execFileAsync = promisify(execFile),
   {
@@ -29,27 +35,33 @@ const execFileAsync = promisify(execFile),
   } = Protocol,
   INITIAL_CREDIT = 33554432,
   ABI_TEXT =
-    "bcwebmux-graphics-frame-v7-checkpoint-v1-continuation-1m-glyph-cell-partitions-pty-zstd-stream-ghostty-acf31468a",
+    "bcwebmux-graphics-frame-v7-checkpoint-v1-continuation-1m-glyph-cell-partitions-pty-zstd-stream-v2-ghostty-acf31468a",
   ABI_DIGEST = new Uint8Array(createHash("sha256").update(ABI_TEXT).digest()),
-  ABI_HEX = "3ac72d911b15f9479cafcb2d687afe33258e5e7ed621a4e8d003b8eba4fb3560",
+  ABI_HEX = "729bf9fe68baf34670aa43d041509c7edfcb47a9a454dee09a0a2d09744682e7",
   encoder = new TextEncoder(),
   decoder = new TextDecoder(),
   serverPath = process.argv[2];
 assert.ok(serverPath, "usage: node test/session-ws-protocol.mjs SERVER");
 assert.equal(Buffer.from(ABI_DIGEST).toString("hex"), ABI_HEX);
-const OUTPUT_STREAM_PREAMBLE = encoder.encode(
-  "bcwebmux persistent PTY zstd stream preamble; discard before output\n",
-);
-const crcTable = new Uint32Array(256);
-for (let i = 0; i < 256; i += 1) {
-  let value = i;
-  for (let bit = 0; bit < 8; bit += 1) value = value & 1 ? (value >>> 1) ^ 2197175160 : value >>> 1;
-  crcTable[i] = value >>> 0;
-}
-function crc32c(bytes) {
-  let value = 4294967295;
-  for (const byte of bytes) value = crcTable[(value ^ byte) & 255] ^ (value >>> 8);
-  return (value ^ 4294967295) >>> 0;
+// One attachment's output stream; every event ends on a zstd flush boundary.
+class OutputStream {
+  #decompressor = createZstdDecompress();
+  #chunks = [];
+  #error = null;
+  constructor() {
+    this.#decompressor.on("data", (chunk) => this.#chunks.push(chunk));
+    this.#decompressor.on("error", (error) => (this.#error = error));
+  }
+  async decode(body) {
+    await new Promise((resolve) => this.#decompressor.write(body, () => resolve()));
+    await new Promise((resolve) => setImmediate(resolve));
+    if (this.#error) throw this.#error;
+    const raw = Buffer.concat(this.#chunks.splice(0));
+    return new Uint8Array(raw.buffer, raw.byteOffset, raw.byteLength);
+  }
+  close() {
+    this.#decompressor.destroy();
+  }
 }
 function sameBytes(left, right) {
   return (
@@ -233,7 +245,7 @@ class RawClient {
           });
         throw error;
       }
-      this.dispatch(frame);
+      await this.dispatch(frame);
       if (predicate(frame)) return frame;
     }
     throw Error(`${this.name} timed out waiting for ${description}`);
@@ -244,50 +256,11 @@ class RawClient {
     assert.ok(sameBytes(frame.sessionId, attachment.sessionId), `${this.name} attachment session`);
     return attachment;
   }
-  resetOutputDecoder(attachment) {
-    attachment.outputDecoder = new Decompress((chunk) => {
-      const target = attachment.outputDecodeTarget;
-      if (!target) throw Error(`${this.name} output decoder callback outside operation`);
-      let offset = 0;
-      while (
-        offset < chunk.byteLength &&
-        attachment.outputPreambleOffset < OUTPUT_STREAM_PREAMBLE.byteLength
-      ) {
-        assert.equal(
-          chunk[offset],
-          OUTPUT_STREAM_PREAMBLE[attachment.outputPreambleOffset],
-          `${this.name} output stream preamble`,
-        );
-        offset += 1;
-        attachment.outputPreambleOffset += 1;
-      }
-      if (offset === chunk.byteLength) return;
-      const body = chunk.subarray(offset),
-        end = attachment.outputDecodeOffset + body.byteLength;
-      if (end > target.byteLength) throw Error(`${this.name} output decoder overflow`);
-      target.set(body, attachment.outputDecodeOffset);
-      attachment.outputDecodeOffset = end;
-    });
-    attachment.outputDecodeTarget = null;
-    attachment.outputDecodeOffset = 0;
-    attachment.outputPreambleOffset = 0;
+  resetOutputStream(attachment) {
+    attachment.outputStream?.close();
+    attachment.outputStream = new OutputStream();
   }
-  decodeOutput(attachment, body, rawLength) {
-    if (!attachment.outputDecoder) this.resetOutputDecoder(attachment);
-    if (attachment.outputDecodeTarget)
-      throw Error(`${this.name} output decoder operation already active`);
-    const target = (attachment.outputDecodeTarget = new Uint8Array(rawLength));
-    attachment.outputDecodeOffset = 0;
-    try {
-      attachment.outputDecoder.push(body, false);
-      assert.equal(attachment.outputPreambleOffset, OUTPUT_STREAM_PREAMBLE.byteLength);
-      assert.equal(attachment.outputDecodeOffset, rawLength);
-      return target;
-    } finally {
-      attachment.outputDecodeTarget = null;
-    }
-  }
-  dispatch(frame) {
+  async dispatch(frame) {
     if (
       frame.type === FrameType.WELCOME ||
       frame.type === FrameType.PONG ||
@@ -322,7 +295,7 @@ class RawClient {
         attachment.eventSeq = 0n;
         attachment.outputOffset = 0n;
       }
-      this.resetOutputDecoder(attachment);
+      this.resetOutputStream(attachment);
       return;
     }
     if (frame.type === FrameType.CHECKPOINT_BEGIN) {
@@ -344,7 +317,7 @@ class RawClient {
         wireLength = readUint32LE(frame.payload, 12);
       assert.equal(offset, attachment.checkpointOffset);
       assert.equal(wireLength, frame.payload.byteLength - 16);
-      const raw = decompress(frame.payload.subarray(16));
+      const raw = zstdDecompressSync(frame.payload.subarray(16));
       assert.equal(raw.byteLength, rawLength);
       assert.equal(crc32c(raw), crc);
       assert.ok(offset + rawLength <= attachment.checkpoint.byteLength);
@@ -381,7 +354,8 @@ class RawClient {
         event = { kind, seq: eventSeq, outputOffset };
       if (kind === 0) {
         assert.equal(frame.flags, COMPRESSED_FLAG);
-        raw = this.decodeOutput(attachment, body, rawLength);
+        assert.ok(attachment.outputStream, `${this.name} output before ATTACH_BEGIN`);
+        raw = await attachment.outputStream.decode(body);
         assert.equal(raw.byteLength, rawLength);
         assert.equal(crc32c(raw), crc);
         attachment.outputRawBytes += raw.byteLength;
@@ -488,7 +462,6 @@ class RawClient {
       outputCompressedBytes: 0,
       outputEventCount: 0,
       outputWireBytes: 0,
-      outputPreambleOffset: 0,
       barrierCredit,
       live: false,
       exited: false,
@@ -622,7 +595,7 @@ class RawClient {
     const timeoutMs = Math.max(0, Math.min(quietMs, 1000));
     while (true)
       try {
-        this.dispatch(await this.nextFrame(timeoutMs));
+        await this.dispatch(await this.nextFrame(timeoutMs));
       } catch (error) {
         if (error?.message === `${this.name} frame timeout`) return;
         throw error;
