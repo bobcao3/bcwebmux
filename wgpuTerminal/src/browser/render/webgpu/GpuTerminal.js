@@ -13,6 +13,7 @@ import {
 import { GlyphAtlas } from "./GlyphAtlas.js";
 import { GraphicsScene } from "../GraphicsScene.js";
 import { createGpuGraphicsTexture, drawGpuGraphics } from "./GpuGraphics.js";
+import { drawGpuProgress } from "./GpuProgress.js";
 import {
   reconfigureGlyphAtlas as reconfigureGlyphAtlasGlyphAtlas,
   setTextRenderer as setTextRendererGlyphAtlas,
@@ -155,14 +156,23 @@ export class GpuTerminal {
       this.ensureFrameCapacity(maxCells);
       return 1;
     }
-    const response = await fetch(new URL("./shaders/cell.wgsl", import.meta.url));
+    const [cellResponse, progressResponse] = await Promise.all([
+      fetch(new URL("./shaders/cell.wgsl", import.meta.url)),
+      fetch(new URL("./shaders/progress.wgsl", import.meta.url)),
+    ]);
     if (this.disposed) throw new Error("WebGPU renderer disposed during initialization");
-    if (!response.ok) throw new Error(`cell shader load failed: ${response.status}`);
-    const cellSource = await response.text();
+    if (!cellResponse.ok) throw new Error(`cell shader load failed: ${cellResponse.status}`);
+    if (!progressResponse.ok)
+      throw new Error(`progress shader load failed: ${progressResponse.status}`);
+    const [cellSource, progressSource] = await Promise.all([
+      cellResponse.text(),
+      progressResponse.text(),
+    ]);
     if (this.disposed) throw new Error("WebGPU renderer disposed during initialization");
     return initializeResources(
       this,
       cellSource,
+      progressSource,
       generateGrain(),
       GRAIN_SIZE,
       maxCells,
@@ -338,7 +348,7 @@ export class GpuTerminal {
     this.device.queue.writeBuffer(this.selectionBuffer, firstRow * 4, selections);
   }
 
-  presentCurrentState(blinkOn = true) {
+  presentCurrentState(blinkOn = true, now = performance.now(), progress = null) {
     if (this.disposed || !this.offscreen || !this.rows || this.error) return;
     const drawStartedAt = performance.now();
     this.uniformU32[0] = this.cols;
@@ -415,8 +425,9 @@ export class GpuTerminal {
     }
     drawGpuGraphics(this, offscreen, false);
     offscreen.end();
+    const output = drawGpuProgress(this, encoder, progress, now);
     encoder.copyTextureToTexture(
-      { texture: this.offscreen },
+      { texture: output },
       { texture: this.context.getCurrentTexture() },
       [this.canvas.width, this.canvas.height],
     );
@@ -425,16 +436,16 @@ export class GpuTerminal {
     const submittedAt = performance.now();
     const frameMs = submittedAt - drawStartedAt;
     this.frameMs = this.frameMs === null ? frameMs : this.frameMs * 0.8 + frameMs * 0.2;
-    const now = performance.now();
-    if (!this.queueProbePending && now - this.lastQueueProbeAt >= 1000) {
+    const probeStartedAt = performance.now();
+    if (!this.queueProbePending && probeStartedAt - this.lastQueueProbeAt >= 1000) {
       this.queueProbePending = true;
-      this.lastQueueProbeAt = now;
+      this.lastQueueProbeAt = probeStartedAt;
       queue
         .onSubmittedWorkDone()
         .then(() => {
           if (this.disposed) return;
           this.queueProbePending = false;
-          const queueDrainMs = performance.now() - now;
+          const queueDrainMs = performance.now() - probeStartedAt;
           this.gpuFrameMs =
             this.gpuFrameMs === null ? queueDrainMs : this.gpuFrameMs * 0.8 + queueDrainMs * 0.2;
         })

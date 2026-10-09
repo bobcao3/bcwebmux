@@ -186,6 +186,8 @@ export class FramePresenter {
   }
 
   nextAnimationDeadline(now) {
+    if (this.valid && !this.backend.error && this.host._progressOverlay?.animated)
+      return now + 1000 / 60;
     return this.valid && !this.backend.error && (this.backend.cursorFlags & 6) !== 0
       ? (Math.floor(now / 500) + 1) * 500
       : null;
@@ -194,7 +196,11 @@ export class FramePresenter {
   present(now = performance.now()) {
     if (!this.valid || this.backend.error || this.backend.activeTerminal !== this.core)
       return false;
-    this.backend.presentCurrentState(Math.floor(now / 500) % 2 === 0);
+    this.backend.presentCurrentState(
+      Math.floor(now / 500) % 2 === 0,
+      now,
+      this.host._progressOverlay,
+    );
     return true;
   }
 }

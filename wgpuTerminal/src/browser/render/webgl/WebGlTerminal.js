@@ -15,6 +15,7 @@ import { reconfigureGlyphAtlas, setTextRenderer } from "../GlyphAtlasRuntime.js"
 import { WebGlGlyphAtlas } from "./WebGlGlyphAtlas.js";
 import { GraphicsScene } from "../GraphicsScene.js";
 import { createWebGlGraphicsTexture, drawWebGlGraphics } from "./WebGlGraphics.js";
+import { WebGlProgress } from "./WebGlProgress.js";
 
 function uploadIntegerRecords(gl, texture, textureWidth, first, count, components, format, source) {
   if (count === 0) return;
@@ -99,6 +100,7 @@ export class WebGlTerminal {
     this.glyphPartitions = null;
     this.glyphSlotsUsed = 0;
     this.graphicsScene = new GraphicsScene(this);
+    this.progressPass = null;
     this.activeTerminal = null;
     this.atlas = null;
     this.background = 0x111111;
@@ -122,6 +124,8 @@ export class WebGlTerminal {
     this.contextLostListener = (event) => {
       event.preventDefault();
       this.contextLost = true;
+      this.progressPass?.dispose(true);
+      this.progressPass = null;
       this.error = "WebGL context lost";
       this.onContextLost?.(this.error);
     };
@@ -293,10 +297,17 @@ export class WebGlTerminal {
     gl.uniform1ui(uniforms.selection_texture_width, this.selectionTextureWidth);
   }
 
-  presentCurrentState(blinkOn = true) {
+  presentCurrentState(blinkOn = true, now = performance.now(), progress = null) {
     const gl = this.gl;
     if (!this.initialized || !this.rows || this.error || gl.isContextLost()) return;
     const startedAt = performance.now();
+    const progressUniforms = progress?.visible ? progress.uniforms(now, this) : null;
+    if (progressUniforms) {
+      this.progressPass ??= new WebGlProgress(gl);
+      this.progressPass.begin(this.canvas.width, this.canvas.height);
+    } else {
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    }
     gl.useProgram(this.program);
     gl.bindVertexArray(this.vertexArray);
     gl.viewport(0, 0, this.canvas.width, this.canvas.height);
@@ -327,13 +338,14 @@ export class WebGlTerminal {
       gl.disable(gl.BLEND);
     }
     drawWebGlGraphics(this, false);
+    if (progressUniforms) this.progressPass.present(progressUniforms);
     gl.flush();
     const submittedAt = performance.now();
     const elapsed = submittedAt - startedAt;
     this.frameMs = this.frameMs === null ? elapsed : this.frameMs * 0.8 + elapsed * 0.2;
     this.frames += 1;
-    this.drawCalls += 1;
-    this.rasterPasses += 1;
+    this.drawCalls += progressUniforms ? 2 : 1;
+    this.rasterPasses += progressUniforms ? 2 : 1;
   }
 
   readGlyphAtlas() {

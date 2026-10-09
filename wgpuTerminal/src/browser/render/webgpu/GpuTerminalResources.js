@@ -3,6 +3,7 @@
 
 import { CELL_SIZE, STYLE_SIZE } from "../FrameSchema.js";
 import { initGpuGraphics, disposeGpuGraphics } from "./GpuGraphics.js";
+import { initGpuProgress, resetGpuProgress, disposeGpuProgress } from "./GpuProgress.js";
 
 const UNIFORM_BUFFER_SIZE = 68;
 
@@ -19,6 +20,7 @@ function validateFrameCapacity(renderer, cells, styles, cellSize, styleSize) {
 export function initialize(
   renderer,
   cellSource,
+  progressSource,
   grain,
   grainSize,
   maxCellsValue,
@@ -144,6 +146,7 @@ export function initialize(
     primitive: { topology: "triangle-list" },
   });
   initGpuGraphics(renderer);
+  initGpuProgress(renderer, progressSource);
   renderer.initialized = true;
   rebuildCellBundle(renderer);
   return 1;
@@ -270,7 +273,10 @@ export function resize(renderer, widthValue, heightValue) {
     offscreen = renderer.device.createTexture({
       size: [width, height],
       format: renderer.format,
-      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
+      usage:
+        GPUTextureUsage.RENDER_ATTACHMENT |
+        GPUTextureUsage.COPY_SRC |
+        GPUTextureUsage.TEXTURE_BINDING,
     });
     offscreenView = offscreen.createView();
   } catch (error) {
@@ -286,6 +292,7 @@ export function resize(renderer, widthValue, heightValue) {
   renderer.canvas.height = height;
   renderer.offscreen = offscreen;
   renderer.offscreenView = offscreenView;
+  resetGpuProgress(renderer);
   oldOffscreen?.destroy();
   if (renderer.rows) renderer.presenter?.requestPresentation();
 }
@@ -303,7 +310,7 @@ export async function readPixels(renderer) {
   try {
     const encoder = renderer.device.createCommandEncoder();
     encoder.copyTextureToBuffer(
-      { texture: renderer.offscreen },
+      { texture: renderer.progressOutput ?? renderer.offscreen },
       { buffer, bytesPerRow, rowsPerImage: height },
       [width, height, 1],
     );
@@ -335,6 +342,7 @@ export function dispose(renderer) {
   renderer.drawIndirectBuffer?.destroy?.();
   renderer.grainTexture?.destroy?.();
   disposeGpuGraphics(renderer);
+  disposeGpuProgress(renderer);
   renderer.device?.destroy?.();
   renderer.error = "disposed";
   renderer.initialized = false;

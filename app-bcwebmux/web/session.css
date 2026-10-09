@@ -34,7 +34,6 @@
   grid-row: 1;
   grid-template-rows: minmax(0, 1fr) var(--controls-row-height);
   overflow: hidden;
-  border-right: 2px solid var(--color-border);
   background: var(--color-background);
   color: var(--color-foreground);
   font-family: var(--terminal-font);
@@ -46,6 +45,7 @@
   justify-content: center;
   min-width: 0;
   padding: 0 max(14px, env(safe-area-inset-left));
+  border-right: 1px solid var(--color-border);
   background: var(--color-surface);
 }
 
@@ -174,37 +174,32 @@
   text-transform: uppercase;
 }
 
-.session-row[data-program-status="idle"],
-#terminal-progress[data-program-status="idle"] {
-  --session-status-color: #c6b8e8;
+.session-row[data-program-status="idle"] {
+  --session-status-color: color-mix(in srgb, var(--color-accent) 65%, var(--color-muted));
 }
 
 .session-row[data-program-status="working"] {
   animation: session-status-shade 2.4s ease-in-out infinite;
 }
 
-.session-row[data-program-status="working"],
-#terminal-progress[data-program-status="working"] {
-  --session-status-color: #adc9ee;
+.session-row[data-program-status="working"] {
+  --session-status-color: var(--color-accent);
 }
 
-.session-row[data-program-status="done"],
-#terminal-progress[data-program-status="done"] {
-  --session-status-color: #acd9be;
+.session-row[data-program-status="done"] {
+  --session-status-color: var(--color-success);
 }
 
 .session-row[data-program-status="blocked"] {
   animation: session-status-shade 1.6s steps(1, end) infinite;
 }
 
-.session-row[data-program-status="blocked"],
-#terminal-progress[data-program-status="blocked"] {
-  --session-status-color: #efb34e;
+.session-row[data-program-status="blocked"] {
+  --session-status-color: var(--color-warning);
 }
 
-.session-row[data-program-status="error"],
-#terminal-progress[data-program-status="error"] {
-  --session-status-color: #e5afb8;
+.session-row[data-program-status="error"] {
+  --session-status-color: var(--color-danger);
 }
 
 .session-row[data-program-status] {
@@ -226,11 +221,16 @@
   color: color-mix(in srgb, var(--color-foreground) 20%, var(--color-muted));
 }
 
+.session-row[data-progress] .session-detail {
+  color: var(--color-foreground);
+  font-weight: 700;
+}
+
 .session-row[data-progress]::before {
   position: absolute;
   inset: 0 auto 0 0;
   width: var(--session-progress);
-  background: color-mix(in srgb, var(--session-status-color) 6%, transparent);
+  background: color-mix(in srgb, var(--session-status-color) 24%, transparent);
   pointer-events: none;
   content: "";
 }
@@ -241,42 +241,12 @@
 
 #terminal-progress {
   position: absolute;
-  top: 0;
-  right: 0;
-  left: 0;
-  z-index: 9;
-  height: 3px;
+  width: 1px;
+  height: 1px;
   overflow: hidden;
-  background: color-mix(in srgb, var(--session-status-color) 18%, var(--color-background));
+  clip-path: inset(50%);
+  white-space: nowrap;
   pointer-events: none;
-}
-
-#terminal-progress[hidden] {
-  display: none;
-}
-
-.terminal-progress-fill {
-  width: var(--session-progress, 0%);
-  height: 100%;
-  background: color-mix(in srgb, var(--session-status-color) 75%, var(--color-background));
-}
-
-#terminal-progress.is-indeterminate .terminal-progress-fill {
-  width: calc(100% / 3);
-  transform: translateX(100%);
-}
-
-#terminal-progress.is-indeterminate[data-program-status="working"] .terminal-progress-fill {
-  animation: session-progress-sweep 2.4s ease-in-out infinite alternate;
-}
-
-@keyframes session-progress-sweep {
-  from {
-    transform: translateX(0);
-  }
-  to {
-    transform: translateX(200%);
-  }
 }
 
 @keyframes session-status-shade {
@@ -300,8 +270,7 @@
 
 @media (prefers-reduced-motion: reduce) {
   .session-row[data-program-status="working"],
-  .session-row[data-program-status="blocked"],
-  #terminal-progress.is-indeterminate[data-program-status="working"] .terminal-progress-fill {
+  .session-row[data-program-status="blocked"] {
     animation: none;
   }
 }
@@ -599,7 +568,6 @@
     width: min(320px, 86vw);
     visibility: hidden;
     transform: translateX(-100%);
-    border-right-color: var(--color-accent);
     box-shadow: 6px 0 0 rgb(0 0 0 / 40%);
   }
 

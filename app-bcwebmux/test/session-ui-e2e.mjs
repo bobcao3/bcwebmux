@@ -817,33 +817,8 @@ async function verifyLegacyProgress(id) {
     "indeterminate progress must not claim a percentage",
   );
   await page.call("Emulation.setEmulatedMedia", {
-    features: [{ name: "prefers-reduced-motion", value: "no-preference" }],
-  });
-  assert.equal(
-    await evaluate(
-      "document.querySelector('.terminal-progress-fill').getAnimations()[0]?.playState",
-    ),
-    "running",
-    "indeterminate bottom progress must animate",
-  );
-  for (const phase of Array.from({ length: 13 }, (_, index) => index / 12)) {
-    await evaluate(`(() => {
-      for (const animation of document.getAnimations()) {
-        if (animation.effect.getComputedTiming().iterations !== Infinity) continue;
-        animation.pause();
-        animation.currentTime = animation.effect.getComputedTiming().duration * ${phase};
-      }
-    })()`);
-    await motionGolden("indeterminate-motion", `indeterminate-motion-${phase}`);
-  }
-  await page.call("Emulation.setEmulatedMedia", {
     features: [{ name: "prefers-reduced-motion", value: "reduce" }],
   });
-  assert.equal(
-    await evaluate("document.querySelector('.terminal-progress-fill').getAnimations().length"),
-    0,
-    "reduced motion must disable indeterminate bottom progress",
-  );
   await stillGolden("session-progress-indeterminate-reduced");
   await report("0", null);
   await stillGolden("session-progress-removed");

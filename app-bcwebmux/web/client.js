@@ -23,6 +23,7 @@ const terminalElement = document.querySelector("#terminal");
 const terminalIdentity = document.querySelector("#terminal-identity");
 const terminalIdentityPrimary = document.querySelector("#terminal-identity-primary");
 const terminalIdentitySecondary = document.querySelector("#terminal-identity-secondary");
+const terminalIdentityDetail = document.querySelector("#terminal-identity-detail");
 const terminalViewport = document.querySelector("#terminal-viewport");
 const selectionButton = document.querySelector("#selection-button");
 const softkeysToggle = document.querySelector("#softkeys-toggle");
@@ -271,9 +272,17 @@ function updateTerminalIdentity(metadata, terminalTitle = metadata?.title) {
   terminalIdentityPrimary.textContent = primary;
   terminalIdentitySecondary.textContent = secondary ? title : "";
   terminalIdentitySecondary.hidden = !secondary;
+  updateTerminalIdentityDetail();
   const label = secondary ? `${name} — ${title}` : primary;
   terminalIdentity.setAttribute("aria-label", label);
   terminalIdentity.setAttribute("title", label);
+}
+
+function updateTerminalIdentityDetail() {
+  const simple = perf.dataset.mode === "simple";
+  const hasTitle = !terminalIdentitySecondary.hidden;
+  terminalIdentityDetail.hidden = !simple && !hasTitle;
+  terminalIdentityDetail.classList.toggle("alternating", simple && hasTitle);
 }
 
 function showDesktopNotification(title, body) {
@@ -559,11 +568,12 @@ function renderTerminalProgress() {
     progressAutoHideTimer = setTimeout(() => {
       progressAutoHideTimer = null;
       terminalProgress.hidden = true;
+      terminal.setProgress(null);
     }, PROGRESS_AUTOHIDE_MS);
   } else {
     terminalProgress.hidden = progressAutoHideTimer === null;
   }
-  terminalProgress.classList.toggle("is-indeterminate", status != null && progress === null);
+  terminal.setProgress(terminalProgress.hidden ? null : status);
   if (progress === null) terminalProgress.removeAttribute("aria-valuenow");
   else terminalProgress.setAttribute("aria-valuenow", String(progress));
   const label = programStatusLabel(status);
@@ -676,6 +686,9 @@ function applyPerfMode(mode) {
   const normalized = ["off", "simple", "detailed"].includes(mode) ? mode : "detailed";
   perf.dataset.mode = normalized;
   perf.hidden = normalized === "off";
+  const container = normalized === "simple" ? terminalIdentityDetail : terminalViewport;
+  if (perf.parentElement !== container) container.append(perf);
+  updateTerminalIdentityDetail();
   updateTelemetry();
 }
 
@@ -718,7 +731,7 @@ function updateTelemetry() {
   const scrollMaximum = Math.max(0, (state.scrollTotal ?? 0) - (state.scrollLength ?? 0));
   const line =
     mode === "simple"
-      ? `R: ${formatBytes(state.rxWireBytes)} · S: ${formatBytes(state.txBytes)} · WS RTT: ${formatMs(state.wsRttLatestMs)} ms · WASM: ${formatMs(state.wasmFrameMs)} ms`
+      ? `R: ${formatBytes(state.rxWireBytes)} · S: ${formatBytes(state.txBytes)} · WS RTT: ${formatMs(state.wsRttLatestMs)} ms`
       : [
           `WASM frame: ${formatMs(state.wasmFrameMs)} ms · parse: ${formatMs(state.wasmParseMs)} ms`,
           `GPU submit: ${formatMs(state.frameMs)} ms · presentation opportunity: ${formatMs(state.presentationOpportunityMs)} ms`,

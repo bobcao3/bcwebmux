@@ -5,7 +5,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,interactive-widget=resizes-content">
-  <meta name="theme-color" content="#0a0c10">
+  <meta name="theme-color" content="#0c0c0e">
   <meta name="application-name" content="bcwebmux">
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-capable" content="yes">
@@ -45,6 +45,7 @@
       <div id="composition" aria-hidden="true"></div>
       <div id="scrollbar" role="scrollbar" aria-label="Terminal scrollback" aria-orientation="vertical" tabindex="0" hidden><div id="scrollbar-thumb" aria-hidden="true"></div></div>
       <output id="perf">—</output>
+      <div id="terminal-progress" role="progressbar" aria-label="Program progress" aria-valuemin="0" aria-valuemax="100" hidden></div>
       <section id="client-error" role="alert" aria-live="assertive" hidden>
         <header>[ CLIENT ERROR ]</header>
         <button id="client-error-dismiss" type="button">DISMISS</button>
@@ -52,7 +53,6 @@
       </section>
     </section>
     <footer id="terminal-chrome">
-      <div id="terminal-progress" role="progressbar" aria-label="Program progress" aria-valuemin="0" aria-valuemax="100" hidden><div class="terminal-progress-fill"></div></div>
       <nav id="softkeys" aria-label="Terminal soft keys">
         <button type="button" data-code="Escape" data-key="Escape">ESC</button>
         <button type="button" data-code="Tab" data-key="Tab">TAB</button>
@@ -88,7 +88,9 @@
         </div>
         <div id="terminal-identity" role="status">
           <span id="terminal-identity-primary">bcwebmux</span>
-          <span id="terminal-identity-secondary" hidden></span>
+          <div id="terminal-identity-detail" hidden>
+            <span id="terminal-identity-secondary" hidden></span>
+          </div>
         </div>
         <div id="terminal-indicators">
           <span id="status" role="status" aria-live="polite" aria-label="Disconnected" title="Disconnected">Disconnected</span>

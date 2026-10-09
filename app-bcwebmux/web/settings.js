@@ -13,7 +13,8 @@ const STORAGE_KEY = "bcwebmux.settings.v1";
 // The server publishes machine-local defaults there (the file service this machine runs);
 // use only as a seed for browsers that have not configured their own.
 const CLIENT_CONFIG_PATH = "/api/client-config";
-const DEFAULT_PROFILE = "github-dark-high-contrast";
+const DEFAULT_PROFILE = "platinum-dark";
+const COLOR_PROFILE_VERSION = 1;
 const COLOR_FIELDS = [
   "background",
   "foreground",
@@ -115,6 +116,36 @@ const DEFAULT_SETTINGS = Object.freeze({
 });
 
 export const BUILTIN_PROFILES = Object.freeze({
+  "platinum-dark": {
+    name: "Platinum Dark",
+    description: "Warm charcoal with pastel lavender, rose, amber, and sage.",
+    background: "#0c0c0e",
+    foreground: "#f7f4e8",
+    surface: "#25232c",
+    border: "#736c82",
+    accent: "#d8d2f2",
+    muted: "#b5adba",
+    success: "#b8d7b8",
+    danger: "#f2c9d9",
+    ansi: [
+      "#312d38",
+      "#e3adb9",
+      "#acc8a4",
+      "#ffd58a",
+      "#b7b3de",
+      "#dab5d5",
+      "#aed5ce",
+      "#e7e1cf",
+      "#91899a",
+      "#f2c9d9",
+      "#c6e5bd",
+      "#ffe1ab",
+      "#d8d2f2",
+      "#ecc6e5",
+      "#c5e7df",
+      "#fffaf0",
+    ],
+  },
   "github-dark-high-contrast": {
     name: "GitHub Dark High Contrast",
     description: "Maximum contrast on GitHub's near-black canvas.",
@@ -277,10 +308,13 @@ function loadSettings() {
     for (const field of COLOR_FIELDS)
       custom[field] = normalizeColor(saved.custom?.[field], custom[field]);
     custom.ansi = customAnsi(custom);
+    // Older settings saved the GitHub default even when the user never chose a theme.
+    const savedProfile =
+      !Object.hasOwn(saved, "colorProfileVersion") && saved.selected === "github-dark-high-contrast"
+        ? DEFAULT_PROFILE
+        : saved.selected;
     const selected =
-      saved.selected === "custom" || BUILTIN_PROFILES[saved.selected]
-        ? saved.selected
-        : DEFAULT_PROFILE;
+      savedProfile === "custom" || BUILTIN_PROFILES[savedProfile] ? savedProfile : DEFAULT_PROFILE;
     const fontFamily = Object.hasOwn(FONT_OPTIONS, saved.fontFamily)
       ? saved.fontFamily
       : DEFAULT_SETTINGS.fontFamily;
@@ -355,6 +389,7 @@ function saveSettings(settings) {
         perfMode: settings.perfMode,
         renderer: settings.renderer,
         selected: settings.selected,
+        colorProfileVersion: COLOR_PROFILE_VERSION,
         custom,
         ...(settings.fileServiceTouched && {
           fileService: {
@@ -396,7 +431,9 @@ function applyDocumentTheme(profile, id) {
   const root = document.documentElement;
   root.dataset.colorProfile = id;
   for (const field of COLOR_FIELDS) root.style.setProperty(`--color-${field}`, profile[field]);
+  root.style.setProperty("--color-warning", profile.ansi[3]);
   root.style.colorScheme = profile.background === "#f6f8fa" ? "light" : "dark";
+  document.querySelector('meta[name="theme-color"]')?.setAttribute("content", profile.background);
 }
 
 export function initializeSettings() {

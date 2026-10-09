@@ -464,6 +464,7 @@ export function resizeWebGl(renderer, widthValue, heightValue) {
   if (renderer.canvas.width === width && renderer.canvas.height === height) return;
   renderer.canvas.width = width;
   renderer.canvas.height = height;
+  renderer.progressPass?.resize(width, height);
   renderer.gl.viewport(0, 0, width, height);
   if (renderer.rows) renderer.presenter?.requestPresentation();
 }
@@ -476,6 +477,7 @@ export function readWebGlPixels(renderer) {
   const height = renderer.canvas.height;
   const source = new Uint8Array(width * height * 4);
   const data = new Uint8Array(source.length);
+  gl.bindFramebuffer(gl.READ_FRAMEBUFFER, null);
   gl.readPixels(0, 0, width, height, gl.RGBA, gl.UNSIGNED_BYTE, source);
   const stride = width * 4;
   for (let y = 0; y < height; y += 1) {
@@ -491,6 +493,8 @@ export function disposeWebGl(renderer) {
   renderer.canvas.removeEventListener("webglcontextlost", renderer.contextLostListener);
   renderer.canvas.removeEventListener("webglcontextrestored", renderer.contextRestoredListener);
   disposeWebGlGraphics(renderer);
+  renderer.progressPass?.dispose(Boolean(renderer.contextLost || gl.isContextLost()));
+  renderer.progressPass = null;
   // Restored contexts have already destroyed these handles; deleting them pollutes GL error state.
   if (renderer.contextLost) {
     renderer.error = "disposed";

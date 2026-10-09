@@ -6,14 +6,14 @@
 
 :root {
   color-scheme: dark;
-  --color-background: #0a0c10;
-  --color-foreground: #f0f3f6;
-  --color-surface: #161b22;
-  --color-border: #7a828e;
-  --color-accent: #58a6ff;
-  --color-muted: #9ea7b3;
-  --color-success: #3fb950;
-  --color-danger: #ff6a69;
+  --color-background: #0c0c0e;
+  --color-foreground: #f7f4e8;
+  --color-surface: #25232c;
+  --color-border: #736c82;
+  --color-accent: #d8d2f2;
+  --color-muted: #b5adba;
+  --color-success: #b8d7b8;
+  --color-danger: #f2c9d9;
   --auth-font: ui-monospace, "Cascadia Mono", "SFMono-Regular", Consolas, monospace;
 }
 

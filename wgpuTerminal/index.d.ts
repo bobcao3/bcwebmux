@@ -57,6 +57,12 @@ export type TerminalRenderer = "kb-stb" | "canvas";
 
 export type TerminalRenderBackend = "auto" | "webgpu" | "webgl2";
 
+export interface TerminalProgress {
+  state: "idle" | "working" | "done" | "blocked" | "error";
+  progress?: number | null;
+  paused?: boolean;
+}
+
 export interface TerminalTheme {
   background: string;
   foreground: string;
@@ -335,6 +341,8 @@ export declare class Terminal implements IDisposable {
   setFont(font: Partial<TerminalFont>): Promise<void>;
   setRenderer(renderer: TerminalRenderer): Promise<TerminalRenderer>;
   setGrainStrength(value: number): void;
+  /** Passing null hides the canvas overlay. The renderer accepts integer percentages from 0 to 100. */
+  setProgress(status: TerminalProgress | null): void;
   setSoftModifiers(value: number): void;
   clearSoftModifiers(): void;
   sendKey(code: string, key: string, modifiers?: number): number;

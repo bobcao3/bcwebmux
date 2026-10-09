@@ -2,6 +2,7 @@
 // Copyright (c) 2026 Cheng Cao
 
 import { FramePresenter } from "./browser/render/FramePresenter.js";
+import { ProgressOverlay } from "./browser/render/ProgressOverlay.js";
 import { TerminalCore } from "./TerminalCore.js";
 import {
   createCore as createHostedCore,
@@ -90,6 +91,7 @@ export class Terminal {
     this._presenter = null;
     this._view = null;
     this._viewportController = null;
+    this._progressOverlay = new ProgressOverlay();
     this._inputController = null;
     this._focusController = null;
     this._pointerController = null;
@@ -229,6 +231,8 @@ export class Terminal {
       : TerminalView.create(parent);
     this._terminalElement = this.options.terminalElement || parent;
     this._coarsePointer = window.matchMedia("(hover: none) and (pointer: coarse)");
+    this._reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
+    this._progressOverlay.reducedMotion = this._reducedMotion.matches;
     this._applyCssTheme(this.options.theme);
     this._applyCssFont(this.options.font);
     await Promise.all(loadTerminalFonts(this.options.font));
@@ -498,6 +502,7 @@ export class Terminal {
     const suspend = (message) => {
       if (this._disposed || this._renderer !== backend) return false;
       backend.error ||= String(message || "renderer unavailable").slice(0, 256);
+      this._progressOverlay.lastPresentedAt = null;
       this._scheduler?.suspend();
       this._presenter?.invalidate(false);
       return true;
@@ -662,6 +667,11 @@ export class Terminal {
       target.addEventListener(type, listener, { signal: this._windowListenerController.signal });
     };
     listen(window, "focus", () => this._focusController.windowFocus());
+    listen(this._reducedMotion, "change", () => {
+      this._progressOverlay.reducedMotion = this._reducedMotion.matches;
+      this._progressOverlay.lastPresentedAt = null;
+      this._scheduler.requestPresentation();
+    });
     listen(document.fonts, "loadingdone", () => {
       if (this._disposed || this.options.renderer !== "canvas" || this._pendingFont) return;
       for (const core of this._cores) if (core.ready) core.invalidateFrame();
@@ -676,6 +686,7 @@ export class Terminal {
       this._focusController.windowBlur();
     });
     listen(document, "visibilitychange", () => {
+      this._progressOverlay.lastPresentedAt = null;
       if (!document.hidden) {
         this._focusController.windowFocus();
         this._scheduler.resume();
@@ -858,6 +869,11 @@ export class Terminal {
     }
     this.options.grainStrength = strength;
     if (!this._recovering && !this._renderer?.error) this._renderer?.setGrainStrength(strength);
+  }
+
+  setProgress(status) {
+    this._assertMutable();
+    if (this._progressOverlay.set(status)) this._scheduler?.requestPresentation();
   }
 
   _reloadRendererFont() {
