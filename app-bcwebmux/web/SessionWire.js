@@ -4,7 +4,7 @@
 import { readUint16LE, readUint32LE, readUint64LE, writeUint16LE } from "./protocol.js";
 
 export const ABI_DIGEST = hexBytes(
-  "fb0883d998dea18a9aafda96d265b6b8461a902909d05498dbc82822cc294a96",
+  "38b7935470a95f7a16ef7b98e54a19e3372531868040ee11f3b260f3aebf4570",
 );
 
 export function createEmitter() {

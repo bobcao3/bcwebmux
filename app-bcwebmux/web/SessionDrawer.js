@@ -314,6 +314,7 @@ export class SessionDrawer {
         terminate = action === "terminate";
       row.className = id === activeId ? "session-row is-active" : "session-row";
       row.classList.toggle("is-unread", Boolean(metadata.unread));
+      row.classList.toggle("is-unread-bell", Boolean(metadata.unreadBell));
       row.dataset.sessionId = id;
       row.dataset.state = String(metadata.state || "unknown");
       const status = sessionStatus(metadata);
@@ -326,7 +327,14 @@ export class SessionDrawer {
       tab.id = `session-tab-${id.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
       tab.tabIndex = id === focusId ? 0 : -1;
       tab.setAttribute("aria-selected", String(id === activeId));
-      tab.setAttribute("aria-label", metadata.unread ? `${label} · unread activity` : label);
+      tab.setAttribute(
+        "aria-label",
+        metadata.unreadBell
+          ? `${label} · unread bell · unread activity`
+          : metadata.unread
+            ? `${label} · unread activity`
+            : label,
+      );
       tab.setAttribute("aria-haspopup", "menu");
       if (this.#refs.workspace?.id) tab.setAttribute("aria-controls", this.#refs.workspace.id);
       copy.className = "session-copy";
@@ -348,8 +356,20 @@ export class SessionDrawer {
       remove.className = "session-lifecycle";
       remove.style.minWidth = "44px";
       remove.style.minHeight = "44px";
-      remove.textContent = terminate ? "■" : "×";
+      const actionIcon = tabs.ownerDocument.createElement("span");
+      actionIcon.className = "session-lifecycle-icon";
+      actionIcon.textContent = terminate ? "■" : "×";
+      actionIcon.setAttribute("aria-hidden", "true");
+      const bell = tabs.ownerDocument.createElementNS("http://www.w3.org/2000/svg", "svg");
+      bell.classList.add("session-bell-icon");
+      bell.setAttribute("viewBox", "0 0 24 24");
+      bell.setAttribute("aria-hidden", "true");
+      const bellPath = tabs.ownerDocument.createElementNS("http://www.w3.org/2000/svg", "path");
+      bellPath.setAttribute("d", "M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4");
+      bell.append(bellPath);
+      remove.append(actionIcon, bell);
       remove.setAttribute("aria-label", `${terminate ? "Terminate" : "Remove"} ${label}`);
+      remove.title = `${terminate ? "Terminate" : "Remove"} ${label}`;
       remove.disabled = metadata.state === "creating" || metadata.state === "terminating";
       copy.append(name, detail);
       row.append(tab, copy, remove);

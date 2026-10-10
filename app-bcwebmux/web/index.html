@@ -129,7 +129,7 @@
     <header>
       <h1 id="notification-dialog-title">[ DESKTOP NOTIFICATIONS ]</h1>
     </header>
-    <p>Terminal applications may send OSC 9/777 system notifications while bcwebmux remains open. This is not background push messaging.</p>
+    <p>Receive notifications when an unfocused terminal enters BLOCKED, ERROR, or DONE, and when applications send OSC 9/777 notifications. Keep bcwebmux open; notifications do not use push messaging.</p>
     <button id="notification-dialog-later" type="button">NOT NOW</button>
     <button id="notification-dialog-enable" type="button">ENABLE</button>
   </dialog>
@@ -241,7 +241,7 @@
       </fieldset>
       <fieldset id="notification-settings">
         <legend>Desktop notifications</legend>
-        <p>OSC 9/777 notifications work while this page remains open and do not use push messaging.</p>
+        <p>Receive BLOCKED, ERROR, and DONE transitions from unfocused terminals, plus OSC 9/777 notifications. Keep this page open; notifications do not use push messaging.</p>
         <button id="notifications-enable" type="button">ENABLE NOTIFICATIONS</button>
         <output id="notifications-status" role="status"></output>
       </fieldset>

@@ -59,8 +59,7 @@ const enc_sources = [_][]const u8{
     "src/enc/webp_enc.c",
 };
 
-// The server never decodes WebP; tests do, to measure what browsers will see.
-// Unreferenced decoder objects are not linked into the server.
+// The worker decodes WebP sources before clamping image resolution.
 const dec_sources = [_][]const u8{
     "src/dec/alpha_dec.c",
     "src/dec/buffer_dec.c",

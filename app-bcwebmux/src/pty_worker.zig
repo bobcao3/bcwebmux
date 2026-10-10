@@ -2,6 +2,7 @@
 const std = @import("std");
 const manifest = @import("session_manifest.zig");
 const worker = @import("session_worker.zig");
+const GraphicsTranscoder = @import("GraphicsTranscoder.zig");
 const c = @cImport({
     @cDefine("_XOPEN_SOURCE", "600");
     @cDefine("_FORTIFY_SOURCE", "0");
@@ -52,7 +53,7 @@ fn workerTerminateSignalHandler(_: std.posix.SIG) callconv(.c) void {
     worker_terminate_signal.store(true, .release);
 }
 
-pub fn run(io: std.Io, shell: [:0]const u8, term: [:0]const u8, kitty_graphics: bool, cols: u16, rows: u16, limits: manifest.Limits) !void {
+pub fn run(io: std.Io, shell: [:0]const u8, term: [:0]const u8, kitty_graphics: bool, webp_quality: u8, cols: u16, rows: u16, limits: manifest.Limits) !void {
     if (shell.len == 0 or std.mem.indexOfScalar(u8, shell, 0) != null or !validTerm(term)) return error.InvalidArgument;
     // Resolve NSS/passwd data and own the path before fork. Never change the
     // worker's cwd: only the terminal child should start in the user's home.
@@ -127,6 +128,10 @@ pub fn run(io: std.Io, shell: [:0]const u8, term: [:0]const u8, kitty_graphics: 
     // std.Io has no PTY setup/readiness multiplexer; raw forkpty/ioctl/fcntl/poll
     // remain here while ordinary PTY read/write/close use File.
 
+    var transcoder = GraphicsTranscoder.init(std.heap.page_allocator, webp_quality);
+    defer transcoder.deinit();
+    const output: OutputSink = .{ .channel = channel, .transcoder = &transcoder };
+
     // Signal handler and PTY cleanup are installed before the parent may signal termination.
     const ready_packet = [_]u8{@intFromEnum(worker.Kind.ready)};
     if (!sendPacket(channel, &ready_packet)) return error.WorkerReadyFailed;
@@ -168,7 +173,7 @@ pub fn run(io: std.Io, shell: [:0]const u8, term: [:0]const u8, kitty_graphics: 
                 const kind = worker.decodeKind(data[0]) orelse continue;
                 switch (kind) {
                     .input => {
-                        if (!writeAll(io, channel, master_file, data[1..])) {
+                        if (!writeAll(io, channel, master_file, output, data[1..])) {
                             if (worker_terminate_signal.load(.acquire)) continue :worker_loop;
                             return;
                         }
@@ -176,7 +181,7 @@ pub fn run(io: std.Io, shell: [:0]const u8, term: [:0]const u8, kitty_graphics: 
                     .resize => if (data.len == 17) {
                         var resize_payload: [16]u8 = undefined;
                         std.mem.copyForwards(u8, &resize_payload, data[1..17]);
-                        if (!drainAvailableOutput(io, channel, master_file, &packet)) {
+                        if (!drainAvailableOutput(io, master_file, output, &packet)) {
                             if (worker_terminate_signal.load(.acquire)) continue :worker_loop;
                             return;
                         }
@@ -205,7 +210,7 @@ pub fn run(io: std.Io, shell: [:0]const u8, term: [:0]const u8, kitty_graphics: 
         }
 
         if (termination_started_ms == null and !drained_for_resize and (descriptors[1].revents & (c.POLLIN | c.POLLHUP | c.POLLERR)) != 0) {
-            if (!drainAvailableOutput(io, channel, master_file, &packet)) {
+            if (!drainAvailableOutput(io, master_file, output, &packet)) {
                 if (worker_terminate_signal.load(.acquire)) continue :worker_loop;
                 return;
             }
@@ -231,7 +236,8 @@ pub fn run(io: std.Io, shell: [:0]const u8, term: [:0]const u8, kitty_graphics: 
                 if (!sendPacket(channel, interrupted_packet[0..interrupted_packet_len])) return;
                 interrupted_packet_len = 0;
             }
-            _ = drainAvailableOutput(io, channel, master_file, &packet);
+            _ = drainAvailableOutput(io, master_file, output, &packet);
+            transcoder.finish(output) catch |err| std.log.err("worker graphics normalization failed: {t}", .{err});
             drainChannel(channel, &packet);
             var exit_packet: [5]u8 = undefined;
             exit_packet[0] = @intFromEnum(worker.Kind.exited);
@@ -272,7 +278,41 @@ fn sendPacket(fd: c_int, packet: []const u8) bool {
     }
 }
 
-fn writeAll(io: std.Io, channel: c_int, master: std.Io.File, bytes: []const u8) bool {
+const OutputSink = struct {
+    channel: c_int,
+    transcoder: *GraphicsTranscoder,
+
+    pub fn output(sink: OutputSink, bytes: []const u8) !void {
+        var packet: [packet_capacity]u8 = undefined;
+        if (bytes.len > packet.len - 1) {
+            packet[0] = @intFromEnum(worker.Kind.output_reserve);
+            std.mem.writeInt(u64, packet[1..9], @intCast(bytes.len), .little);
+            if (!sendPacket(sink.channel, packet[0..9])) return error.OutputClosed;
+        }
+        packet[0] = @intFromEnum(worker.Kind.output);
+        var remaining = bytes;
+        while (remaining.len != 0) {
+            const length = @min(remaining.len, packet.len - 1);
+            @memcpy(packet[1 .. length + 1], remaining[0..length]);
+            if (!sendPacket(sink.channel, packet[0 .. length + 1])) return error.OutputClosed;
+            remaining = remaining[length..];
+        }
+    }
+
+    pub fn replaceable(_: OutputSink) bool {
+        return true;
+    }
+
+    fn feed(sink: OutputSink, bytes: []const u8) bool {
+        sink.transcoder.feed(bytes, sink) catch |err| {
+            std.log.err("worker graphics normalization failed: {t}", .{err});
+            return false;
+        };
+        return true;
+    }
+};
+
+fn writeAll(io: std.Io, channel: c_int, master: std.Io.File, output: OutputSink, bytes: []const u8) bool {
     var output_packet: [packet_capacity]u8 = undefined;
     var remaining = bytes;
     while (remaining.len != 0) {
@@ -292,7 +332,7 @@ fn writeAll(io: std.Io, channel: c_int, master: std.Io.File, bytes: []const u8) 
                 }
                 if ((wait[1].revents & (c.POLLHUP | c.POLLERR | c.POLLNVAL)) != 0) return false;
                 if ((wait[0].revents & (c.POLLIN | c.POLLHUP | c.POLLERR)) != 0 and
-                    !drainAvailableOutput(io, channel, master, &output_packet)) return false;
+                    !drainAvailableOutput(io, master, output, &output_packet)) return false;
                 continue;
             },
             else => return false,
@@ -303,14 +343,13 @@ fn writeAll(io: std.Io, channel: c_int, master: std.Io.File, bytes: []const u8) 
     return true;
 }
 
-fn drainAvailableOutput(io: std.Io, channel: c_int, master: std.Io.File, packet: *[packet_capacity]u8) bool {
+fn drainAvailableOutput(io: std.Io, master: std.Io.File, output: OutputSink, packet: *[packet_capacity]u8) bool {
     var length: usize = 0;
     var waited_for_output = false;
     read_loop: while (true) {
         if (worker_terminate_signal.load(.acquire)) {
             if (length != 0) {
-                packet[0] = @intFromEnum(worker.Kind.output);
-                _ = sendPacket(channel, packet[0 .. length + 1]);
+                _ = output.feed(packet[1 .. length + 1]);
             }
             return false;
         }
@@ -330,8 +369,7 @@ fn drainAvailableOutput(io: std.Io, channel: c_int, master: std.Io.File, packet:
                         break;
                     }
                 }
-                packet[0] = @intFromEnum(worker.Kind.output);
-                if (!sendPacket(channel, packet[0 .. length + 1])) return false;
+                if (!output.feed(packet[1 .. length + 1])) return false;
                 return true;
             },
             error.EndOfStream => 0,
@@ -341,16 +379,14 @@ fn drainAvailableOutput(io: std.Io, channel: c_int, master: std.Io.File, packet:
         if (count > 0) {
             length += @intCast(count);
             if (length == packet.len - 1) {
-                packet[0] = @intFromEnum(worker.Kind.output);
-                if (!sendPacket(channel, packet[0 .. length + 1])) return false;
+                if (!output.feed(packet[1 .. length + 1])) return false;
                 length = 0;
                 waited_for_output = false;
             }
             continue :read_loop;
         } else {
             if (length != 0) {
-                packet[0] = @intFromEnum(worker.Kind.output);
-                if (!sendPacket(channel, packet[0 .. length + 1])) return false;
+                if (!output.feed(packet[1 .. length + 1])) return false;
             }
             return true;
         }

@@ -195,11 +195,11 @@
 }
 
 .session-row[data-program-status="blocked"] {
-  --session-status-color: var(--color-warning);
+  --session-status-color: oklch(from var(--color-warning) l calc(c * 1.3) h);
 }
 
 .session-row[data-program-status="error"] {
-  --session-status-color: var(--color-danger);
+  --session-status-color: oklch(from var(--color-danger) l calc(c * 1.3) h);
 }
 
 .session-row[data-program-status] {
@@ -288,6 +288,27 @@
   color: var(--color-muted);
   font-size: 17px;
   font-weight: 700;
+}
+
+.session-bell-icon {
+  display: none;
+  width: 20px;
+  height: 20px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  color: var(--color-warning);
+  pointer-events: none;
+}
+
+.session-row.is-unread-bell:not(:hover):not(:focus-within) .session-bell-icon {
+  display: block;
+}
+
+.session-row.is-unread-bell:not(:hover):not(:focus-within) .session-lifecycle-icon {
+  display: none;
 }
 
 .session-lifecycle:hover,

@@ -666,6 +666,7 @@ try {
   );
 
   await videoGoldens.finish();
+  await verifyStatusNotifications(actualFallbackId);
   const exceptions = page.events.filter((event) => event.method === "Runtime.exceptionThrown");
   assert.deepEqual(exceptions, [], JSON.stringify(exceptions));
   console.log(
@@ -917,6 +918,105 @@ async function verifyStatusAnimation(id, state, group) {
     0,
     "reduced motion must disable status animations",
   );
+}
+
+async function verifyStatusNotifications(id) {
+  const originalName = (await sessionMetadata(id)).name;
+  await evaluate(`(() => {
+    window.__notificationTest = {
+      originalNotification: window.Notification,
+      hiddenDescriptor: Object.getOwnPropertyDescriptor(document, 'hidden'),
+      focusDescriptor: Object.getOwnPropertyDescriptor(document, 'hasFocus'),
+      permission: 'granted', hidden: false, focused: true, sent: [],
+    };
+    const test = window.__notificationTest;
+    window.Notification = class extends EventTarget {
+      static get permission() { return test.permission; }
+      constructor(title, options) { super(); test.sent.push({ title, body: options.body }); }
+      close() {}
+    };
+    Object.defineProperty(document, 'hidden', { configurable: true, get: () => test.hidden });
+    Object.defineProperty(document, 'hasFocus', { configurable: true, value: () => test.focused });
+  })()`);
+  const report = async (body, state, progress = null) => {
+    const before = (await sessionMetadata(id)).eventSeq;
+    await writeActiveOsc(`7501;${body}`);
+    await waitFor(
+      async () => {
+        const value = await sessionMetadata(id);
+        return BigInt(value.eventSeq) > BigInt(before) &&
+          (value.programStatus?.state ?? null) === state &&
+          (value.programStatus?.progress ?? null) === progress
+          ? value
+          : null;
+      },
+      5000,
+      `notification report did not arrive: ${body}`,
+    );
+    await evaluate("window.bcwebmux.refreshSessions()");
+    await waitBrowser(
+      `(() => { const status = window.bcwebmux.sessions.find(s => s.id === ${JSON.stringify(id)}).programStatus; return (status?.state ?? null) === ${JSON.stringify(state)} && (status?.progress ?? null) === ${JSON.stringify(progress)}; })()`,
+      5000,
+      "notification report did not reach the browser",
+    );
+  };
+  const sent = () => evaluate("window.__notificationTest.sent");
+  try {
+    await report("state=clear", null);
+    await report("state=working", "working");
+    await report("state=blocked:kind=permission", "blocked");
+    assert.deepEqual(await sent(), [], "focused terminals must not notify");
+    await evaluate("window.__notificationTest.focused = false");
+    await evaluate("window.bcwebmux.refreshSessions()");
+    assert.deepEqual(await sent(), [], "losing focus must not replay a transition");
+    await report("state=error", "error");
+    await report("state=done", "done");
+    await report("state=done", "done");
+    await evaluate(
+      "window.bcwebmux.renameSession(window.bcwebmux.activeSessionId, 'Notify terminal')",
+    );
+    assert.deepEqual(
+      (await sent()).map((n) => n.body),
+      ["error", "done"],
+      "state transitions must notify once, even when progress or names change",
+    );
+    await evaluate(
+      "window.__notificationTest.hidden = true; window.__notificationTest.focused = true",
+    );
+    await report("state=working", "working");
+    await report("state=blocked:kind=question", "blocked");
+    assert.deepEqual((await sent()).at(-1), {
+      title: "Notify terminal",
+      body: "blocked · answer required",
+    });
+    await report("state=blocked:kind=auth:progress=40", "blocked", 40);
+    for (const permission of ["default", "denied"]) {
+      await evaluate(`window.__notificationTest.permission = ${JSON.stringify(permission)}`);
+      await report("state=working", "working");
+      await report("state=error", "error");
+    }
+    await evaluate("window.__notificationTest.permission = 'granted'");
+    await evaluate("window.bcwebmux.refreshSessions()");
+    assert.equal(
+      (await sent()).length,
+      3,
+      "permission changes must not replay suppressed transitions",
+    );
+    await report("state=clear", null);
+  } finally {
+    await evaluate(`(() => {
+      const test = window.__notificationTest;
+      window.Notification = test.originalNotification;
+      for (const [name, descriptor] of [['hidden', test.hiddenDescriptor], ['hasFocus', test.focusDescriptor]]) {
+        if (descriptor) Object.defineProperty(document, name, descriptor);
+        else delete document[name];
+      }
+      delete window.__notificationTest;
+    })()`);
+    await evaluate(
+      `window.bcwebmux.renameSession(${JSON.stringify(id)}, ${JSON.stringify(originalName)})`,
+    );
+  }
 }
 
 async function verifyProgramStatus(id) {

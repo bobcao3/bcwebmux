@@ -4,6 +4,9 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 function shellQuote(value) {
   return `'${value.replaceAll("'", "'\\''")}'`;
@@ -27,6 +30,7 @@ export async function runSessionWebSocketScenario(serverPath, deps) {
     workerPids,
   } = deps;
   const port = await freePort();
+  const fixtureDir = await mkdtemp(join(tmpdir(), "bcwebmux-image-retention-"));
   const base = `http://127.0.0.1:${port}`;
   const wsUrl = `ws://127.0.0.1:${port}/ws`;
   const server = spawn(
@@ -41,6 +45,8 @@ export async function runSessionWebSocketScenario(serverPath, deps) {
       base,
       "--max-sessions",
       "2",
+      "--webp-quality",
+      "0",
     ],
     {
       stdio: ["ignore", "pipe", "pipe"],
@@ -383,6 +389,57 @@ export async function runSessionWebSocketScenario(serverPath, deps) {
     });
     assert.equal(deleted.status, 204);
     assert.equal((await fetch(`${base}/api/sessions/${session.id}`)).status, 404);
+
+    const imageSessionResponse = await createSession(base, "image-retention-create");
+    assert.equal(imageSessionResponse.status, 201);
+    session = await imageSessionResponse.json();
+    const stalled = await new RawClient(wsUrl, base, "image-retention-stalled").connect();
+    clients.push(stalled);
+    const imageAttachment = await stalled.attach(session, session.generation);
+    await stalled.claim(imageAttachment);
+    stalled.ack = () => {};
+    const done = join(fixtureDir, "done");
+    const producer = join(fixtureDir, "images.py");
+    await writeFile(
+      producer,
+      `import base64, os
+payload = base64.b64encode(bytes([30, 40, 200, 255]) * (512 * 1024))
+def emit(data):
+    while data:
+        count = os.write(1, data)
+        data = data[count:]
+for image in range(1, 7):
+    for offset in range(0, len(payload), 4096):
+        more = offset + 4096 < len(payload)
+        control = (f'a=t,f=32,s=512,v=1024,i={image},q=2,' if offset == 0 else '') + f'm={int(more)}'
+        emit(b'\\x1b_G' + control.encode() + b';' + payload[offset:offset + 4096] + b'\\x1b\\\\')
+with open(${JSON.stringify(done)}, 'w') as completed:
+    completed.write('done')
+`,
+    );
+    assert.equal(await stalled.input(imageAttachment, `python3 ${shellQuote(producer)}\n`), 0);
+    await waitFor(
+      async () => (await readFile(done, "utf8").catch(() => "")) === "done",
+      10000,
+      "image producer did not complete",
+    );
+    const retained = await waitSession(
+      base,
+      session.id,
+      (value) => value.outputOffset > 16 * 1024 * 1024 && value.attachments === 0,
+      "image uploads did not reclaim the stalled attachment's journal",
+    );
+    assert.equal(retained.state, "running");
+    assert.equal(retained.exitStatus, null);
+    const recovered = await new RawClient(wsUrl, base, "image-retention-recovered").connect();
+    clients.push(recovered);
+    const recoveredAttachment = await recovered.attach(session, session.generation);
+    await recovered.claim(recoveredAttachment);
+    assert.equal(
+      await recovered.input(recoveredAttachment, "printf 'IMAGE-RETENTION-'\"RECOVERED\\n\"\n"),
+      0,
+    );
+    await recovered.waitOutput(recoveredAttachment, "IMAGE-RETENTION-RECOVERED");
   } finally {
     if (session && server.exitCode === null) {
       await fetch(`${base}/api/sessions/${session.id}/terminate`, {
@@ -398,6 +455,7 @@ export async function runSessionWebSocketScenario(serverPath, deps) {
     }
     for (const client of clients.reverse()) await client.close();
     await stopServer(server);
+    await rm(fixtureDir, { recursive: true, force: true });
     if (workerPid)
       await waitFor(
         async () => !(await processState(workerPid)),

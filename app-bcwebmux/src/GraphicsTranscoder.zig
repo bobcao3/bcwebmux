@@ -1,20 +1,9 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Cheng Cao
 
-//! Re-encodes Kitty graphics uploads in PTY output as WebP before the session
-//! journals them, so the mirror, every browser and checkpoint replay all see
-//! one smaller stream. Images are coded lossily at the configured quality, or
-//! losslessly when that is smaller, as for many plots and screenshots.
-//!
-//! A rewritten upload is a PNG-format (f=100) transmission whose payload is
-//! WebP, which terminal-graphics accepts and browsers decode natively. Only a
-//! whole upload is rewritten: its APCs must be printable ASCII ended by ST,
-//! follow one another with nothing between them, and spell out canonical
-//! control keys; the image must be one the mirror would accept; the mirror
-//! must have no upload in progress; and WebP must make it markedly smaller.
-//! Everything else passes through byte for byte. Because the rewrite keeps
-//! the image's identity, placement and reply settings, the mirror replies to
-//! it exactly as it would have to the original.
+//! Normalizes direct Kitty uploads before the journal. Replacements carry
+//! WebP under f=100. Rejected uploads become bounded invalid-image commands;
+//! the downstream adapter supplies errors with the original IDs and quiet mode.
 
 const std = @import("std");
 const ghostty = @import("ghostty-vt");
@@ -38,8 +27,15 @@ const min_source_bytes = 16 * 1024;
 const max_size_ratio = 0.75;
 /// Base64 payload bytes per rewritten APC, a multiple of 4 within the mirror's limit.
 const chunk_bytes = 512 * 1024;
-/// Bytes of one APC worth holding; Ghostty drops anything larger.
-const max_apc_bytes = Graphics.apc_limit + 4096;
+// The worker leaves room for control keys and terminators in the mirror continuation.
+const max_apc_bytes = Graphics.apc_limit - 4096;
+const source_limit = 128 * 1024 * 1024;
+const decoded_limit = 128 * 1024 * 1024;
+const source_side_limit = 16384;
+const target_side = 2048;
+const target_pixels = 2 * 1024 * 1024;
+const original_limit = 12 * 1024 * 1024;
+const control_limit = 4096;
 /// Buffers above this are freed rather than kept between uploads.
 const retained_bytes = 256 * 1024;
 
@@ -47,13 +43,15 @@ const esc = 0x1b;
 
 alloc: std.mem.Allocator,
 quality: f32,
-/// Original bytes not yet released: an escape prefix split across inputs, or
-/// the APCs of an upload that is still arriving.
+/// The scanner holds one escape prefix or one APC.
 held: std.ArrayListUnmanaged(u8) = .empty,
 state: State = .ground,
-/// Where the APC being captured begins in `held`.
-apc_start: usize = 0,
 upload: ?Upload = null,
+original: std.ArrayListUnmanaged(u8) = .empty,
+control_bytes: std.ArrayListUnmanaged(u8) = .empty,
+rejected: bool = false,
+original_overflow: bool = false,
+drop_more: bool = false,
 /// The decoded payload of `upload` so far.
 payload: std.ArrayListUnmanaged(u8) = .empty,
 replacement: std.ArrayListUnmanaged(u8) = .empty,
@@ -70,12 +68,13 @@ const State = enum {
     apc,
     /// After the ESC that ended `apc`.
     apc_end,
-    /// Inside an APC that passes through as it arrives.
+    /// The scanner discards the rejected APC through its terminator.
     apc_skip,
+    apc_drop_end,
 };
 
 const Upload = struct {
-    /// The first APC's control keys, as a range of `held`.
+    /// The first APC's control keys occupy `control_bytes`.
     control_start: usize,
     control_len: usize,
     control: std.meta.Tag(gfx.Command.Control),
@@ -84,14 +83,16 @@ const Upload = struct {
     quiet: gfx.Command.Quiet,
 };
 
-/// `quality` is libwebp's lossy quality, from 1 to 100.
+/// Zero disables optional bandwidth transcoding, but retains normalization.
 pub fn init(alloc: std.mem.Allocator, quality: u8) Self {
-    std.debug.assert(quality >= 1 and quality <= 100);
+    std.debug.assert(quality <= 100);
     return .{ .alloc = alloc, .quality = @floatFromInt(quality) };
 }
 
 pub fn deinit(self: *Self) void {
     self.held.deinit(self.alloc);
+    self.original.deinit(self.alloc);
+    self.control_bytes.deinit(self.alloc);
     self.payload.deinit(self.alloc);
     self.replacement.deinit(self.alloc);
     self.released.deinit(self.alloc);
@@ -100,12 +101,12 @@ pub fn deinit(self: *Self) void {
 
 /// Scans the next PTY output and passes everything it releases, in order, to
 /// `sink.output(bytes)`. Before replacing an upload it asks
-/// `sink.replaceable()`, which must report whether the mirror is between
-/// uploads. Bytes that may begin or continue an upload are held until a later
-/// call decides them.
+/// `sink.replaceable()`, which must report whether the downstream consumer is
+/// between uploads. A worker can return true when the worker owns the entire
+/// PTY stream, because the transcoder never releases incomplete uploads.
 pub fn feed(self: *Self, input: []const u8, sink: anytype) !void {
     // Most output cannot begin a Kitty APC and passes straight through.
-    if (self.state == .ground and self.held.items.len == 0 and input.len != 0 and
+    if (self.state == .ground and self.upload == null and self.held.items.len == 0 and input.len != 0 and
         input[input.len - 1] != esc and std.mem.indexOf(u8, input, "\x1b_") == null) return sink.output(input);
     var index: usize = 0;
     while (index < input.len) {
@@ -114,7 +115,7 @@ pub fn feed(self: *Self, input: []const u8, sink: anytype) !void {
             .ground => {
                 const end = std.mem.indexOfScalar(u8, rest, esc) orelse rest.len;
                 if (end != 0) {
-                    // Output between an upload's APCs leaves it unchanged.
+                    if (self.upload != null) try self.reject(sink);
                     try self.release(sink);
                     try self.emit(rest[0..end]);
                 }
@@ -128,6 +129,7 @@ pub fn feed(self: *Self, input: []const u8, sink: anytype) !void {
                 const expected: u8 = if (self.state == .escape) '_' else 'G';
                 if (rest[0] != expected) {
                     // Not a Kitty APC: rescan this byte as ordinary output.
+                    if (self.upload != null) try self.reject(sink);
                     try self.release(sink);
                     self.state = .ground;
                     continue;
@@ -137,18 +139,16 @@ pub fn feed(self: *Self, input: []const u8, sink: anytype) !void {
                 if (self.state == .escape) {
                     self.state = .apc_intro;
                 } else {
-                    self.apc_start = self.held.items.len - 3;
                     self.state = .apc;
                 }
             },
             .apc => {
-                // Ghostty ends an APC at any ESC; CAN, SUB and C1 bytes abort or
-                // end it in ways not worth modelling, so such APCs pass through.
-                const end = std.mem.indexOfScalar(u8, rest, esc) orelse rest.len;
+                const end = apcBoundary(rest);
                 const content = rest[0..end];
-                if (!printable(content) or self.held.items.len - self.apc_start + content.len > max_apc_bytes) {
-                    try self.release(sink);
-                    try self.emit(content);
+                if (!printable(content) or self.held.items.len + content.len > max_apc_bytes) {
+                    const room = @min(content.len, control_limit - @min(control_limit, self.held.items.len));
+                    try self.held.appendSlice(self.alloc, content[0..room]);
+                    try self.dropApc(sink);
                     self.state = .apc_skip;
                     index += end;
                     continue;
@@ -156,17 +156,21 @@ pub fn feed(self: *Self, input: []const u8, sink: anytype) !void {
                 try self.held.appendSlice(self.alloc, content);
                 index += end;
                 if (end != rest.len) {
-                    try self.held.append(self.alloc, esc);
-                    self.state = .apc_end;
+                    if (rest[end] == esc) {
+                        try self.held.append(self.alloc, esc);
+                        self.state = .apc_end;
+                    } else {
+                        try self.dropApc(sink);
+                        self.held.clearRetainingCapacity();
+                        self.state = .ground;
+                    }
                     index += 1;
                 }
             },
             .apc_end => {
                 if (rest[0] != '\\') {
-                    // Ghostty ran the APC at its ESC, which also begins the next
-                    // sequence: pass the APC through and rescan from that ESC.
-                    self.held.items.len -= 1;
-                    try self.release(sink);
+                    try self.dropApc(sink);
+                    self.held.clearRetainingCapacity();
                     try self.held.append(self.alloc, esc);
                     self.state = .escape;
                     continue;
@@ -177,13 +181,21 @@ pub fn feed(self: *Self, input: []const u8, sink: anytype) !void {
                 try self.complete(sink);
             },
             .apc_skip => {
-                const end = std.mem.indexOfScalar(u8, rest, esc) orelse rest.len;
-                if (end != 0) try self.emit(rest[0..end]);
+                const end = apcBoundary(rest);
                 index += end;
                 if (end != rest.len) {
+                    self.held.clearRetainingCapacity();
+                    self.state = if (rest[end] == esc) .apc_drop_end else .ground;
+                    index += 1;
+                }
+            },
+            .apc_drop_end => {
+                self.state = .ground;
+                if (rest[0] == '\\') {
+                    index += 1;
+                } else {
                     try self.held.append(self.alloc, esc);
                     self.state = .escape;
-                    index += 1;
                 }
             },
         }
@@ -191,9 +203,15 @@ pub fn feed(self: *Self, input: []const u8, sink: anytype) !void {
     try self.flush(sink);
 }
 
-/// Releases every held byte unchanged, as when the PTY closes.
+/// Rejects incomplete uploads when the PTY closes.
 pub fn finish(self: *Self, sink: anytype) !void {
+    if (self.upload != null or self.state == .apc or self.state == .apc_end) {
+        try self.dropApc(sink);
+        self.held.clearRetainingCapacity();
+    }
+    if (self.upload != null) try self.sendError(sink);
     try self.release(sink);
+    self.resetUpload();
     try self.flush(sink);
     self.state = .ground;
 }
@@ -213,6 +231,14 @@ fn printable(bytes: []const u8) bool {
     return true;
 }
 
+fn apcBoundary(bytes: []const u8) usize {
+    for (bytes, 0..) |byte, index| switch (byte) {
+        esc, 0x18, 0x1a, 0x9c => return index,
+        else => {},
+    };
+    return bytes.len;
+}
+
 /// Whether Ghostty reads `control` as the comma-separated `key=value` pairs it
 /// appears to be, so that pairs can be dropped and added as text. Ghostty
 /// keeps one-letter keys and values of at most 11 bytes.
@@ -226,35 +252,40 @@ fn canonical(control: []const u8) bool {
 }
 
 /// Handles the APC that ends `held`, which ended with ST.
-fn complete(self: *Self, sink: anytype) !void {
-    const content = self.held.items[self.apc_start + 3 .. self.held.items.len - 2];
+fn complete(self: *Self, sink: anytype) anyerror!void {
+    defer self.held.clearRetainingCapacity();
+    const content = self.held.items[3 .. self.held.items.len - 2];
+    const control = content[0 .. std.mem.indexOfScalar(u8, content, ';') orelse content.len];
+    if (control.len > control_limit) return self.dropApc(sink);
     var parser = gfx.CommandParser.init(self.alloc, Graphics.apc_limit);
     defer parser.deinit();
-    parser.feedSlice(content) catch return self.release(sink);
-    var command = parser.complete(self.alloc) catch return self.release(sink);
+    parser.feedSlice(if (self.rejected) control else content) catch return self.dropApc(sink);
+    var command = parser.complete(self.alloc) catch return self.dropApc(sink);
     defer command.deinit(self.alloc);
-
     if (self.upload) |*upload| {
-        // Graphics continues the upload with any transmission; other commands
-        // could act on it, so they end it unchanged.
         const t = switch (command.control) {
             .transmit => |value| value,
-            else => return self.release(sink),
+            else => {
+                try self.reject(sink);
+                try self.sendError(sink);
+                self.resetUpload();
+                return self.complete(sink);
+            },
         };
-        if (command.data.len > Graphics.upload_limit - self.payload.items.len) return self.release(sink);
-        try self.payload.appendSlice(self.alloc, command.data);
         if (command.quiet != .no) upload.quiet = command.quiet;
+        if (!self.rejected) {
+            if (command.data.len > source_limit - self.payload.items.len) {
+                try self.reject(sink);
+            } else try self.payload.appendSlice(self.alloc, command.data);
+        }
+        try self.saveOriginal();
         if (!t.more_chunks) try self.offer(sink);
         return;
     }
-
-    if (command.control == .query) return self.release(sink);
     const t = command.transmission() orelse return self.release(sink);
-    const control = content[0 .. std.mem.indexOfScalar(u8, content, ';') orelse content.len];
-    if (t.medium != .direct or t.format_unknown or (t.image_id != 0 and t.image_number != 0) or
-        command.data.len > Graphics.upload_limit or !canonical(control)) return self.release(sink);
+    try self.control_bytes.appendSlice(self.alloc, control);
     self.upload = .{
-        .control_start = self.apc_start + 3,
+        .control_start = 0,
         .control_len = control.len,
         .control = command.control,
         .transmission = t,
@@ -262,68 +293,178 @@ fn complete(self: *Self, sink: anytype) !void {
         .quiet = command.quiet,
     };
     try self.payload.appendSlice(self.alloc, command.data);
+    try self.saveOriginal();
+    if (t.medium != .direct or t.format_unknown or (t.image_id != 0 and t.image_number != 0) or !canonical(control) or
+        (command.control == .query and t.more_chunks)) try self.reject(sink);
     if (!t.more_chunks) try self.offer(sink);
+}
+
+fn saveOriginal(self: *Self) !void {
+    if (self.original_overflow or self.rejected) return;
+    if (self.held.items.len > original_limit - self.original.items.len) {
+        self.original_overflow = true;
+        self.original.clearAndFree(self.alloc);
+    } else try self.original.appendSlice(self.alloc, self.held.items);
+}
+
+fn dropApc(self: *Self, sink: anytype) !void {
+    const content = if (self.held.items.len >= 3) self.held.items[3..] else "";
+    const control = content[0..@min(control_limit, std.mem.indexOfScalar(u8, content, ';') orelse content.len)];
+    var cmd = gfx.CommandParser.parseString(self.alloc, control) catch {
+        self.drop_more = true;
+        return self.reject(sink);
+    };
+    defer cmd.deinit(self.alloc);
+    const t = cmd.transmission();
+    self.drop_more = if (t) |value| value.more_chunks else true;
+    if (self.upload == null and t != null) {
+        try self.control_bytes.appendSlice(self.alloc, control);
+        self.upload = .{ .control_start = 0, .control_len = control.len, .control = std.meta.activeTag(cmd.control), .transmission = t.?, .display = cmd.display(), .quiet = cmd.quiet };
+    }
+    if (self.upload) |*upload| if (cmd.quiet != .no) {
+        upload.quiet = cmd.quiet;
+    };
+    try self.reject(sink);
+    if (!self.drop_more) {
+        try self.sendError(sink);
+        self.resetUpload();
+    }
+}
+
+fn reject(self: *Self, sink: anytype) !void {
+    _ = sink;
+    if (self.rejected) return;
+    if (self.upload == null) self.upload = .{ .control_start = 0, .control_len = 0, .control = .transmit, .transmission = .{}, .display = null, .quiet = .no };
+    self.rejected = true;
+    self.payload.clearAndFree(self.alloc);
+    self.original.clearAndFree(self.alloc);
+}
+
+fn sendError(self: *Self, sink: anytype) !void {
+    try self.flush(sink);
+    const t = if (self.upload) |u| u.transmission else Graphics.Transmission{};
+    const quiet: u8 = if (self.upload) |u| @intFromEnum(u.quiet) else 0;
+    var buffer: [256]u8 = undefined;
+    const action: u8 = if (self.upload) |u| switch (u.control) {
+        .query => 'q',
+        .transmit_and_display => 'T',
+        else => 't',
+    } else 't';
+    const error_apc = try std.fmt.bufPrint(&buffer, "\x1b_Ga={c},f=32,s=1,v=1,i={d},I={d},p={d},q={d};\x1b\\", .{ action, t.image_id, t.image_number, t.placement_id, quiet });
+    try sink.output(error_apc);
 }
 
 /// Releases a complete upload, rewritten when that is worthwhile.
 fn offer(self: *Self, sink: anytype) !void {
-    defer self.reset();
+    defer self.resetUpload();
+    if (self.rejected) return self.sendError(sink);
     // The mirror must have seen everything before the upload.
     try self.flush(sink);
-    if (sink.replaceable()) {
-        if (self.rewrite()) |replacement| return sink.output(replacement);
+    if (!sink.replaceable()) {
+        try self.reject(sink);
+        return self.sendError(sink);
     }
-    try sink.output(self.held.items);
+    const replacement = self.rewrite() catch {
+        try self.reject(sink);
+        return self.sendError(sink);
+    };
+    if (replacement) |bytes| return sink.output(bytes);
+    try sink.output(self.original.items);
 }
 
-/// Passes held bytes through unchanged and forgets any upload in progress.
+/// Releases a non-image escape prefix or command.
 fn release(self: *Self, sink: anytype) !void {
-    defer self.reset();
+    defer self.held.clearRetainingCapacity();
     if (self.held.items.len <= retained_bytes) return self.emit(self.held.items);
     try self.flush(sink);
     try sink.output(self.held.items);
 }
 
-fn reset(self: *Self) void {
-    for ([_]*std.ArrayListUnmanaged(u8){ &self.held, &self.payload, &self.replacement }) |buffer| {
+fn resetUpload(self: *Self) void {
+    for ([_]*std.ArrayListUnmanaged(u8){ &self.original, &self.control_bytes, &self.payload, &self.replacement }) |buffer| {
         if (buffer.capacity > retained_bytes) buffer.clearAndFree(self.alloc) else buffer.clearRetainingCapacity();
     }
     self.upload = null;
+    self.rejected = false;
+    self.original_overflow = false;
 }
 
 /// Encodes the held upload as WebP APCs, or returns null to keep the original.
-fn rewrite(self: *Self) ?[]const u8 {
+fn rewrite(self: *Self) !?[]const u8 {
     const upload = self.upload.?;
     const payload = self.payload.items;
-    if (payload.len < min_source_bytes) return null;
     const t = upload.transmission;
-    const source = Graphics.inspect(t, payload) catch return null;
-    // WebP decodes to RGBA, which must fit the per-image budget too.
-    if (source.codec == .webp or @as(usize, source.width) * source.height * 4 > Graphics.image_limit) return null;
-    var writer = self.encode(t, payload, source) catch |err| {
-        log.debug("kept {d}x{d} upload: {t}", .{ source.width, source.height, err });
-        return null;
+    const source = try self.inspectSource(t, payload);
+    const resized = source.width > target_side or source.height > target_side or
+        @as(usize, source.width) * source.height > target_pixels;
+    if (resized) if (upload.display) |display| {
+        if (display.x != 0 or display.y != 0 or display.width != 0 or display.height != 0)
+            return error.UnsupportedResizedCrop;
     };
+    const required = resized or payload.len > Graphics.upload_limit or self.original_overflow;
+    const image = try self.decode(t, payload, source);
+    defer image.deinit(self.alloc);
+    if (upload.control == .query) {
+        if (required) return error.TooLarge;
+        return null;
+    }
+    if (!required and (self.quality == 0 or payload.len < min_source_bytes or source.codec == .webp)) return null;
+    var writer = try self.encode(image);
     defer webp.WebPMemoryWriterClear(&writer);
     const encoded = writer.mem[0..writer.size];
-    if (@as(f64, @floatFromInt(encoded.len)) > @as(f64, @floatFromInt(payload.len)) * max_size_ratio) return null;
+    if (encoded.len > Graphics.upload_limit) return error.TooLarge;
+    if (!required and @as(f64, @floatFromInt(encoded.len)) > @as(f64, @floatFromInt(payload.len)) * max_size_ratio) return null;
 
     var webp_transmission = t;
     webp_transmission.format = .png;
     webp_transmission.compression = .none;
-    const check = Graphics.inspect(webp_transmission, encoded) catch return null;
-    if (check.codec != .webp or check.width != source.width or check.height != source.height) return null;
+    const check = try Graphics.inspect(webp_transmission, encoded);
+    if (check.codec != .webp or check.width > target_side or check.height > target_side or
+        @as(usize, check.width) * check.height > target_pixels) return error.InvalidData;
 
-    self.writeApcs(encoded) catch return null;
-    if (!self.preserves(upload)) return null;
+    try self.writeApcs(encoded);
+    if (!self.preserves(upload)) return error.InvalidData;
     log.debug("rewrote {d}x{d} upload as WebP: {d} -> {d} bytes", .{ source.width, source.height, payload.len, encoded.len });
     return self.replacement.items;
 }
 
-/// Encodes the upload's pixels lossily, or losslessly when that is smaller.
-fn encode(self: *Self, t: Graphics.Transmission, payload: []const u8, source: Graphics.Inspection) !webp.WebPMemoryWriter {
+fn inspectSource(self: *Self, t: Graphics.Transmission, payload: []const u8) !Graphics.Inspection {
+    var width = t.width;
+    var height = t.height;
+    var codec: Graphics.Codec = .raw;
+    if (t.format == .png) {
+        if (t.compression == .zlib_deflate and (t.size == 0 or t.size > source_limit)) return error.TooLarge;
+        const inflated = if (t.compression == .zlib_deflate) try inflate(self.alloc, payload, t.size) else null;
+        defer if (inflated) |bytes| self.alloc.free(bytes);
+        const bytes = inflated orelse payload;
+        if (bytes.len >= 33 and std.mem.eql(u8, bytes[0..8], "\x89PNG\r\n\x1a\n")) {
+            if (std.mem.readInt(u32, bytes[8..12], .big) != 13 or !std.mem.eql(u8, bytes[12..16], "IHDR") or
+                std.hash.crc.Crc32.hash(bytes[12..29]) != std.mem.readInt(u32, bytes[29..33], .big)) return error.InvalidData;
+            width = std.mem.readInt(u32, bytes[16..20], .big);
+            height = std.mem.readInt(u32, bytes[20..24], .big);
+            codec = .png;
+        } else {
+            if (bytes.len < 12 or !std.mem.eql(u8, bytes[0..4], "RIFF") or !std.mem.eql(u8, bytes[8..12], "WEBP") or
+                @as(usize, std.mem.readInt(u32, bytes[4..8], .little)) + 8 != bytes.len) return error.InvalidData;
+            var features: webp.WebPBitstreamFeatures = undefined;
+            if (webp.WebPGetFeatures(bytes.ptr, bytes.len, &features) != webp.VP8_STATUS_OK or features.has_animation != 0 or
+                features.width <= 0 or features.height <= 0) return error.InvalidData;
+            width = @intCast(features.width);
+            height = @intCast(features.height);
+            codec = .webp;
+        }
+    } else if (t.format != .rgb and t.format != .rgba) return error.InvalidData;
+    if (width == 0 or height == 0 or width > source_side_limit or height > source_side_limit) return error.TooLarge;
+    const rgba_bytes = @as(usize, width) * height * 4;
+    if (rgba_bytes > decoded_limit) return error.TooLarge;
+    const decoded_bytes = @as(usize, width) * height * (if (t.format == .rgb) @as(usize, 3) else 4);
+    if (codec == .raw and t.compression == .none and payload.len != decoded_bytes) return error.InvalidData;
+    return .{ .width = width, .height = height, .decoded_bytes = decoded_bytes, .codec = codec };
+}
+
+fn decode(self: *Self, t: Graphics.Transmission, payload: []const u8, source: Graphics.Inspection) !Pixels {
     var owned: ?[]u8 = null;
-    defer if (owned) |bytes| self.alloc.free(bytes);
+    errdefer if (owned) |bytes| self.alloc.free(bytes);
     var channels: u32 = 4;
     const pixels: []const u8 = switch (t.format) {
         .rgb, .rgba => raw: {
@@ -335,16 +476,26 @@ fn encode(self: *Self, t: Graphics.Transmission, payload: []const u8, source: Gr
         .png => png: {
             const inflated = if (t.compression == .zlib_deflate) try inflate(self.alloc, payload, t.size) else null;
             defer if (inflated) |bytes| self.alloc.free(bytes);
-            const image = try wuffs.png.decode(self.alloc, inflated orelse payload);
+            const encoded = inflated orelse payload;
+            if (source.codec == .webp) {
+                owned = try self.alloc.alloc(u8, source.decoded_bytes);
+                if (webp.WebPDecodeRGBAInto(encoded.ptr, encoded.len, owned.?.ptr, owned.?.len, @intCast(source.width * 4)) == null)
+                    return error.InvalidData;
+                break :png owned.?;
+            }
+            const image = try wuffs.png.decode(self.alloc, encoded);
             owned = image.data;
             if (image.width != source.width or image.height != source.height) return error.InvalidData;
             break :png image.data;
         },
         .gray, .gray_alpha => return error.InvalidData,
     };
-    const image: Pixels = .{ .bytes = pixels, .width = source.width, .height = source.height, .channels = channels };
+    const image: Pixels = .{ .bytes = pixels, .width = source.width, .height = source.height, .channels = channels, .owned = owned != null };
     if (pixels.len != @as(usize, image.width) * image.height * channels) return error.InvalidData;
+    return image;
+}
 
+fn encode(self: *Self, image: Pixels) !webp.WebPMemoryWriter {
     var best = try self.compress(image, .lossy);
     errdefer webp.WebPMemoryWriterClear(&best);
     // Plots, charts and screenshots often compress smaller losslessly, and
@@ -362,6 +513,11 @@ const Pixels = struct {
     width: u32,
     height: u32,
     channels: u32,
+    owned: bool = false,
+
+    fn deinit(self: Pixels, alloc: std.mem.Allocator) void {
+        if (self.owned) alloc.free(self.bytes);
+    }
 };
 
 /// Distinct colors up to which an image is also tried losslessly.
@@ -391,7 +547,7 @@ fn compress(self: *Self, image: Pixels, mode: enum { lossy, lossless }) !webp.We
     var config: webp.WebPConfig = undefined;
     switch (mode) {
         .lossy => {
-            if (webp.WebPConfigPreset(&config, webp.WEBP_PRESET_DEFAULT, self.quality) == 0) return error.EncoderUnavailable;
+            if (webp.WebPConfigPreset(&config, webp.WEBP_PRESET_DEFAULT, if (self.quality == 0) 90 else self.quality) == 0) return error.EncoderUnavailable;
             // Sharp RGB-to-YUV keeps chroma edges, such as colored text and
             // plot lines, crisp. Alpha stays lossless by default. Slower
             // methods add little and can take seconds on alpha.
@@ -417,6 +573,12 @@ fn compress(self: *Self, image: Pixels, mode: enum { lossy, lossless }) !webp.We
     else
         webp.WebPPictureImportRGBA(&picture, image.bytes.ptr, stride);
     if (imported == 0) return error.OutOfMemory;
+    const scale = @min(@as(f64, 1), @min(@as(f64, target_side) / @as(f64, @floatFromInt(@max(image.width, image.height))), @sqrt(@as(f64, target_pixels) / @as(f64, @floatFromInt(@as(usize, image.width) * image.height)))));
+    if (scale < 1) {
+        const width: c_int = @intFromFloat(@max(1, @floor(@as(f64, @floatFromInt(image.width)) * scale)));
+        const height: c_int = @intFromFloat(@max(1, @floor(@as(f64, @floatFromInt(image.height)) * scale)));
+        if (webp.WebPPictureRescale(&picture, width, height) == 0) return error.ResizeFailed;
+    }
     var writer: webp.WebPMemoryWriter = undefined;
     webp.WebPMemoryWriterInit(&writer);
     errdefer webp.WebPMemoryWriterClear(&writer);
@@ -439,7 +601,7 @@ fn inflate(alloc: std.mem.Allocator, bytes: []const u8, len: usize) ![]u8 {
 /// Writes `replacement` as the upload's APCs carrying `encoded`.
 fn writeApcs(self: *Self, encoded: []const u8) !void {
     const upload = self.upload.?;
-    const control = self.held.items[upload.control_start..][0..upload.control_len];
+    const control = self.control_bytes.items[upload.control_start..][0..upload.control_len];
     const encoder = std.base64.standard.Encoder;
     const raw_chunk = chunk_bytes / 4 * 3;
     const chunks = @max(1, std.math.divCeil(usize, encoded.len, raw_chunk) catch unreachable);
@@ -755,14 +917,40 @@ fn expectUnchanged(input: []const u8, idle: bool) !void {
     try testing.expectEqualSlices(u8, input, recorder.bytes.items);
 }
 
+fn expectRejected(input: []const u8, idle: bool) !void {
+    var transcoder = init(testing.allocator, 90);
+    defer transcoder.deinit();
+    var recorder: Recorder = .{ .idle = idle };
+    defer recorder.deinit();
+    try feedSplit(&transcoder, input, &recorder, 137);
+    try transcoder.finish(&recorder);
+    try testing.expect(recorder.bytes.items.len < 1024);
+    var mirror: Mirror = undefined;
+    try mirror.init();
+    defer mirror.deinit();
+    mirror.stream.nextSlice(recorder.bytes.items);
+    try testing.expectEqual(@as(usize, 0), mirror.terminal.screens.active.kitty_images.images.count());
+    try testing.expect(!mirror.graphics.fatal);
+    try testing.expect(mirror.graphics.safeToCapture());
+    recorder.idle = true;
+    recorder.bytes.clearRetainingCapacity();
+    try transcoder.feed("\x1b_Ga=t,f=32,s=1,v=1,i=99;AQID/w==\x1b\\\x1b_Ga=q,f=24,s=1,v=1,i=98;AAAA\x1b\\R", &recorder);
+    try transcoder.finish(&recorder);
+    mirror.stream.nextSlice(recorder.bytes.items);
+    const image = mirror.terminal.screens.active.kitty_images.imageById(99).?;
+    try testing.expectEqualStrings("\x01\x02\x03\xff", mirror.graphics.source(mirror.terminal.screens.active, 99, image.generation).?.bytes);
+    try testing.expect(std.mem.indexOf(u8, mirror.replies.items, "i=98;OK") != null);
+    const cursor = mirror.terminal.screens.active.cursor;
+    try testing.expectEqual(@as(u21, 'R'), mirror.terminal.screens.active.pages.getCell(.{ .active = .{ .x = cursor.x - 1, .y = cursor.y } }).?.cell.codepoint());
+}
+
 test "transcoder passes other output through byte for byte" {
     var prng = std.Random.DefaultPrng.init(0x5eed);
     const random = prng.random();
     const fragments = [_][]const u8{
-        "text ",     "\x1b[31m",            "\x1b",           "\x1b_",       "\x1b_G",       "\x1b\\",
-        "\x1b_Ga=q", "\x1b_Ga=T,f=32;AAAA", "\x1b_Gm=1;QQ==", "\x18",        "\x07",         "\xe2\x94\x80",
-        "\x9c",      "\x1bP1$r\x1b\\",      "\x1b]0;t\x07",   "\x1b_Xother", ";AAAA",        "\x1b_Ga=p,i=1",
-        "\x1b\x1b",  "\r\n",                "\x1b_G\x00",     "\x1b_G;",     "\x1b_Gf=24,s", "=1\x1b\\",
+        "text ",    "\x1b[31m",       "\x1b",         "\x1b_",       "\x1b\\", "\x18",                "\x07",     "\xe2\x94\x80",
+        "\x9c",     "\x1bP1$r\x1b\\", "\x1b]0;t\x07", "\x1b_Xother", ";AAAA",  "\x1b_Ga=p,i=1\x1b\\", "\x1b\x1b", "\r\n",
+        "=1\x1b\\",
     };
     for (0..200) |round| {
         var input: std.ArrayListUnmanaged(u8) = .empty;
@@ -860,28 +1048,28 @@ test "transcoder rewrites zlib-compressed RGB uploads" {
     try testing.expect(psnr(rgba, decoded) > 40);
 }
 
-test "transcoder keeps uploads it cannot rewrite exactly" {
+test "transcoder rejects irregular uploads and preserves bounded originals" {
     const pixels = try smoothImage(128, 64, 4);
     defer testing.allocator.free(pixels);
     const valid = try kittyUpload("a=T,f=32,s=128,v=64,i=1", pixels, 4096);
     defer testing.allocator.free(valid);
 
     // The mirror is still assembling an earlier upload this one would join.
-    try expectUnchanged(valid, false);
+    try expectRejected(valid, false);
     // Other output between chunks.
     const split = std.mem.indexOf(u8, valid, "\x1b\\\x1b_G").? + 2;
     const interleaved = try std.mem.concat(testing.allocator, u8, &.{ valid[0..split], "\r\n", valid[split..] });
     defer testing.allocator.free(interleaved);
-    try expectUnchanged(interleaved, true);
+    try expectRejected(interleaved, true);
     // An APC ended by ESC without ST, and one with a byte Ghostty treats specially.
     const unterminated = try std.mem.replaceOwned(u8, testing.allocator, valid, "\x1b\\\x1b_G", "\x1b\x1b_G");
     defer testing.allocator.free(unterminated);
-    try expectUnchanged(unterminated, true);
+    try expectRejected(unterminated, true);
     const control_byte = try std.mem.replaceOwned(u8, testing.allocator, valid, "m=1;", "m=1;\x07");
     defer testing.allocator.free(control_byte);
-    try expectUnchanged(control_byte, true);
+    try expectRejected(control_byte, true);
     // An upload that never finishes.
-    try expectUnchanged(valid[0..split], true);
+    try expectRejected(valid[0..split], true);
 
     const cases = [_][]const u8{
         "a=q,f=32,s=128,v=64,i=1", // queries are answered for the original
@@ -895,7 +1083,7 @@ test "transcoder keeps uploads it cannot rewrite exactly" {
     for (cases) |control| {
         const upload = try kittyUpload(control, pixels, 4096);
         defer testing.allocator.free(upload);
-        try expectUnchanged(upload, true);
+        try expectRejected(upload, true);
     }
 
     // Too small to be worth re-encoding.
@@ -933,7 +1121,7 @@ test "rewritten uploads get the original's replies and image state" {
 
     const streams = [_]struct { []const u8, []const u8 }{
         .{ "a=T,f=32,s=512,v=384,i=5,c=8,r=4", photo },
-        .{ "a=T,f=32,s=512,v=384,i=5,p=2,z=-3,q=1", photo },
+        .{ "a=T,f=32,s=512,v=384,i=5,p=2,z=-3,q=1,x=10,y=20,w=100,h=200", photo },
         .{ "a=t,f=100,I=12", png },
         .{ "a=T,f=100", png },
         .{ "f=32,s=1024,v=768,i=9,q=2", noisy },
@@ -1046,4 +1234,62 @@ test "graphics accepts still WebP payloads under the PNG format" {
     try testing.expectEqual(Graphics.Codec.webp, (try Graphics.inspect(t, compressed)).codec);
     t.size += 1;
     try testing.expectError(error.InvalidData, Graphics.inspect(t, compressed));
+}
+
+test "worker normalization clamps raw PNG and WebP sources and rejects resized crops at zero quality" {
+    const width = 2400;
+    const height = 1200;
+    const pixels = try testing.allocator.alloc(u8, width * height * 4);
+    defer testing.allocator.free(pixels);
+    const colors = [_][4]u8{ .{ 210, 20, 30, 255 }, .{ 10, 200, 50, 255 }, .{ 20, 70, 210, 255 } };
+    for (0..height) |y| for (0..width) |x| {
+        @memcpy(pixels[(y * width + x) * 4 ..][0..4], &colors[if (x < 800) @as(usize, 0) else if (y < 400) @as(usize, 1) else 2]);
+    };
+    const png = try pngImage(pixels, width, height);
+    defer testing.allocator.free(png);
+    var webp_bytes: [*c]u8 = null;
+    const webp_length = webp.WebPEncodeLosslessRGBA(pixels.ptr, width, height, width * 4, &webp_bytes);
+    try testing.expect(webp_length != 0);
+    defer webp.WebPFree(webp_bytes);
+    const cases = [_]struct { control: []const u8, bytes: []const u8, rejected: bool = false }{
+        .{ .control = "a=T,f=32,s=2400,v=1200,i=77,c=20,r=6,C=1", .bytes = pixels },
+        .{ .control = "a=T,f=100,i=77,c=20,r=6,C=1", .bytes = png },
+        .{ .control = "a=T,f=100,i=77,c=20,r=6,C=1", .bytes = webp_bytes[0..webp_length] },
+        .{ .control = "a=T,f=32,s=2400,v=1200,i=77,c=20,r=6,C=1,x=1800,y=800,w=400,h=300", .bytes = pixels, .rejected = true },
+    };
+    for (cases) |case| {
+        const upload = try kittyUpload(case.control, case.bytes, 4096);
+        defer testing.allocator.free(upload);
+        var transcoder = init(testing.allocator, 0);
+        defer transcoder.deinit();
+        var mirror: Mirror = undefined;
+        try mirror.init();
+        defer mirror.deinit();
+        try feedSplit(&transcoder, upload, &mirror, 65536);
+        try transcoder.finish(&mirror);
+        if (case.rejected) {
+            try testing.expect(mirror.terminal.screens.active.kitty_images.imageById(77) == null);
+            try testing.expect(std.mem.indexOf(u8, mirror.replies.items, "i=77;EINVAL") != null);
+            try testing.expect(!mirror.graphics.fatal);
+            try testing.expect(mirror.graphics.safeToCapture());
+            continue;
+        }
+        const image = mirror.terminal.screens.active.kitty_images.imageById(77).?;
+        try testing.expectEqual(@as(u32, 2048), image.width);
+        try testing.expectEqual(@as(u32, 1024), image.height);
+        const source = mirror.graphics.source(mirror.terminal.screens.active, image.id, image.generation).?;
+        try testing.expectEqual(Graphics.Codec.webp, source.codec);
+        try testing.expect(source.bytes.len < Graphics.upload_limit);
+        const decoded = try decodeWebp(source.bytes, image.width, image.height);
+        defer testing.allocator.free(decoded);
+        const points = [_][2]usize{ .{ 256, 128 }, .{ 1700, 128 }, .{ 1700, 900 } };
+        for (points, colors) |point, color| {
+            const offset = (point[1] * image.width + point[0]) * 4;
+            for (color, 0..) |channel, index| {
+                try testing.expect(@abs(@as(i16, decoded[offset + index]) - @as(i16, channel)) < 10);
+            }
+        }
+        try testing.expect(std.mem.indexOf(u8, mirror.replies.items, "i=77;OK") != null);
+        try testing.expect(!mirror.graphics.fatal);
+    }
 }

@@ -326,6 +326,7 @@ fn writeMetadata(json: *std.json.Stringify, metadata: *const Session.Metadata, r
     try json.objectField("exitStatus");
     if (metadata.exit_status) |status| try json.write(status) else try json.write(null);
     try writeField(json, "eventSeq", metadata.event_seq);
+    try writeField(json, "bellEventSeq", metadata.bell_event_seq);
     try writeField(json, "outputOffset", metadata.output_offset);
     try writeField(json, "checkpointEventSeq", metadata.checkpoint_event_seq);
     try writeField(json, "checkpointBytes", metadata.checkpoint_bytes);

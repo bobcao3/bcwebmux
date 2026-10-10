@@ -1,25 +1,55 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Cheng Cao
 
+import { packedColor } from "../../TerminalOptions.js";
+
 const STATES = new Set(["idle", "working", "done", "blocked", "error"]);
+const BELL_HOLD_MS = 80;
+const BELL_FADE_MS = 100;
+const BELL_DECAY_SCALE_MS = 10;
 
 export class ProgressOverlay {
   constructor() {
     this.status = null;
+    this.bell = false;
+    this.bellStartedAt = 0;
+    this.bellColor = [0, 0, 0];
     this.startedAt = 0;
     this.reducedMotion = false;
     this.lastPresentedAt = null;
-    this.data = new Float32Array(12);
+    this.data = new Float32Array(16);
   }
 
   get visible() {
-    return this.status !== null && this.status.state !== "idle";
+    return this.bell || (this.status !== null && this.status.state !== "idle");
   }
 
   get animated() {
-    return (
-      this.visible && this.status.state === "working" && !this.status.paused && !this.reducedMotion
-    );
+    return this.status?.state === "working" && !this.status.paused && !this.reducedMotion;
+  }
+
+  setBell(active, color) {
+    if (typeof active !== "boolean") throw new TypeError("invalid progress bell state");
+    if (!active && !this.bell) return false;
+    if (active) {
+      const rgb = packedColor(color);
+      this.bellColor = [16, 8, 0].map((shift) => ((rgb >>> shift) & 255) / 255);
+      this.bellStartedAt = performance.now();
+    }
+    this.bell = active;
+    return true;
+  }
+
+  bellOpacity(now) {
+    if (!this.bell) return 0;
+    const elapsed = Math.max(0, now - this.bellStartedAt - BELL_HOLD_MS);
+    if (elapsed >= BELL_FADE_MS) return 0;
+    const cutoff = 1 / Math.sqrt(1 + BELL_FADE_MS / BELL_DECAY_SCALE_MS);
+    return (1 / Math.sqrt(1 + elapsed / BELL_DECAY_SCALE_MS) - cutoff) / (1 - cutoff);
+  }
+
+  advance(now) {
+    if (this.bell && now - this.bellStartedAt >= BELL_HOLD_MS + BELL_FADE_MS) this.bell = false;
   }
 
   set(status) {
@@ -77,7 +107,9 @@ export class ProgressOverlay {
       shutter,
       barHeight,
       this.status?.state === "done" ? 1 : 0,
-      0,
+      this.bellOpacity(now),
+      this.status !== null && this.status.state !== "idle" ? 1 : 0,
+      ...this.bellColor,
       0,
     ]);
     return this.data;

@@ -10,7 +10,9 @@ struct Progress {
   shutter: f32,
   barHeight: f32,
   completed: f32,
-  reserved: vec2<f32>,
+  bell: f32,
+  visible: f32,
+  bellColor: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> progress: Progress;
@@ -114,6 +116,9 @@ fn sinc(value: f32) -> f32 {
     return source;
   }
   let t = position.x / width;
+  if (progress.visible < 0.5) {
+    return vec4<f32>(mix(source.rgb, progress.bellColor.rgb, progress.bell), source.a);
+  }
   var coverage = select(0.0, 1.0, t < progress.fraction);
   if (progress.fraction < 0.0) {
     var offset = 1.0 / 3.0;
@@ -151,5 +156,5 @@ fn sinc(value: f32) -> f32 {
   let ditherPixel = vec2<u32>(pixel - vec2<i32>(0, barTop)) / vec2<u32>(progress.block);
   let index = (ditherPixel.y % 8u) * 8u + ditherPixel.x % 8u;
   let threshold = (BAYER[index] + 0.5) / 64.0;
-  return vec4<f32>(quantize(color, threshold), source.a);
+  return vec4<f32>(mix(quantize(color, threshold), progress.bellColor.rgb, progress.bell), source.a);
 }

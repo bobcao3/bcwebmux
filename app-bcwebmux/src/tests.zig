@@ -8,6 +8,7 @@ test {
     _ = @import("session_api.zig");
     _ = @import("Session.zig");
     _ = @import("GraphicsTranscoder.zig");
+    _ = @import("terminal-graphics");
     _ = @import("terminal-graphics-checkpoint");
     _ = @import("SessionRegistry.zig");
     _ = @import("c_api.zig");

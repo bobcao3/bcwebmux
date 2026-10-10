@@ -90,9 +90,16 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("src/worker_main.zig"),
             .target = target,
             .optimize = server_optimize,
+            .imports = &.{
+                .{ .name = "ghostty-vt", .module = native_ghostty.module("ghostty-vt") },
+                .{ .name = "terminal-graphics", .module = native_graphics },
+                .{ .name = "wuffs", .module = wuffs },
+            },
         }),
     });
     bcwebmux_worker.root_module.link_libc = true;
+    bcwebmux_worker.root_module.addIncludePath(libwebp.path("src"));
+    bcwebmux_worker.root_module.linkLibrary(target_webp);
     bcwebmux_worker.root_module.linkSystemLibrary("util", .{});
     const wasm = b.addExecutable(.{
         .name = "terminal",

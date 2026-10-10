@@ -33,42 +33,55 @@ rendering works on WebGPU and WebGL2. This is not full Kitty compatibility.
   waits for a complete APC/chunk boundary, then applies ordered PTY output once.
 
 Unsupported: animation commands, filesystem/temporary-file/shared-memory
-sources, and the rest of Kitty's full protocol. A PNG's signature, IHDR and IHDR
-CRC and its bounded compressed-stream length are validated at logical admission;
-full raster validation happens in the browser. Thus a successful protocol reply
-does **not** guarantee that a damaged PNG can be displayed. Browser decode
-currently runs asynchronously on the main thread, not in a Web Worker. The
-browser screenshot test does not cover visibility suspension, graphics device
-loss or overload behavior.
+sources, and the rest of Kitty's full protocol. The worker validates complete
+raster data before forwarding an upload. The shared adapter separately checks
+image headers and byte accounting at logical admission. A successful protocol
+reply guarantees logical admission, not successful browser presentation. Browser
+decode currently runs asynchronously on the main thread, not in a Web Worker.
+The browser screenshot test does not cover visibility suspension, graphics
+device loss or overload behavior.
 
-Limits include 4096 pixels per side, 16 MiB of decoded-byte accounting per
-image, 8 MiB of encoded bytes per upload, 32 MiB of retained source bytes, 512
-images and 2048 placements per screen, a 256 KiB graphics checkpoint and a 32
-MiB browser decoded-texture budget. Exceeding logical limits returns a protocol
-error; missing browser resources leave images undrawn without changing terminal
-state.
+The PTY worker accepts larger source images than the journal and browser can
+retain. The worker clamps image resolution before forwarding an upload; the
+[normalizer](../app-bcwebmux/src/GraphicsTranscoder.zig) defines source and
+output budgets. An upload that exceeds those budgets or cannot be normalized
+receives a protocol error. The worker discards the remaining image chunks
+without terminating the shell. The
+[graphics adapter](../common/terminal/graphics/Adapter.zig) also bounds retained
+images and placements. Missing browser resources leave images undrawn without
+changing terminal state.
 
 ## WebP transcoding
 
-To save bandwidth, the server re-encodes each complete image upload as WebP
-before journaling it, so the mirror terminal, every browser and checkpoint
-replay all receive the smaller stream. Raw RGB, raw RGBA and PNG uploads,
-chunked or zlib-compressed, are encoded lossily at the configured quality.
-Images with few distinct colors, such as plots, charts and screenshots, are also
-encoded losslessly, and the smaller result wins, so they keep exact pixels. The
-rewritten upload keeps its image ID or number, placement keys and quiet setting,
-so replies and logical state match the original. Set `webp-quality = 0` in the
-server config, or pass `--webp-quality=0`, to forward uploads byte for byte.
+The PTY worker normalizes each complete direct upload before sending output to
+the server journal. The mirror terminal, every browser and checkpoint replay
+receive the same normalized stream. The worker uses libwebp's
+`WebPPictureRescale` to clamp resolution while preserving aspect ratio. Raw RGB,
+raw RGBA, PNG and still WebP sources can reach that path, including chunked and
+zlib-compressed uploads. The worker encodes images lossily at the configured
+quality. Images with few distinct colors, such as plots, charts and screenshots,
+are also encoded losslessly, and the smaller result wins. Lossless encoding
+preserves the pixels after any resolution clamping. The rewritten upload keeps
+its image ID or number, placement keys and quiet setting, so clients retain
+image identity and explicit cell placement. Pixel-based placements after
+resizing refer to the normalized image dimensions; implicit cell sizing also
+uses those dimensions. The worker rejects a transmit-and-display upload with a
+source crop when resizing would change the crop's pixel coordinates. Set
+`webp-quality = 0` in the server config, or pass `--webp-quality=0`, to disable
+optional bandwidth transcoding. Resolution clamping and rejection of unsafe
+uploads remain active at zero quality.
 
-An upload passes through unchanged when it is small, when WebP would not shrink
-it substantially, when it is invalid or already WebP, or when the stream around
-it is irregular: other output between its chunks, unusual control keys or
-terminators, or an upload the mirror is still assembling. A rewritten RGB image
-counts as RGBA toward each screen's decoded-byte budget, as PNG images already
-do. Encoding runs on the session's output path, so an image reaches browsers
-after tens to hundreds of milliseconds of CPU time; later output from that
-session waits behind it. PNG is decoded on the server with Ghostty's memory-safe
-Wuffs decoder; the browser still decodes every image it draws.
+A bounded upload can pass through unchanged when the image is small, when WebP
+would not shrink the payload substantially, or when the source already uses
+WebP. An upload that needs clamping always follows the normalization path.
+Malformed or interrupted uploads receive bounded errors rather than entering the
+journal with their original payloads. Before sending a large normalized upload,
+the worker asks the server to reserve journal capacity at the upload boundary.
+Slow browser acknowledgements cannot exhaust retention halfway through that
+upload. A rewritten RGB image counts as RGBA toward the decoded-byte budget.
+Encoding runs in the worker, so later output from the same session waits for
+image processing. The worker decodes PNG with Ghostty's memory-safe Wuffs
+decoder; the browser still decodes every image the browser draws.
 
 ## Build dependency
 
@@ -123,7 +136,7 @@ handlers use alternate signal stacks when a signal interrupts a Go thread.
 Native tests check the flags and handler restoration; a Go subprocess stress
 test delivers both signals on Go threads and scans their stacks afterward.
 
-`zig build test` checks that rewritten uploads draw the same replies and image
-state from a real terminal as the originals, and that every other byte passes
-through unchanged. The browser test also draws a server-rewritten WebP upload
-and checks that the server journaled a fraction of its original size.
+`zig build test` checks protocol replies and image state for bounded uploads,
+rejection recovery, and preservation of ordinary terminal output. The browser
+test draws worker-normalized WebP uploads, exercises large PPM images with
+`viu`, and checks pixels, journal size and shell survival after oversized APCs.

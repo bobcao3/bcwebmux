@@ -5,7 +5,6 @@ const std = @import("std");
 const ghostty = @import("ghostty-vt");
 const Graphics = @import("terminal-graphics");
 const GraphicsCheckpoint = @import("terminal-graphics-checkpoint");
-const GraphicsTranscoder = @import("GraphicsTranscoder.zig");
 const ProgramStatus = @import("ProgramStatus.zig");
 const manifest = @import("session_manifest.zig");
 const worker = @import("session_worker.zig");
@@ -15,8 +14,6 @@ const continuation_limit = 1024 * 1024;
 const max_title_bytes = 256;
 const max_name_bytes = 80;
 const max_journal_records = 64 * 1024;
-/// Rewritten output is journaled in events no larger than a worker packet.
-const max_output_event_bytes = worker.packet_capacity - 1;
 
 pub const Id = [16]u8;
 pub const State = enum { creating, running, terminating, exited, failed };
@@ -225,6 +222,7 @@ pub const Metadata = struct {
     title_len: u16,
     program_status: ?ProgramStatus.Summary = null,
     progress_report: ?ghostty.osc.Command.ProgressReport = null,
+    bell_event_seq: u64 = 0,
     state: State,
     geometry: Geometry,
     created_at_ms: i64,
@@ -259,6 +257,7 @@ title: [max_title_bytes]u8 = undefined,
 title_len: u16 = 0,
 program_status: ProgramStatus = .{},
 progress_report: ?ghostty.osc.Command.ProgressReport = null,
+bell_event_seq: u64 = 0,
 state: State = .creating,
 geometry: Geometry,
 initial_geometry: Geometry,
@@ -276,8 +275,6 @@ connection: worker.Connection,
 mirror_terminal: ghostty.Terminal,
 mirror_stream: ghostty.TerminalStream,
 graphics: Graphics,
-/// Rewrites Kitty images in output before it is journaled; null when disabled.
-transcoder: ?GraphicsTranscoder = null,
 mirror_reply_failed: bool = false,
 attachments: [max_attachment_slots]AttachmentState = [_]AttachmentState{.{}} ** max_attachment_slots,
 input_dedup: [max_input_dedup_entries]InputDedupEntry = [_]InputDedupEntry{.{}} ** max_input_dedup_entries,
@@ -341,7 +338,6 @@ pub fn create(
         .mirror_terminal = mirror,
         .mirror_stream = undefined,
         .graphics = Graphics.init(allocator),
-        .transcoder = if (webp_quality == 0) null else GraphicsTranscoder.init(allocator, webp_quality),
     };
     @memcpy(self.name[0..name.len], name);
     self.mirror_stream = ghostty.TerminalStream.init(.{
@@ -350,7 +346,7 @@ pub fn create(
         .continuation_max_bytes = continuation_limit,
     });
     errdefer self.mirror_stream.deinit();
-    self.connection = try worker.spawn(io, executable, shell, term, kitty_graphics, geometry.cols, geometry.rows);
+    self.connection = try worker.spawn(io, executable, shell, term, kitty_graphics, webp_quality, geometry.cols, geometry.rows);
     self.state = .running;
     return self;
 }
@@ -358,7 +354,6 @@ pub fn create(
 pub fn destroy(self: *Self) void {
     self.connection.finish(self.io);
     self.mirror_stream.deinit();
-    if (self.transcoder) |*transcoder| transcoder.deinit();
     self.graphics.deinit();
     self.mirror_terminal.deinit(self.allocator);
     self.journal.deinit();
@@ -380,6 +375,14 @@ pub fn run(self: *Self) void {
             break;
         };
         switch (message.kind) {
+            .output_reserve => if (!failed) {
+                self.reserveOutput(message.payload) catch |err| {
+                    std.log.err("session output reservation failed: {t}", .{err});
+                    failed = true;
+                    self.markFailed();
+                    self.connection.terminate(self.io);
+                };
+            },
             .output => if (!failed) {
                 self.acceptOutput(message.payload) catch |err| {
                     std.log.err("session output failed: {t}", .{err});
@@ -425,6 +428,7 @@ pub fn snapshotMetadata(self: *Self) Metadata {
         .title_len = self.title_len,
         .program_status = self.program_status.summary(),
         .progress_report = self.progress_report,
+        .bell_event_seq = self.bell_event_seq,
         .state = self.state,
         .geometry = self.geometry,
         .created_at_ms = self.created_at_ms,
@@ -589,32 +593,25 @@ fn acceptResizeApplied(self: *Self, payload: []const u8) !void {
     if (promote_after_resize) self.promoteControllerLocked();
 }
 
-/// Receives transcoder output on the session actor, which alone feeds the mirror.
-const OutputSink = struct {
-    session: *Self,
+fn acceptOutput(self: *Self, bytes: []const u8) !void {
+    try self.publishOutput(bytes);
+}
 
-    pub fn output(sink: OutputSink, bytes: []const u8) !void {
-        var rest = bytes;
-        while (rest.len != 0) {
-            const event = rest[0..@min(rest.len, max_output_event_bytes)];
-            try sink.session.publishOutput(event);
-            rest = rest[event.len..];
+fn reserveOutput(self: *Self, payload: []const u8) !void {
+    if (payload.len != 8) return error.InvalidWorkerPacket;
+    const length = std.mem.readInt(u64, payload[0..8], .little);
+    if (length > self.limits.journal_bytes) return error.InvalidWorkerPacket;
+    self.mutex.lockUncancelable(self.io);
+    defer self.mutex.unlock(self.io);
+    try self.ensureJournalCapacity(@intCast(length));
+    const records = std.math.divCeil(u64, length, worker.packet_capacity - 1) catch unreachable;
+    if (records > max_journal_records - self.journal.events.items.len) {
+        try self.createCheckpoint(nowMs(self.io));
+        if (records > max_journal_records - self.journal.events.items.len) {
+            self.dropAttachmentsForRetentionLocked();
+            self.journal.clear();
         }
     }
-
-    /// A rewritten upload starts as a new one, so the mirror must not be
-    /// continuing an earlier upload that the original would have joined.
-    pub fn replaceable(sink: OutputSink) bool {
-        sink.session.mutex.lockUncancelable(sink.session.io);
-        defer sink.session.mutex.unlock(sink.session.io);
-        return sink.session.graphics.safeToCapture();
-    }
-};
-
-fn acceptOutput(self: *Self, bytes: []const u8) !void {
-    // The transcoder encodes images without holding the session mutex.
-    if (self.transcoder) |*transcoder| return transcoder.feed(bytes, OutputSink{ .session = self });
-    try self.publishOutput(bytes);
 }
 
 fn publishOutput(self: *Self, bytes: []const u8) !void {
@@ -636,7 +633,6 @@ fn publishOutput(self: *Self, bytes: []const u8) !void {
 }
 
 fn acceptExit(self: *Self, status: i32) !void {
-    if (self.transcoder) |*transcoder| try transcoder.finish(OutputSink{ .session = self });
     self.mutex.lockUncancelable(self.io);
     defer self.mutex.unlock(self.io);
     try self.ensureJournalCapacity(0);
@@ -810,7 +806,7 @@ fn configuredHandler(value: *ghostty.Terminal, term: []const u8) Handler {
     handler.effects.enquiry = effectEnquiry;
     handler.effects.xtversion = effectVersion;
     handler.effects.clipboard_write = null;
-    handler.effects.bell = null;
+    handler.effects.bell = effectBell;
     handler.effects.desktop_notification = null;
     return handler;
 }
@@ -850,6 +846,12 @@ fn effectWritePty(handler: *Handler, bytes: []const u8) void {
     self.connection.send(self.io, .input, bytes) catch {
         self.mirror_reply_failed = true;
     };
+}
+
+fn effectBell(handler: *Handler) void {
+    const self: *Self = @fieldParentPtr("mirror_terminal", handler.terminal);
+    self.bell_event_seq = self.next_event_seq - 1;
+    self.bumpRevision();
 }
 
 fn effectProgramStatus(handler: *Handler, report: ghostty.osc.Command.ProgramStatus.Report) void {

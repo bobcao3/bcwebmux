@@ -876,6 +876,12 @@ export class Terminal {
     if (this._progressOverlay.set(status)) this._scheduler?.requestPresentation();
   }
 
+  setProgressBell(active) {
+    this._assertMutable();
+    if (this._progressOverlay.setBell(active, this.options.theme.ansi[3]))
+      this._scheduler?.requestPresentation();
+  }
+
   _reloadRendererFont() {
     if (!this._renderer) return;
     if (this._presenter) this._presenter.canvasRasterizer = null;

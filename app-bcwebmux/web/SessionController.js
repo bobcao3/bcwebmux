@@ -92,6 +92,7 @@ function sameObservableMetadata(a, b) {
     Object.is(Number(a?.attachments ?? 0), Number(b?.attachments ?? 0)) &&
     Object.is(Number(a?.checkpointBytes ?? 0), Number(b?.checkpointBytes ?? 0)) &&
     Object.is(cursor(a?.eventSeq), cursor(b?.eventSeq)) &&
+    Object.is(cursor(a?.bellEventSeq), cursor(b?.bellEventSeq)) &&
     Object.is(cursor(a?.outputOffset), cursor(b?.outputOffset)) &&
     Object.is(cursor(a?.checkpointEventSeq), cursor(b?.checkpointEventSeq)) &&
     Object.is(
@@ -495,6 +496,7 @@ export class SessionController {
       this.#activeId = key;
       this.#terminal.resumeFocus?.({ focus: true });
       target.unread = false;
+      target.unreadBell = false;
       this.#events.title.emit(target.title, target, this);
       this.#touch(entry);
       this.#writeLastSession(key);
@@ -642,7 +644,10 @@ export class SessionController {
     });
     bind("onBell", () => {
       if (this.#activeId === entry.id) this.#events.bell.emit(metadata, this);
-      else metadata.unread = true;
+      else {
+        metadata.unread = true;
+        metadata.unreadBell = true;
+      }
       this.#events.change.emit({ type: "bell", session: metadata, controller: this });
     });
     bind("onNotification", (notification) => {
@@ -765,6 +770,13 @@ export class SessionController {
       if (this.#removedIds.has(metadata.id)) continue;
       const previous = this.#metadata.get(metadata.id);
       const unread = previous?.unread ?? false;
+      const hasNewBell = Boolean(
+        previous &&
+        metadata.id !== this.#activeId &&
+        metadata.generation === previous.generation &&
+        cursor(metadata.bellEventSeq) > cursor(previous.bellEventSeq) &&
+        cursor(metadata.bellEventSeq) > cursor(previous.eventSeq),
+      );
       const hasNewActivity = Boolean(
         previous &&
         metadata.id !== this.#activeId &&
@@ -778,7 +790,8 @@ export class SessionController {
         changed = true;
       }
       const current = this.#metadata.get(metadata.id);
-      current.unread = (metadata.unread ?? unread) || hasNewActivity;
+      current.unread = (metadata.unread ?? unread) || hasNewActivity || hasNewBell;
+      current.unreadBell = Boolean(current.unreadBell || hasNewBell);
       current.error = metadata.error ?? error;
       if (observableChanged) changed = true;
       if (previous && unread !== current.unread) changed = true;

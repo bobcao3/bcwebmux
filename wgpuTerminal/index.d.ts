@@ -343,6 +343,7 @@ export declare class Terminal implements IDisposable {
   setGrainStrength(value: number): void;
   /** Passing null hides the canvas overlay. The renderer accepts integer percentages from 0 to 100. */
   setProgress(status: TerminalProgress | null): void;
+  setProgressBell(active: boolean): void;
   setSoftModifiers(value: number): void;
   clearSoftModifiers(): void;
   sendKey(code: string, key: string, modifiers?: number): number;

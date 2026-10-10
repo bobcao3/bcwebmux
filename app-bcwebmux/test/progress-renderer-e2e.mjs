@@ -9,6 +9,7 @@ import path from "node:path";
 import sharp from "sharp";
 import { Cdp, delay, freePort, terminateProcess, waitFor } from "./test-support.mjs";
 import { recordProgressVideos } from "./progress-video.mjs";
+import { verifyUnreadBell } from "./bell-ui-support.mjs";
 
 const [serverPath, webRoot] = process.argv.slice(2);
 assert.ok(serverPath && webRoot, "usage: progress-renderer-e2e.mjs SERVER WEB_ROOT");
@@ -140,6 +141,7 @@ async function run(backend) {
       );
     };
     await until("window.bcwebmux.state.gpuFrames > 0", "initial canvas did not render");
+    await verifyBellFlash(evaluate);
     await report(
       "\\033]7501;state=working:progress=65\\007",
       "document.querySelector('#terminal-progress').getAttribute('aria-valuenow') === '65'",
@@ -270,6 +272,7 @@ async function run(backend) {
       "document.querySelector('#terminal-progress').getAttribute('aria-valuenow') === '40'",
     );
     const paused = await evaluate("progressProbe.sample()");
+    await verifyBellFlash(evaluate);
     await page.call("Emulation.setEmulatedMedia", {
       features: [{ name: "prefers-reduced-motion", value: "no-preference" }],
     });
@@ -337,6 +340,7 @@ async function run(backend) {
     );
     assert.equal(await evaluate("document.querySelector('#client-error').hidden"), true);
     await recordProgressVideos({ page, evaluate, report, backend });
+    if (backend === "webgpu") await verifyUnreadBell(page, evaluate);
     console.log(`${backend}: progress geometry, wave, bounce, pause, resize, and auto-hide passed`);
   } finally {
     page?.close();
@@ -432,6 +436,105 @@ async function assertDisplayedGeometry(page, evaluate) {
   assert.ok(
     actual.every((channel, index) => Math.abs(channel - expected[index]) <= 10),
     `compositor must display the final progress pixel at the chrome boundary: ${actual} versus ${expected}`,
+  );
+}
+
+async function verifyBellFlash(evaluate) {
+  const result = await evaluate(`(async () => {
+    const read = async () => {
+      const frame = await window.bcwebmux.readPixels();
+      if (frame.format.startsWith('bgra')) {
+        for (let i = 0; i < frame.data.length; i += 4)
+          [frame.data[i], frame.data[i + 2]] = [frame.data[i + 2], frame.data[i]];
+      }
+      return frame;
+    };
+    const before = await read();
+    const warning = (() => {
+      const canvas = document.createElement('canvas');
+      canvas.width = canvas.height = 1;
+      const context = canvas.getContext('2d');
+      context.fillStyle = getComputedStyle(document.querySelector('#terminal')).getPropertyValue('--color-warning');
+      context.fillRect(0, 0, 1, 1);
+      return Array.from(context.getImageData(0, 0, 1, 1).data.slice(0, 3));
+    })();
+    window.bcwebmux.write("printf '\\\\007'\\n");
+    const deadline = performance.now() + 2500;
+    let flash = null;
+    while (performance.now() < deadline) {
+      await new Promise(requestAnimationFrame);
+      const frame = await read();
+      const bottom = (frame.height - 1) * frame.width * 4;
+      if (![0, 1, 2].every(channel => Math.abs(frame.data[bottom + channel] - warning[channel]) <= 1))
+        continue;
+      flash = frame;
+      break;
+    }
+    if (!flash) return { sawWarning: false };
+    const start = performance.now();
+    const bottom = (flash.height - 1) * flash.width * 4;
+    const channel = [0, 1, 2].reduce((best, current) =>
+      Math.abs(warning[current] - before.data[bottom + current]) >
+      Math.abs(warning[best] - before.data[bottom + best]) ? current : best, 0);
+    const difference = warning[channel] - before.data[bottom + channel];
+    const samples = [];
+    while (performance.now() - start < 220) {
+      await new Promise(requestAnimationFrame);
+      const frame = await read();
+      samples.push({
+        elapsed: performance.now() - start,
+        opacity: (frame.data[bottom + channel] - before.data[bottom + channel]) / difference,
+      });
+    }
+    const after = await read();
+    let fullRowWarning = true;
+    for (let i = (flash.height - 1) * flash.width * 4; i < flash.data.length; i += 4)
+      fullRowWarning &&= [0, 1, 2].every(channel => Math.abs(flash.data[i + channel] - warning[channel]) <= 1);
+    const aboveBar = Math.floor(flash.height / 2) * flash.width * 4;
+    const unchangedAbove = flash.data.slice(0, aboveBar).every((value, i) => value === before.data[i]);
+    return {
+      sawWarning: true, fullRowWarning, unchangedAbove, samples,
+      restored: after.data.every((value, i) => value === before.data[i]),
+    };
+  })()`);
+  assert.equal(result.sawWarning, true, "BEL must show the warning flash");
+  assert.equal(result.fullRowWarning, true, "warning flash must cover the full bottom row");
+  assert.equal(result.unchangedAbove, true, "warning flash must not brighten the terminal pane");
+  const hold = result.samples.filter((sample) => sample.elapsed < 40);
+  assert.ok(
+    hold.length > 0 && hold.every((sample) => sample.opacity >= 0.98),
+    "warning flash hold must retain full opacity",
+  );
+  assert.ok(
+    result.samples.some(
+      (sample) =>
+        sample.elapsed >= 95 &&
+        sample.elapsed <= 120 &&
+        sample.opacity > 0.1 &&
+        sample.opacity < 0.5,
+    ),
+    `warning flash inverse-square-root fade must reach mid-opacity: ${JSON.stringify(result.samples)}`,
+  );
+  assert.ok(
+    result.samples.some(
+      (sample) =>
+        sample.elapsed >= 130 &&
+        sample.elapsed <= 165 &&
+        sample.opacity > 0 &&
+        sample.opacity < 0.2,
+    ),
+    `warning flash inverse-square-root fade must approach zero: ${JSON.stringify(result.samples)}`,
+  );
+  assert.ok(
+    result.samples
+      .slice(1)
+      .every((sample, index) => sample.opacity <= result.samples[index].opacity + 0.01),
+    "warning flash fade must be nonincreasing",
+  );
+  assert.equal(
+    result.restored,
+    true,
+    "warning flash restoration must restore the previous GPU output",
   );
 }
 

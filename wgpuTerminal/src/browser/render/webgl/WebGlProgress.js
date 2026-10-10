@@ -13,7 +13,7 @@ const FRAGMENT = `#version 300 es
 precision highp float;
 precision highp int;
 uniform highp sampler2D u_scene;
-uniform vec4 u_progress[3];
+uniform vec4 u_progress[4];
 out vec4 output_color;
 
 vec3 srgb_to_linear(vec3 value) {
@@ -113,6 +113,10 @@ void main() {
     return;
   }
   float t = pixel.x / width;
+  if (u_progress[2].w < 0.5) {
+    output_color = vec4(mix(source.rgb, u_progress[3].rgb, u_progress[2].z), source.a);
+    return;
+  }
   float fraction = u_progress[1].x;
   float seconds = u_progress[1].y;
   bool animate = u_progress[1].z > 0.5;
@@ -143,7 +147,8 @@ void main() {
     color = coverage == 1.0 ? filled_color :
       linear_to_srgb(mix(srgb_to_linear(color), srgb_to_linear(filled_color), coverage));
   }
-  output_color = vec4(quantize(color, ivec2(pixel.x, pixel.y - height + h)), source.a);
+  vec3 base = quantize(color, ivec2(pixel.x, pixel.y - height + h));
+  output_color = vec4(mix(base, u_progress[3].rgb, u_progress[2].z), source.a);
 }
 `;
 

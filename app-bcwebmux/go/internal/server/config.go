@@ -45,8 +45,9 @@ type Config struct {
 	TLSKey        string
 	HTTP3         bool
 	Worker        string
-	// WebPQuality re-encodes Kitty images as WebP, lossy at this quality
-	// (1-100), before browsers receive them; 0 sends them unchanged.
+	// WebPQuality optionally re-encodes Kitty images as WebP, lossy at this
+	// quality (1-100), before browsers receive them. A quality of 0 disables
+	// optional transcoding; resolution clamping remains active.
 	WebPQuality int
 	// FileServiceURL and FileServicePrefix configure the local file service
 	// the browser resolves file:// links through.
@@ -84,7 +85,7 @@ func parseConfig(args []string, validateListeners bool) (Config, bool, error) {
 	flags.StringVar(&cfg.Shell, "shell", "", "shell")
 	flags.StringVar(&cfg.Term, "term", cfg.Term, "TERM for session shells")
 	flags.BoolVar(&cfg.KittyGraphics, "kitty-graphics", cfg.KittyGraphics, "advertise Kitty graphics to session shells")
-	flags.IntVar(&cfg.WebPQuality, "webp-quality", cfg.WebPQuality, "re-encode Kitty images as WebP, lossy at this quality (1-100); 0 sends them unchanged")
+	flags.IntVar(&cfg.WebPQuality, "webp-quality", cfg.WebPQuality, "optionally re-encode Kitty images as WebP, lossy at this quality (1-100); 0 disables optional transcoding while resolution clamping remains active")
 	flags.BoolVar(&cfg.AuthEnabled, "auth", cfg.AuthEnabled, "require a FIDO2 security key login once credentials are enrolled")
 	flags.StringVar(&cfg.AuthFile, "auth-file", "", "FIDO2 authentication state file")
 	flags.DurationVar(&cfg.AuthSessionTTL, "auth-session-ttl", 0, "browser login session lifetime (default 168h)")
@@ -207,7 +208,7 @@ func parseConfig(args []string, validateListeners bool) (Config, bool, error) {
 		return Config{}, false, fmt.Errorf("invalid max sessions %d", cfg.MaxSessions)
 	}
 	if cfg.WebPQuality < 0 || cfg.WebPQuality > 100 {
-		return Config{}, false, fmt.Errorf("invalid WebP quality %d: use 1-100, or 0 to send images unchanged", cfg.WebPQuality)
+		return Config{}, false, fmt.Errorf("invalid WebP quality %d: use 1-100, or 0 to disable optional transcoding (resolution clamping remains active)", cfg.WebPQuality)
 	}
 	if cfg.Term == "" || len(cfg.Term) > 256 || strings.ContainsAny(cfg.Term, "\x00\r\n= \t") {
 		return Config{}, false, fmt.Errorf("invalid term %q", cfg.Term)
@@ -466,8 +467,9 @@ func Usage(program string) string {
 		"  --kitty-graphics[=false]     advertise Kitty graphics to session shells\n"+
 		"                               (default: true)\n"+
 		"  --webp-quality N             re-encode Kitty images as WebP, lossy at\n"+
-		"                               quality N (1-100), to save bandwidth; 0 sends\n"+
-		"                               them unchanged (default: 90)\n"+
+		"                               quality N (1-100), to save bandwidth; 0 disables\n"+
+		"                               optional transcoding (resolution clamping remains\n"+
+		"                               active; default: 90)\n"+
 		"  --worker FILE                PTY worker executable\n"+
 		"  --file-service-url URL        local file service for file:// links, with\n"+
 		"                               {host} and {path} tokens\n"+

@@ -299,6 +299,33 @@ function showDesktopNotification(title, body) {
   }
 }
 
+const notificationStates = new Set(["blocked", "error", "done"]);
+const previousSessionStatuses = new Map();
+function notifyProgramStatusTransitions() {
+  for (const metadata of sessionController.sessions) {
+    const status = sessionStatus(metadata);
+    const state = status?.state ?? null;
+    const previous = previousSessionStatuses.get(metadata.id);
+    previousSessionStatuses.set(metadata.id, { generation: metadata.generation, state });
+    if (
+      !previous ||
+      previous.generation !== metadata.generation ||
+      previous.state === state ||
+      !notificationStates.has(state)
+    )
+      continue;
+    const focused =
+      metadata.id === sessionController.activeSessionId && !document.hidden && document.hasFocus();
+    if (!focused)
+      showDesktopNotification(
+        metadata.name || metadata.title || "bcwebmux",
+        programStatusLabel(status),
+      );
+  }
+  for (const id of previousSessionStatuses.keys())
+    if (!sessionController.metadata.has(id)) previousSessionStatuses.delete(id);
+}
+
 function updateNotificationPermissionUi() {
   if (typeof Notification === "undefined") {
     notificationsStatus.textContent = "Unsupported";
@@ -584,17 +611,19 @@ function renderTerminalProgress() {
   terminalProgress.title = label;
 }
 sessionController.onChange(() => {
+  notifyProgramStatusTransitions();
   activeAttachment = query.has("gpu-test")
     ? transport.activeAttachment
     : sessionController.activeAttachment;
   updateTerminalIdentity(sessionController.activeSession);
   renderConnectionStatus();
   const count = sessionController.sessions.length;
-  renderTerminalProgress();
+  queueMicrotask(renderTerminalProgress);
   document.querySelector("#session-drawer-status").textContent =
     `[ ${count} ${count === 1 ? "SESSION" : "SESSIONS"} ]`;
 });
 sessionController.onActiveChange(() => {
+  terminal.setProgressBell(false);
   pasteDialog.close();
   activeAttachment = query.has("gpu-test")
     ? transport.activeAttachment
@@ -609,8 +638,11 @@ terminal.onTitleChange((title) => {
   if (query.has("gpu-test")) updateTerminalIdentity(null, title);
 });
 terminal.onBell(() => {
-  terminalElement.classList.add("flash");
-  setTimeout(() => terminalElement.classList.remove("flash"), 80);
+  const sourceCore = terminal.core;
+  queueMicrotask(() => {
+    if (terminal.core !== sourceCore) return;
+    terminal.setProgressBell(true);
+  });
 });
 terminal.onNotification(({ title, body }) => showDesktopNotification(title, body));
 sessionController.onTitleChange((title, metadata) => {

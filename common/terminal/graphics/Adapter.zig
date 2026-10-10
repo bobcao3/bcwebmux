@@ -53,6 +53,7 @@ const Upload = struct {
 alloc: std.mem.Allocator,
 sources: std.AutoHashMapUnmanaged(Key, Source) = .empty,
 loading: [2]?Upload = .{ null, null },
+draining: [2]bool = .{ false, false },
 source_bytes: usize = 0,
 fatal: bool = false,
 state_changed: bool = false,
@@ -75,11 +76,18 @@ pub fn source(self: *const Self, screen: *ghostty.Screen, image_id: u32, generat
 }
 
 pub fn safeToCapture(self: *const Self) bool {
-    return self.loading[0] == null and self.loading[1] == null;
+    // Checkpoints cannot represent a rejected transmission's remaining chunks.
+    return self.loading[0] == null and self.loading[1] == null and !self.draining[0] and !self.draining[1];
 }
 
 pub fn execute(self: *Self, terminal: *ghostty.Terminal, cmd: *gfx.Command) ?gfx.Response {
     self.reconcile(terminal);
+    const index = @intFromEnum(terminal.screens.active_key);
+    if (self.draining[index] and (cmd.control == .transmit or cmd.control == .transmit_and_display)) {
+        self.draining[index] = cmd.transmission().?.more_chunks;
+        self.state_changed = true;
+        return null;
+    }
     const ids = cmd.control.identifiers();
     if (ids.image_id != 0 and ids.image_number != 0) {
         return respond(cmd.quiet, .{ .id = ids.image_id, .image_number = ids.image_number, .placement_id = ids.placement_id, .message = "EINVAL: image ID and number are mutually exclusive" });
@@ -130,7 +138,8 @@ fn transmit(self: *Self, terminal: *ghostty.Terminal, cmd: *gfx.Command) ?gfx.Re
     const t = cmd.transmission().?;
     const screen = terminal.screens.active;
     const screen_id = @intFromPtr(screen);
-    const slot = &self.loading[@intFromEnum(terminal.screens.active_key)];
+    const index = @intFromEnum(terminal.screens.active_key);
+    const slot = &self.loading[index];
     const is_query = cmd.control == .query;
     var response: gfx.Response = .{ .id = t.image_id, .image_number = t.image_number, .placement_id = t.placement_id };
     if (is_query) {
@@ -148,8 +157,11 @@ fn transmit(self: *Self, terminal: *ghostty.Terminal, cmd: *gfx.Command) ?gfx.Re
         if (cmd.quiet != .no) pending.quiet = cmd.quiet;
         const quiet = pending.quiet;
         if (pending.data.items.len > upload_limit or cmd.data.len > upload_limit - pending.data.items.len) {
+            const first = pending.first.transmission().?;
+            response = .{ .id = first.image_id, .image_number = first.image_number, .placement_id = first.placement_id };
             pending.deinit(self.alloc);
             slot.* = null;
+            self.draining[index] = t.more_chunks;
             response.message = "ENOMEM: upload too large";
             return respond(quiet, response);
         }
@@ -169,6 +181,7 @@ fn transmit(self: *Self, terminal: *ghostty.Terminal, cmd: *gfx.Command) ?gfx.Re
         return respond(quiet, self.accept(terminal, &completed.first, completed.data.items, completed.id, &response));
     }
     if (t.medium != .direct or t.format_unknown) {
+        self.draining[index] = t.more_chunks;
         response.message = if (t.medium != .direct) "EINVAL: unsupported medium" else "EINVAL: unsupported format";
         return respond(cmd.quiet, response);
     }
@@ -180,6 +193,7 @@ fn transmit(self: *Self, terminal: *ghostty.Terminal, cmd: *gfx.Command) ?gfx.Re
     const implicit = t.image_id == 0 and t.image_number == 0;
     const id = if (t.image_id != 0) t.image_id else storage.nextImageId(if (implicit) .implicit else .explicit);
     if (cmd.data.len > upload_limit) {
+        self.draining[index] = t.more_chunks;
         response.message = "ENOMEM: upload too large";
         return respond(cmd.quiet, response);
     }
@@ -214,6 +228,11 @@ fn accept(self: *Self, terminal: *ghostty.Terminal, cmd: *const gfx.Command, byt
     const implicit = t.image_id == 0 and t.image_number == 0;
     if (storage.images.count() >= max_images and storage.imageById(id) == null) {
         response.message = "ENOSPC: image storage full";
+        return response.*;
+    }
+    // Ghostty also reports storage bounds as OutOfMemory; allocator failures remain fatal.
+    if (image.decoded_bytes > storage.total_limit) {
+        response.message = "ENOMEM: image storage full";
         return response.*;
     }
     const value: gfx.Image = .{
@@ -412,4 +431,89 @@ fn validateInflated(bytes: []const u8, expected: usize) error{ InvalidData, TooL
         total += count;
     }
     if (total != expected) return error.InvalidData;
+}
+
+test "graphics rejected upload drains through final chunk without blocking other commands" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+    const cases = [_]struct { id: u32, number: u32, quiet: gfx.Command.Quiet }{
+        .{ .id = 42, .number = 0, .quiet = .no },
+        .{ .id = 0, .number = 77, .quiet = .ok },
+        .{ .id = 42, .number = 0, .quiet = .failures },
+    };
+    const chunk = try alloc.alloc(u8, apc_limit / 2);
+    defer alloc.free(chunk);
+    @memset(chunk, 0);
+    for (cases) |case| {
+        var terminal = try ghostty.Terminal.init(testing.io, alloc, .{ .cols = 20, .rows = 8 });
+        defer terminal.deinit(alloc);
+        terminal.setKittyGraphicsSizeLimit(alloc, image_limit);
+        var adapter = Self.init(alloc);
+        defer adapter.deinit();
+        var valid: gfx.Command = .{ .control = .{ .transmit = .{ .image_id = 99, .width = 1, .height = 1 } }, .data = "\x01\x02\x03\xff" };
+        try testing.expectEqualStrings("OK", adapter.execute(&terminal, &valid).?.message);
+        var first: gfx.Command = .{ .control = .{ .transmit = .{
+            .image_id = case.id,
+            .image_number = case.number,
+            .placement_id = 7,
+            .width = 2,
+            .height = 1,
+            .more_chunks = true,
+        } }, .quiet = case.quiet, .data = chunk };
+        try testing.expect(adapter.execute(&terminal, &first) == null);
+        var continuation: gfx.Command = .{ .control = .{ .transmit = .{ .more_chunks = true } }, .data = chunk };
+        for (1..upload_limit / chunk.len) |_| try testing.expect(adapter.execute(&terminal, &continuation) == null);
+        const rejected = adapter.execute(&terminal, &continuation);
+        try testing.expect(!adapter.fatal);
+        try testing.expect(!adapter.safeToCapture());
+        if (case.quiet == .failures) {
+            try testing.expect(rejected == null);
+        } else {
+            try testing.expect(rejected != null);
+            try testing.expectEqualStrings("ENOMEM: upload too large", rejected.?.message);
+            try testing.expectEqual(case.id, rejected.?.id);
+            try testing.expectEqual(case.number, rejected.?.image_number);
+            try testing.expectEqual(@as(u32, 7), rejected.?.placement_id);
+        }
+        var query: gfx.Command = .{ .control = .{ .query = .{ .image_id = 99, .width = 1, .height = 1 } }, .data = valid.data };
+        try testing.expectEqualStrings("OK", adapter.execute(&terminal, &query).?.message);
+        var deletion = try gfx.CommandParser.parseString(alloc, "a=d,d=I,i=99");
+        defer deletion.deinit(alloc);
+        _ = adapter.execute(&terminal, &deletion);
+        try testing.expect(terminal.screens.active.kitty_images.imageById(99) == null);
+        try testing.expect(!adapter.safeToCapture());
+        var tail: gfx.Command = .{ .control = .{ .transmit = .{ .image_id = 55, .width = 1, .height = 1, .more_chunks = true } }, .data = valid.data };
+        try testing.expect(adapter.execute(&terminal, &tail) == null);
+        try testing.expect(!adapter.safeToCapture());
+        var final_chunk: gfx.Command = .{ .control = .{ .transmit = .{} } };
+        try testing.expect(adapter.execute(&terminal, &final_chunk) == null);
+        try testing.expect(adapter.safeToCapture());
+        try testing.expectEqual(@as(usize, 0), terminal.screens.active.kitty_images.images.count());
+        try testing.expectEqualStrings("OK", adapter.execute(&terminal, &valid).?.message);
+        try testing.expectEqualStrings("OK", adapter.execute(&terminal, &query).?.message);
+        const image = terminal.screens.active.kitty_images.imageById(99).?;
+        try testing.expectEqualStrings(valid.data, adapter.source(terminal.screens.active, 99, image.generation).?.bytes);
+        var stream = ghostty.TerminalStream.init(.{ .allocator = alloc, .handler = terminal.vtHandler() });
+        defer stream.deinit();
+        stream.nextSlice("X");
+        try testing.expectEqual(@as(u21, 'X'), terminal.screens.active.pages.getCell(.{ .active = .{ .x = 0, .y = 0 } }).?.cell.codepoint());
+        try testing.expect(!adapter.fatal);
+    }
+}
+
+test "graphics storage byte limit returns a protocol error and permits later uploads" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+    var terminal = try ghostty.Terminal.init(testing.io, alloc, .{ .cols = 20, .rows = 8 });
+    defer terminal.deinit(alloc);
+    terminal.setKittyGraphicsSizeLimit(alloc, 3);
+    var adapter = Self.init(alloc);
+    defer adapter.deinit();
+    var valid: gfx.Command = .{ .control = .{ .transmit = .{ .image_id = 42, .width = 1, .height = 1 } }, .data = "\x01\x02\x03\xff" };
+    try testing.expectEqualStrings("ENOMEM: image storage full", adapter.execute(&terminal, &valid).?.message);
+    try testing.expect(!adapter.fatal);
+    try testing.expectEqual(@as(usize, 0), terminal.screens.active.kitty_images.images.count());
+    terminal.setKittyGraphicsSizeLimit(alloc, image_limit);
+    try testing.expectEqualStrings("OK", adapter.execute(&terminal, &valid).?.message);
+    try testing.expect(!adapter.fatal);
 }
