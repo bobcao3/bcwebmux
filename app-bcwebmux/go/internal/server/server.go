@@ -426,6 +426,10 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.serveClientConfig(w, r)
 		return
 	}
+	if r.URL.Path == "/api/paste-files" {
+		s.servePasteFile(w, r)
+		return
+	}
 	if strings.HasPrefix(r.URL.Path, "/api/") {
 		s.serveREST(w, r)
 		return

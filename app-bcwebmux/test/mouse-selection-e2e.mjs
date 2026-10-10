@@ -2,7 +2,8 @@
 // Copyright (c) 2026 Cheng Cao
 
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, readFile, stat, writeFile } from "node:fs/promises";
+import sharp from "sharp";
 import os from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
@@ -227,7 +228,11 @@ try {
   };
 
   const transcriptCommand = (mode, expected) => {
-    const byteLength = Buffer.byteLength(expected.replaceAll("\\033", "\x1b"));
+    const byteLength = Buffer.byteLength(
+      expected.replace(/\\([0-7]{3})/g, (_, octal) =>
+        String.fromCharCode(Number.parseInt(octal, 8)),
+      ),
+    );
     return `stty -icanon -echo min 0 time 5; printf '\\033[?${mode}h\\033[?1006h\\033[2J\\033[H\\033[48;2;255;128;0m \\033[0m'; data=$(dd bs=1 count=${byteLength} 2>/dev/null); extra=$(dd bs=1 count=1 2>/dev/null); printf '\\033[?${mode}l\\033[?1006l'; if test "$data" = "$(printf '${expected}')" && test -z "$extra"; then printf '\\033[2J\\033[H\\033[48;2;0;255;0m \\033[0m'; else printf '\\033[2J\\033[H\\033[48;2;255;0;0m \\033[0m'; fi; stty sane\r`;
   };
 
@@ -414,6 +419,308 @@ try {
 
   const selectionScreen =
     "printf '\\033[?1000l\\033[?1002l\\033[?1003l\\033[?1006l\\033[2J\\033[H\\033[38;2;240;240;240m\\033[48;2;127;127;127mAé中Z   Q\\033[0m\\033[10;1H'\r";
+  const pasteText = "first é中\nsecond line";
+  await runTranscript({
+    mode: 2004,
+    expected: "\\002",
+    input: async () => {
+      await evaluate("document.querySelector('#softkeys [data-mod=\"2\"]').click()");
+      await pageCdp.call("Input.insertText", { text: "b" });
+      assert.equal(
+        await evaluate(
+          "document.querySelector('#softkeys [data-mod=\"2\"]').getAttribute('aria-pressed')",
+        ),
+        "false",
+        "the Ctrl soft modifier did not reset after committed input",
+      );
+    },
+  });
+  await evaluate(`navigator.clipboard.writeText(${JSON.stringify(pasteText)})`);
+  await runTranscript({
+    mode: 2004,
+    expected: `\\033[200~${pasteText}\\033[201~`,
+    input: async () => {
+      const beforePaste = await evaluate("window.bcwebmux.state.txBytes");
+      await evaluate("document.querySelector('#paste-button').click()");
+      await waitFor(
+        async () =>
+          evaluate(`document.querySelector('#paste-input').value === ${JSON.stringify(pasteText)}`),
+        1500,
+        "clipboard text did not reach the paste preview",
+      );
+      assert.equal(
+        await evaluate("window.bcwebmux.state.txBytes"),
+        beforePaste,
+        "opening the preview sent clipboard text before confirmation",
+      );
+      await evaluate("document.querySelector('#paste-send').click()");
+      assert.equal(await evaluate("document.querySelector('#paste-dialog').open"), false);
+    },
+  });
+  await evaluate(`(() => {
+    Object.defineProperty(navigator.clipboard, 'read', {
+      configurable: true,
+      value: () => Promise.reject(new DOMException('Clipboard denied', 'NotAllowedError')),
+    });
+    Object.defineProperty(navigator.clipboard, 'readText', {
+      configurable: true,
+      value: () => Promise.reject(new DOMException('Clipboard denied', 'NotAllowedError')),
+    });
+  })()`);
+  await runTranscript({
+    mode: 2004,
+    expected: `\\033[200~${pasteText}\\033[201~`,
+    input: async () => {
+      const beforePaste = await evaluate("window.bcwebmux.state.txBytes");
+      await evaluate("document.querySelector('#paste-button').click()");
+      assert.equal(await evaluate("document.activeElement.id"), "paste-input");
+      assert.equal(
+        await evaluate(`(() => {
+        const input = document.querySelector('#paste-input');
+        const rect = input.getBoundingClientRect();
+        return document.elementFromPoint(rect.left + 8, rect.top + 8) === input;
+      })()`),
+        true,
+        "the native paste field did not receive pointer hits",
+      );
+      await pageCdp.call("Input.dispatchKeyEvent", {
+        type: "rawKeyDown",
+        key: "v",
+        code: "KeyV",
+        modifiers: 2,
+        windowsVirtualKeyCode: 86,
+      });
+      await pageCdp.call("Input.dispatchKeyEvent", {
+        type: "keyUp",
+        key: "v",
+        code: "KeyV",
+        modifiers: 2,
+        windowsVirtualKeyCode: 86,
+      });
+      await waitFor(
+        async () =>
+          evaluate(`document.querySelector('#paste-input').value === ${JSON.stringify(pasteText)}`),
+        1500,
+        "native paste failed when clipboard reads were denied",
+      );
+      assert.equal(
+        await evaluate("window.bcwebmux.state.txBytes"),
+        beforePaste,
+        "editing the paste preview sent PTY input",
+      );
+      await evaluate("document.querySelector('#paste-send').click()");
+    },
+  });
+  const beforeCancelPaste = await evaluate("window.bcwebmux.state.txBytes");
+  await evaluate("document.querySelector('#paste-button').click()");
+  await pageCdp.call("Input.insertText", { text: "do not send" });
+  await evaluate("document.querySelector('#paste-cancel').click()");
+  assert.equal(
+    await evaluate("window.bcwebmux.state.txBytes"),
+    beforeCancelPaste,
+    "cancelling paste sent PTY input",
+  );
+  await evaluate("delete navigator.clipboard.readText");
+
+  await evaluate(`(() => {
+    Object.defineProperty(navigator.clipboard, 'readText', {
+      configurable: true,
+      value: () => new Promise(resolve => { window.resolvePasteRead = resolve; }),
+    });
+    document.querySelector('#paste-button').click();
+  })()`);
+  await pageCdp.call("Input.insertText", { text: "keep my edit" });
+  await evaluate("window.resolvePasteRead('late clipboard text')");
+  assert.equal(
+    await evaluate("document.querySelector('#paste-input').value"),
+    "keep my edit",
+    "a delayed clipboard read overwrote the edited preview",
+  );
+  await evaluate(`(() => {
+    document.querySelector('#paste-cancel').click();
+    document.querySelector('#paste-button').click();
+    window.stalePasteRead = window.resolvePasteRead;
+    document.querySelector('#paste-cancel').click();
+    document.querySelector('#paste-button').click();
+    window.stalePasteRead('cancelled clipboard text');
+  })()`);
+  assert.equal(
+    await evaluate("document.querySelector('#paste-input').value"),
+    "",
+    "a cancelled clipboard read populated a later preview",
+  );
+  await evaluate(
+    "document.querySelector('#paste-cancel').click(); delete navigator.clipboard.read; delete navigator.clipboard.readText; delete window.resolvePasteRead; delete window.stalePasteRead",
+  );
+
+  const png = await sharp({ create: { width: 17, height: 9, channels: 4, background: "#2288dd" } })
+    .png()
+    .toBuffer();
+  await evaluate(`(async () => {
+    const blob = new Blob([Uint8Array.from(atob('${png.toString("base64")}'), character => character.charCodeAt(0))], { type: 'image/png' });
+    await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob, 'text/plain': new Blob(['do not paste the alternate text'], { type: 'text/plain' }) })]);
+  })()`);
+  const clipboardBytes = Buffer.from(
+    await evaluate(`(async () => {
+    const item = (await navigator.clipboard.read())[0];
+    const bytes = new Uint8Array(await (await item.getType('image/png')).arrayBuffer());
+    return btoa(String.fromCharCode(...bytes));
+  })()`),
+    "base64",
+  );
+  const imagePreview = async (openPreview) => {
+    const before = await evaluate("window.bcwebmux.state.txBytes");
+    await openPreview();
+    await waitFor(
+      async () =>
+        evaluate(`(() => {
+      const image = document.querySelector('#paste-image');
+      return document.querySelector('#paste-dialog').open && !image.hidden && image.complete && image.naturalWidth === 17 && image.naturalHeight === 9 && !document.querySelector('#paste-send').disabled;
+    })()`),
+      2000,
+      "clipboard image did not reach the paste preview",
+    );
+    const filePath = await evaluate("document.querySelector('#paste-path').textContent");
+    assert.ok(path.isAbsolute(filePath) && filePath.endsWith(".png"));
+    await assert.rejects(
+      stat(filePath),
+      { code: "ENOENT" },
+      "preview wrote the image before confirmation",
+    );
+    assert.equal(
+      await evaluate("window.bcwebmux.state.txBytes"),
+      before,
+      "preview sent terminal input before confirmation",
+    );
+    return filePath;
+  };
+  const cancelledPath = await imagePreview(() =>
+    evaluate("document.querySelector('#paste-button').click()"),
+  );
+  await evaluate("document.querySelector('#paste-cancel').click()");
+  await assert.rejects(stat(cancelledPath), { code: "ENOENT" }, "cancel uploaded the image");
+
+  const failedPath = await imagePreview(() =>
+    evaluate("document.querySelector('#paste-button').click()"),
+  );
+  try {
+    await writeFile(failedPath, "existing file", { flag: "wx" });
+    const beforeFailure = await evaluate("window.bcwebmux.state.txBytes");
+    await evaluate("document.querySelector('#paste-send').click()");
+    await waitFor(
+      async () =>
+        evaluate("document.querySelector('#paste-status').textContent.includes('already exists')"),
+      2000,
+      "upload failure did not appear in the dialog",
+    );
+    assert.equal(await evaluate("document.querySelector('#paste-dialog').open"), true);
+    assert.equal(
+      await evaluate("window.bcwebmux.state.txBytes"),
+      beforeFailure,
+      "failed upload pasted a path",
+    );
+    assert.equal(await readFile(failedPath, "utf8"), "existing file");
+    await evaluate("document.querySelector('#paste-cancel').click()");
+  } finally {
+    await rm(failedPath, { force: true });
+  }
+
+  for (const action of ["softkey", "browser-paste", "shortcut", "native-field"]) {
+    const filePath = await imagePreview(async () => {
+      if (action === "softkey") return evaluate("document.querySelector('#paste-button').click()");
+      if (action === "native-field") {
+        await evaluate(`(() => {
+          for (const method of ['read', 'readText']) Object.defineProperty(navigator.clipboard, method, {
+            configurable: true, value: () => Promise.reject(new DOMException('Clipboard denied', 'NotAllowedError')),
+          });
+          document.querySelector('#paste-button').click();
+        })()`);
+        await pageCdp.call("Input.dispatchKeyEvent", { type: "rawKeyDown", commands: ["Paste"] });
+        return;
+      }
+      await evaluate("document.querySelector('#input').focus()");
+      if (action === "browser-paste") {
+        await pageCdp.call("Input.dispatchKeyEvent", { type: "rawKeyDown", commands: ["Paste"] });
+      } else {
+        await pageCdp.call("Input.dispatchKeyEvent", {
+          type: "rawKeyDown",
+          key: "V",
+          code: "KeyV",
+          modifiers: 10,
+          windowsVirtualKeyCode: 86,
+        });
+        await pageCdp.call("Input.dispatchKeyEvent", {
+          type: "keyUp",
+          key: "V",
+          code: "KeyV",
+          modifiers: 10,
+          windowsVirtualKeyCode: 86,
+        });
+      }
+    });
+    if (action === "native-field")
+      await evaluate("delete navigator.clipboard.read; delete navigator.clipboard.readText");
+    try {
+      await runTranscript({
+        mode: 2004,
+        expected: `\\033[200~${filePath}\\033[201~`,
+        input: async () => {
+          await evaluate("document.querySelector('#paste-send').click()");
+          await waitFor(
+            async () => evaluate("!document.querySelector('#paste-dialog').open"),
+            2000,
+            "image upload did not finish",
+          );
+          assert.deepEqual(
+            await readFile(filePath),
+            clipboardBytes,
+            "upload changed the clipboard image bytes",
+          );
+        },
+      });
+    } finally {
+      await rm(filePath, { force: true });
+    }
+  }
+
+  const touchLinkScreen =
+    "printf '\\033[?1000l\\033[?1002l\\033[?1003l\\033[2J\\033[H\\033]8;;https://example.com\\007link link link link\\033]8;;\\007\\033[2;1H\\033[48;2;255;128;0m \\033[0m'\r";
+  await evaluate(`window.bcwebmux.write(${JSON.stringify(touchLinkScreen)})`);
+  await waitCellColor(0, 1, [255, 128, 0], "touch link fixture did not render");
+  const linkStart = point(1, 0);
+  const linkEnd = point(6, 0);
+  const dispatchLinkClick = async (position) =>
+    evaluate(`document.querySelector('#surface').dispatchEvent(new MouseEvent('click', {
+    bubbles: true, cancelable: true, clientX: ${position.x}, clientY: ${position.y},
+  }))`);
+  await pageCdp.call("Input.dispatchTouchEvent", {
+    type: "touchStart",
+    touchPoints: [{ ...linkStart, id: 22 }],
+  });
+  await pageCdp.call("Input.dispatchTouchEvent", {
+    type: "touchMove",
+    touchPoints: [{ ...linkEnd, id: 22 }],
+  });
+  await pageCdp.call("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+  await dispatchLinkClick(linkEnd);
+  assert.equal(
+    await evaluate("document.querySelector('#link-dialog').open"),
+    false,
+    "swiping across a link opened the link dialog",
+  );
+  await pageCdp.call("Input.dispatchTouchEvent", {
+    type: "touchStart",
+    touchPoints: [{ ...linkStart, id: 23 }],
+  });
+  await pageCdp.call("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+  await dispatchLinkClick(linkStart);
+  await waitFor(
+    async () => evaluate("document.querySelector('#link-dialog').open"),
+    1500,
+    "tapping a link did not open the confirmation dialog",
+  );
+  await evaluate("document.querySelector('#link-dialog-cancel').click()");
+
   await evaluate(`window.bcwebmux.write(${JSON.stringify(selectionScreen)})`);
   await waitCellColor(0, 0, [127, 127, 127], "selection fixture did not render");
   const selectionTouch = point(1, 0);
@@ -1033,6 +1340,52 @@ try {
     () => "touch-scroll End key did not reach the bottom",
   );
   const txBeforeTouchScroll = await evaluate("window.bcwebmux.state.txBytes");
+  await waitFor(
+    async () =>
+      evaluate(`window.bcwebmux.state.softkeysVisible &&
+      window.bcwebmux.state.scrollLength === Math.floor(
+        window.bcwebmux.state.viewportHeight / window.bcwebmux.state.physicalCellHeight)`),
+    1500,
+    () => "touch viewport resize did not reach the terminal frame",
+  );
+  for (const { inset, rowFraction } of [
+    { inset: 0, rowFraction: 0.5 },
+    { inset: 24, rowFraction: -0.5 },
+    { inset: 24, rowFraction: 0.5 },
+  ]) {
+    const beforeSafeTouch = await evaluate("window.bcwebmux.state.scrollOffset");
+    const safeTouch = await evaluate(`(() => {
+      const surface = document.querySelector("#surface");
+      surface.style.setProperty("--touch-scroll-safe-inset-top", "${inset}px");
+      const rect = document.querySelector("#screen").getBoundingClientRect();
+      const rowHeight = parseFloat(getComputedStyle(document.querySelector("#terminal")).getPropertyValue("--cell-height"));
+      return { x: (rect.left + rect.right) / 2, y: ${inset} + ${rowFraction} * rowHeight };
+    })()`);
+    await pageCdp.call("Input.dispatchTouchEvent", {
+      type: "touchStart",
+      touchPoints: [{ ...safeTouch, id: 73 }],
+    });
+    await delay(20);
+    await pageCdp.call("Input.dispatchTouchEvent", {
+      type: "touchMove",
+      touchPoints: [{ x: safeTouch.x, y: safeTouch.y + 100, id: 73 }],
+    });
+    await pageCdp.call("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+    await delay(120);
+    assert.equal(
+      await evaluate("window.bcwebmux.state.scrollOffset"),
+      beforeSafeTouch,
+      `touch starting in the top safe area plus one row scrolled with inset ${inset}`,
+    );
+    assert.equal(
+      await evaluate("window.bcwebmux.state.txBytes"),
+      txBeforeTouchScroll,
+      "blocked touch scroll emitted PTY input",
+    );
+  }
+  await evaluate(
+    'document.querySelector("#surface").style.removeProperty("--touch-scroll-safe-inset-top")',
+  );
   await evaluate(`(() => {
     const surface = document.querySelector("#surface");
     const x = (${geometry.left} + ${geometry.right}) / 2;

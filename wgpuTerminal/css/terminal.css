@@ -21,12 +21,19 @@
 }
 
 .wgpu-terminal[data-terminal-role="viewport"] [data-terminal-role="surface"] {
+  --touch-scroll-safe-inset-top: 0px;
   position: absolute;
   z-index: 2;
   inset: 0;
   overflow: hidden;
   overscroll-behavior: contain;
   touch-action: none;
+}
+
+@supports (padding-top: env(safe-area-inset-top, 0px)) {
+  .wgpu-terminal[data-terminal-role="viewport"] [data-terminal-role="surface"] {
+    --touch-scroll-safe-inset-top: env(safe-area-inset-top, 0px);
+  }
 }
 
 .wgpu-terminal[data-terminal-role="viewport"] [data-terminal-role="scrollbar"] {

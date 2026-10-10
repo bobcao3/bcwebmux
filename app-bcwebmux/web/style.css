@@ -42,7 +42,8 @@
 }
 
 :root {
-  --bottom-safe-inset: env(safe-area-inset-bottom);
+  --top-safe-inset: 0px;
+  --bottom-safe-inset: 0px;
   --controls-row-height: calc(44px + var(--bottom-safe-inset));
   color-scheme: dark;
   --color-background: #0c0c0e;
@@ -58,6 +59,13 @@
   --terminal-font: "JetBrains Mono Nerd Font", ui-monospace, "Cascadia Mono", "SFMono-Regular", Consolas, monospace;
   font-family: var(--terminal-font);
   background: var(--color-background);
+}
+
+@supports (padding-top: env(safe-area-inset-top, 0px)) {
+  :root {
+    --top-safe-inset: env(safe-area-inset-top, 0px);
+    --bottom-safe-inset: env(safe-area-inset-bottom, 0px);
+  }
 }
 
 * {
@@ -85,6 +93,7 @@ body {
   grid-template-rows: minmax(0, 1fr) var(--chrome-height);
   position: fixed;
   inset: 0;
+  padding-top: var(--top-safe-inset);
   overflow: hidden;
   background: var(--color-background);
   color: var(--color-foreground);
@@ -115,7 +124,7 @@ body {
   grid-template-rows: var(--softkeys-row-height) var(--controls-row-height);
   min-width: 0;
   height: var(--chrome-height);
-  background: var(--color-background);
+  background: var(--color-surface);
 }
 
 @media (hover: none) and (pointer: coarse) {
@@ -132,7 +141,8 @@ body {
   justify-content: space-between;
   align-items: center;
   height: auto;
-  padding: 2px max(4px, env(safe-area-inset-left)) calc(2px + var(--bottom-safe-inset)) max(4px, env(safe-area-inset-right));
+  padding: 2px 4px;
+  padding-bottom: calc(2px + var(--bottom-safe-inset));
   background: var(--color-surface);
 }
 
@@ -479,7 +489,7 @@ body {
   flex-wrap: nowrap;
   gap: 2px;
   min-height: 44px;
-  padding: 2px max(4px, env(safe-area-inset-left)) 2px max(4px, env(safe-area-inset-right));
+  padding: 2px 4px;
   overflow-x: auto;
   overflow-y: hidden;
   scrollbar-width: none;
@@ -487,6 +497,14 @@ body {
   touch-action: pan-x;
   overscroll-behavior-x: contain;
   user-select: none;
+}
+
+@supports (padding-left: max(4px, env(safe-area-inset-left, 0px))) {
+  #terminal-controls,
+  #softkeys {
+    padding-left: max(4px, env(safe-area-inset-left, 0px));
+    padding-right: max(4px, env(safe-area-inset-right, 0px));
+  }
 }
 
 #terminal.softkeys-visible #softkeys {

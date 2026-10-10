@@ -19,7 +19,7 @@ import (
 
 const (
 	assetCacheControl = "public, no-cache, must-revalidate"
-	assetCSP          = "default-src 'self'; connect-src 'self' ws: wss:; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; font-src 'self'"
+	assetCSP          = "default-src 'self'; connect-src 'self' ws: wss:; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; font-src 'self'; img-src 'self' blob:"
 )
 
 type assetServer struct {

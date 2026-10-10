@@ -411,7 +411,7 @@
 
 #terminal-controls:has(#session-toggle:not([hidden])) {
   padding-top: 0;
-  padding-bottom: env(safe-area-inset-bottom);
+  padding-bottom: var(--bottom-safe-inset);
 }
 
 #session-toggle:hover,

@@ -730,9 +730,15 @@ func TestAuthCodeBootstrapThenBrowserKeyEnrollment(t *testing.T) {
 	if response.StatusCode != http.StatusFound || response.Header.Get("Location") != "/login" {
 		t.Fatalf("unauthenticated page = %d -> %q (%s)", response.StatusCode, response.Header.Get("Location"), body)
 	}
-	response, body = serving.do(t, http.MethodGet, "/api/server", nil, nil)
-	if response.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("unauthenticated API = %d (%s)", response.StatusCode, body)
+	for _, request := range []struct{ method, path string }{
+		{http.MethodGet, "/api/server"},
+		{http.MethodGet, "/api/paste-files?type=image/png"},
+		{http.MethodPost, "/api/paste-files?name=bcwebmux-paste-0123456789abcdef0123456789abcdef.png"},
+	} {
+		response, body = serving.do(t, request.method, request.path, nil, nil)
+		if response.StatusCode != http.StatusUnauthorized {
+			t.Fatalf("unauthenticated %s %s = %d (%s)", request.method, request.path, response.StatusCode, body)
+		}
 	}
 	response, body = serving.do(t, http.MethodGet, "/ws", nil, nil)
 	if response.StatusCode != http.StatusUnauthorized {

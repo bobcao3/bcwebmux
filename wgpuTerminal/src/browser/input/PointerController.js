@@ -89,6 +89,15 @@ export class PointerController {
     };
   }
 
+  isTouchScrollSafeZone(event) {
+    const metrics = this.getMetrics();
+    const safeInset =
+      parseFloat(
+        getComputedStyle(this.surface).getPropertyValue("--touch-scroll-safe-inset-top"),
+      ) || 0;
+    return event.clientY < safeInset + metrics.cellHeight / metrics.scaleY;
+  }
+
   sendMouse(event, action, button, anyButtonPressed = event.buttons !== 0) {
     const metrics = this.getMetrics();
     const rect = this.surface.getBoundingClientRect();
@@ -162,6 +171,7 @@ export class PointerController {
               pointerId: event.pointerId,
               startX: event.clientX,
               startY: event.clientY,
+              scrollBlocked: this.isTouchScrollSafeZone(event),
               startedAt: Date.now(),
               moved: false,
               ended: false,
@@ -185,7 +195,8 @@ export class PointerController {
                 this.surface.releasePointerCapture(candidate.pointerId);
               }
             }, this.touchLongPressThreshold);
-            this.beginTouchScroll(event.clientY);
+            if (candidate.scrollBlocked) this.cancelScrollGesture();
+            else this.beginTouchScroll(event.clientY);
             try {
               this.surface.setPointerCapture(event.pointerId);
             } catch {}
@@ -256,7 +267,7 @@ export class PointerController {
             candidate.duration = Date.now() - candidate.startedAt;
             candidate.suppress =
               candidate.moved || candidate.duration >= this.touchLongPressThreshold;
-            if (candidate.moved) {
+            if (candidate.moved && !candidate.scrollBlocked) {
               this.endTouchScroll(event.clientY, this.scrollContext(event));
             } else {
               this.cancelTouchScroll();
@@ -297,7 +308,7 @@ export class PointerController {
               clearTimeout(candidate.longPressTimer);
               candidate.longPressTimer = null;
             }
-            if (candidate.moved) {
+            if (candidate.moved && !candidate.scrollBlocked) {
               if (this.updateTouchScroll(event.clientY, this.scrollContext(event))) {
                 event.preventDefault();
               }
@@ -370,6 +381,15 @@ export class PointerController {
         return;
       }
       if (!this.isTerminalPointer(event)) return;
+      const touchEnded = this.touchCandidate?.ended;
+      if (touchEnded) {
+        const suppress = this.touchCandidate.suppress;
+        this.clearTouchCandidate();
+        if (suppress) {
+          event.preventDefault();
+          return;
+        }
+      }
       if (!event.shiftKey) {
         const uri = this.hyperlinkAtEvent(event);
         if (uri) {
@@ -379,10 +399,7 @@ export class PointerController {
           return;
         }
       }
-      if (this.touchCandidate?.ended) {
-        const suppress = this.touchCandidate.suppress;
-        this.clearTouchCandidate();
-        if (suppress) return;
+      if (touchEnded) {
         this.sendMouse(event, "press", "left", true);
         this.sendMouse(event, "release", "left", false);
       }

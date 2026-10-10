@@ -56,6 +56,7 @@
       <nav id="softkeys" aria-label="Terminal soft keys">
         <button type="button" data-code="Escape" data-key="Escape">ESC</button>
         <button type="button" data-code="Tab" data-key="Tab">TAB</button>
+        <button id="paste-button" type="button" aria-haspopup="dialog" aria-controls="paste-dialog">PASTE</button>
         <button type="button" data-mod="1" aria-pressed="false">SHIFT</button>
         <button type="button" data-mod="2" aria-pressed="false">CTRL</button>
         <button type="button" data-mod="4" aria-pressed="false">ALT</button>
@@ -112,6 +113,18 @@
     <button id="input-debug-copy" type="button">COPY</button>
     <pre id="input-debug-log"></pre>
   </aside>
+  <dialog id="paste-dialog" aria-labelledby="paste-dialog-title" aria-describedby="paste-help">
+    <header><h1 id="paste-dialog-title">[ PASTE INTO TERMINAL ]</h1></header>
+    <p id="paste-help">Review text or files before sending. If the clipboard is unavailable, hold in the field and choose Paste. Multiline text may execute commands.</p>
+    <textarea id="paste-input" aria-label="Text to paste" rows="5" autocapitalize="off" autocomplete="off" autocorrect="off" spellcheck="false" autofocus></textarea>
+    <section id="paste-file" hidden aria-label="File to upload">
+      <img id="paste-image" hidden alt="Clipboard image preview">
+      <label>Temporary path on the server<output id="paste-path"></output></label>
+    </section>
+    <p id="paste-status" role="status" aria-live="polite"></p>
+    <button id="paste-cancel" type="button">CANCEL</button>
+    <button id="paste-send" type="button" disabled>SEND TO TERMINAL</button>
+  </dialog>
   <dialog id="notification-dialog" aria-labelledby="notification-dialog-title">
     <header>
       <h1 id="notification-dialog-title">[ DESKTOP NOTIFICATIONS ]</h1>

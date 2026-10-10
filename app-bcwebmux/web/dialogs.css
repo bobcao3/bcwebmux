@@ -18,7 +18,8 @@
 #settings-dialog::backdrop { background: rgb(0 0 0 / 78%); }
 
 #link-dialog,
-#notification-dialog {
+#notification-dialog,
+#paste-dialog {
   width: min(560px, calc(100vw - 48px));
   max-width: none;
   max-height: min(80vh, 520px);
@@ -33,24 +34,29 @@
 }
 
 #link-dialog[open],
-#notification-dialog[open] {
+#notification-dialog[open],
+#paste-dialog[open] {
   display: grid;
   grid-template-columns: 1fr 1fr;
 }
 
 #link-dialog::backdrop,
-#notification-dialog::backdrop { background: rgb(0 0 0 / 78%); }
+#notification-dialog::backdrop,
+#paste-dialog::backdrop { background: rgb(0 0 0 / 78%); }
 
 #link-dialog > header,
 #link-dialog > p,
 #notification-dialog > header,
 #notification-dialog > p,
+#paste-dialog > header,
+#paste-dialog > p,
 #link-dialog > output {
   grid-column: 1 / -1;
 }
 
 #link-dialog > header,
-#notification-dialog > header {
+#notification-dialog > header,
+#paste-dialog > header {
   display: flex;
   align-items: center;
   min-height: 48px;
@@ -60,7 +66,8 @@
 }
 
 #link-dialog h1,
-#notification-dialog h1 {
+#notification-dialog h1,
+#paste-dialog h1 {
   margin: 0;
   font-size: 16px;
   line-height: 1;
@@ -68,7 +75,8 @@
 }
 
 #link-dialog > p,
-#notification-dialog > p {
+#notification-dialog > p,
+#paste-dialog > p {
   margin: 18px 20px 12px;
   color: var(--color-muted);
   font-size: 12px;
@@ -100,7 +108,8 @@
 }
 
 #link-dialog button,
-#notification-dialog button {
+#notification-dialog button,
+#paste-dialog button {
   min-height: 44px;
   margin: 0 0 20px 20px;
   border: 2px solid var(--color-border);
@@ -111,7 +120,8 @@
 }
 
 #link-dialog button:last-child,
-#notification-dialog button:last-child {
+#notification-dialog button:last-child,
+#paste-dialog button:last-child {
   margin-right: 20px;
   border-color: var(--color-accent);
   background: var(--color-accent);
@@ -121,7 +131,9 @@
 #link-dialog button:hover,
 #link-dialog button:focus-visible,
 #notification-dialog button:hover,
-#notification-dialog button:focus-visible {
+#notification-dialog button:focus-visible,
+#paste-dialog button:hover,
+#paste-dialog button:focus-visible {
   border-color: var(--color-foreground);
   background: var(--color-foreground);
   color: var(--color-background);
@@ -129,9 +141,74 @@
 }
 
 #link-dialog button:focus-visible,
-#notification-dialog button:focus-visible {
+#notification-dialog button:focus-visible,
+#paste-dialog button:focus-visible {
   outline: var(--focus-ring-width) solid var(--color-accent);
   outline-offset: 2px;
+}
+
+#paste-dialog {
+  max-height: min(80dvh, 520px);
+  overflow: auto;
+}
+
+#paste-input {
+  grid-column: 1 / -1;
+  display: block;
+  box-sizing: border-box;
+  width: calc(100% - 40px);
+  min-height: 100px;
+  max-height: 30dvh;
+  margin: 0 20px 16px;
+  padding: 10px;
+  border: 2px solid var(--color-border);
+  border-radius: 0;
+  background: var(--color-surface);
+  color: var(--color-foreground);
+  font: 16px/1.4 var(--terminal-font);
+  resize: vertical;
+  touch-action: pan-y;
+  user-select: text;
+  -webkit-user-select: text;
+  -webkit-touch-callout: default;
+}
+
+#paste-input:focus-visible {
+  outline: var(--focus-ring-width) solid var(--color-accent);
+  outline-offset: 2px;
+}
+
+#paste-input[hidden] { display: none; }
+
+#paste-file {
+  grid-column: 1 / -1;
+  min-width: 0;
+  margin: 0 20px;
+  font-size: 12px;
+}
+
+#paste-image {
+  width: 100%;
+  max-height: 25dvh;
+  margin-bottom: 12px;
+  object-fit: contain;
+}
+
+#paste-path {
+  display: block;
+  margin-top: 6px;
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+
+#paste-status:empty { display: none; }
+
+#paste-dialog #paste-send:disabled {
+  border-color: var(--color-muted);
+  background: var(--color-muted);
+  color: var(--color-foreground);
+  cursor: not-allowed;
+  opacity: .5;
 }
 
 #link-dialog #link-dialog-open:disabled {
@@ -370,7 +447,9 @@
 @media (max-width: 560px) {
   #settings-dialog,
   #link-dialog,
-  #notification-dialog { width: calc(100vw - 24px); max-height: calc(100vh - 48px); }
+  #notification-dialog,
+  #paste-dialog { width: calc(100vw - 24px); max-height: calc(100vh - 48px); }
+  #paste-dialog { max-height: calc(100dvh - 48px); }
   #settings-dialog [role="tabpanel"] { max-height: calc(100vh - 142px); padding: 12px; }
   #settings-dialog [role="tab"] { flex: 1 1 0; min-width: 0; padding: 0 8px; }
   #settings-dialog fieldset { padding: 10px; }
@@ -381,10 +460,6 @@
   #custom-profile-form button { grid-column: auto; }
   .grain-control { grid-template-columns: minmax(0, 1fr) 52px; }
   .grain-control input[type="range"] { grid-column: 1 / -1; }
-}
-
-@media (display-mode: fullscreen), (display-mode: standalone) {
-  :root { --bottom-safe-inset: 0px; }
 }
 
 #glyph-atlas-dialog {

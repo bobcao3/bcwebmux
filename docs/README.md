@@ -10,6 +10,8 @@ repository-root `docs/` directory.
   reset semantics.
 - [Connection lifecycle](connection-lifecycle.md): connection ownership,
   liveness, recovery, backpressure, and replay contracts.
+- [Mobile text interactions](mobile-interactions.md): paste support, interaction
+  audit results, remaining limitations, and physical-device checks.
 - [Glyph cache design](glyph-cache-design.md): cell-sized glyph slots, shared
   atlas ownership, capacity limits, and terminal partitions.
 - [Kitty graphics design](kitty-graphics.md): local Ghostty checkout, WASM

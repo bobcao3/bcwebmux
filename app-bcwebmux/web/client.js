@@ -9,6 +9,7 @@ import { applySessionStatus, programStatusLabel, sessionStatus } from "./Session
 import { SessionTransport } from "./SessionTransport.js";
 import { initializeSettings } from "./settings.js";
 import { initializeGlyphAtlasDialog } from "./GlyphAtlasDialog.js";
+import { initializePasteDialog } from "./PasteDialog.js";
 import { initializeAuthSettings } from "./AuthSettings.js";
 import { resolveFileServiceLink } from "./FileServiceLinks.js";
 
@@ -473,6 +474,7 @@ softkeys.addEventListener("click", (event) => {
   if (terminal.selectionMode) return;
   const button = event.target.closest("button");
   if (!button) return;
+  if (button.id === "paste-button") return;
   if (button.dataset.mod) {
     terminal.setSoftModifiers(terminal.softModifiers ^ Number(button.dataset.mod));
   } else {
@@ -510,6 +512,7 @@ const terminal = new Terminal({
     copy: inputDebugCopy,
   },
 });
+const pasteDialog = initializePasteDialog(terminal);
 const sessionApi = new SessionApi();
 const transport = new SessionTransport();
 transport.activate(terminal);
@@ -592,6 +595,7 @@ sessionController.onChange(() => {
     `[ ${count} ${count === 1 ? "SESSION" : "SESSIONS"} ]`;
 });
 sessionController.onActiveChange(() => {
+  pasteDialog.close();
   activeAttachment = query.has("gpu-test")
     ? transport.activeAttachment
     : sessionController.activeAttachment;
