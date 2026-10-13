@@ -281,6 +281,7 @@
   z-index: 2;
   display: grid;
   width: 44px;
+  min-width: 44px;
   height: 100%;
   padding: 0;
   place-items: center;

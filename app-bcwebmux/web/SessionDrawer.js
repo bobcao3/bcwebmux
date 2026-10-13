@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Cheng Cao
 
-import { applySessionStatus, programStatusLabel, sessionStatus } from "./SessionStatus.js";
+import { programStatusLabel, sessionStatus } from "./SessionStatus.js";
+import { html, nothing, render } from "./lib/lit-html/lit-html.js";
+import { repeat } from "./lib/lit-html/directives/repeat.js";
 
 const STORAGE_VERSION = "v1";
 const LONG_PRESS_MS = 550;
@@ -26,37 +28,51 @@ function storageFor(value) {
 
 function makeDialog(doc, kind) {
   const destructive = kind === "confirm";
-  const dialog = doc.createElement("dialog");
-  const title = doc.createElement("h2");
-  const message = doc.createElement("p");
-  const form = doc.createElement("form");
-  const input = destructive ? null : doc.createElement("input");
-  const cancel = doc.createElement("button");
-  const submit = doc.createElement("button");
-  dialog.id = `session-${kind}-dialog`;
-  dialog.setAttribute("aria-labelledby", `${dialog.id}-title`);
-  title.id = `${dialog.id}-title`;
-  title.textContent = destructive ? "Confirm session removal" : "Rename session";
-  message.id = `${dialog.id}-message`;
-  message.textContent = destructive
-    ? "This action cannot be undone."
-    : "Set a name, or leave it empty to use the terminal title.";
+  const dialogId = `session-${kind}-dialog`;
+  const mount = doc.createElement("div");
+  render(
+    html`<dialog id=${dialogId} aria-labelledby=${`${dialogId}-title`}>
+      <h2 id=${`${dialogId}-title`}>
+        ${destructive ? "Confirm session removal" : "Rename session"}
+      </h2>
+      <p id=${`${dialogId}-message`}>
+        ${
+          destructive
+            ? "This action cannot be undone."
+            : "Set a name, or leave it empty to use the terminal title."
+        }
+      </p>
+      <form>
+        ${
+          destructive
+            ? nothing
+            : html`<input
+                type="text"
+                maxlength="80"
+                autocomplete="off"
+                aria-label="Session name"
+              />`
+        }<button type="button">Cancel</button
+        ><button type="submit">${destructive ? "Confirm" : "Save"}</button>
+      </form>
+    </dialog>`,
+    mount,
+  );
+  const dialog = mount.querySelector("dialog");
+  dialog.ownerDocument.body.append(dialog);
+  const form = dialog.querySelector("form");
   form.addEventListener("submit", (event) => event.preventDefault());
-  if (input) {
-    input.type = "text";
-    input.maxLength = 80;
-    input.autocomplete = "off";
-    input.setAttribute("aria-label", "Session name");
-    form.append(input);
-  }
-  cancel.type = "button";
-  cancel.textContent = "Cancel";
-  submit.type = "submit";
-  submit.textContent = destructive ? "Confirm" : "Save";
-  form.append(cancel, submit);
-  dialog.append(title, message, form);
-  doc.body.append(dialog);
-  return { dialog, title, message, form, input, cancel, submit, owned: true };
+  const buttons = [...dialog.querySelectorAll("form > button")];
+  return {
+    dialog,
+    title: dialog.querySelector("h2"),
+    message: dialog.querySelector("p"),
+    form,
+    input: dialog.querySelector("input"),
+    cancel: buttons[0],
+    submit: buttons[1],
+    owned: true,
+  };
 }
 
 export class SessionDrawer {
@@ -81,6 +97,7 @@ export class SessionDrawer {
   #listenerController = new AbortController();
   #subscriptions = [];
   #tabs = new Map();
+  #workspaceFor = null;
   #ownedDialogs = [];
 
   constructor(controllerOrOptions, refs = {}) {
@@ -140,6 +157,7 @@ export class SessionDrawer {
     this.#add(this.#refs.tabs, "contextmenu", (event) => this.#openPointerContextMenu(event));
     this.#add(this.#refs.tabs, "scroll", () => this.#closeContextMenu());
     this.#add(this.#refs.tabs, "keydown", (event) => this.#tabKey(event));
+    this.#add(this.#refs.tabs, "click", (event) => this.#onTabsClick(event));
     this.#add(this.#refs.renameForm, "submit", (event) => {
       event.preventDefault();
       if (event.submitter === this.#refs.renameCancel)
@@ -271,24 +289,21 @@ export class SessionDrawer {
   render() {
     if (!this.#initialized) return this;
     const tabs = this.#refs.tabs;
-    const focusedElement = tabs.ownerDocument.activeElement;
-    const focusedRowId = focusedElement?.closest?.(".session-row")?.dataset?.sessionId;
-    const focusedControl = ["session-tab", "session-lifecycle"].find((className) =>
-      focusedElement?.closest?.(`.${className}`),
+    const doc = tabs.ownerDocument;
+    const focusedElement = doc.activeElement;
+    const focusedInside = Boolean(
+      focusedElement && focusedElement !== tabs && tabs.contains(focusedElement),
     );
+    const focusedRowId = focusedInside
+      ? focusedElement.closest?.(".session-row")?.dataset?.sessionId
+      : undefined;
+    const focusedControl = focusedInside
+      ? ["session-tab", "session-lifecycle"].find((className) =>
+          focusedElement.closest?.(`.${className}`),
+        )
+      : undefined;
     const activeId =
       this.#controller.activeSessionId == null ? "" : String(this.#controller.activeSessionId);
-    const motion = new Map(
-      [...tabs.children].map((row) => [
-        row.dataset.sessionId,
-        {
-          state: row.dataset.programStatus,
-          time: row.getAnimations()[0]?.currentTime,
-        },
-      ]),
-    );
-    this.#tabs.clear();
-    tabs.replaceChildren();
     const sessions = this.#controller.sessions ?? [];
     const focusId =
       focusedControl === "session-tab" &&
@@ -299,121 +314,135 @@ export class SessionDrawer {
           : sessions[0]
             ? String(sessions[0].id)
             : "";
-    for (const metadata of sessions) {
-      const id = String(metadata.id),
-        row = tabs.ownerDocument.createElement("div"),
-        tab = tabs.ownerDocument.createElement("button"),
-        copy = tabs.ownerDocument.createElement("div"),
-        name = tabs.ownerDocument.createElement("span"),
-        detail = tabs.ownerDocument.createElement("span"),
-        remove = tabs.ownerDocument.createElement("button");
-      const label = String(metadata.name || metadata.title || "Untitled terminal"),
-        attached = Boolean(this.#controller.isAttached?.(id)),
-        disconnected = id === activeId && !attached,
-        action = lifecycleAction(metadata),
-        terminate = action === "terminate";
-      row.className = id === activeId ? "session-row is-active" : "session-row";
-      row.classList.toggle("is-unread", Boolean(metadata.unread));
-      row.classList.toggle("is-unread-bell", Boolean(metadata.unreadBell));
-      row.dataset.sessionId = id;
-      row.dataset.state = String(metadata.state || "unknown");
-      const status = sessionStatus(metadata);
-      const statusLabel = programStatusLabel(status);
-      applySessionStatus(row, status);
-      tab.type = "button";
-      tab.className = "session-tab";
-      tab.role = "tab";
-      tab.dataset.sessionId = id;
-      tab.id = `session-tab-${id.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
-      tab.tabIndex = id === focusId ? 0 : -1;
-      tab.setAttribute("aria-selected", String(id === activeId));
-      tab.setAttribute(
-        "aria-label",
-        metadata.unreadBell
-          ? `${label} · unread bell · unread activity`
-          : metadata.unread
-            ? `${label} · unread activity`
-            : label,
-      );
-      tab.setAttribute("aria-haspopup", "menu");
-      if (this.#refs.workspace?.id) tab.setAttribute("aria-controls", this.#refs.workspace.id);
-      copy.className = "session-copy";
-      name.className = "session-name";
-      name.textContent = label;
-      detail.className = "session-detail";
-      detail.id = `${tab.id}-detail`;
-      detail.textContent = [
-        metadata.state === "running" ? "" : metadata.state || "unknown",
-        statusLabel,
-        disconnected ? "disconnected" : "",
-      ]
-        .filter(Boolean)
-        .join(" · ");
-      detail.title = detail.textContent;
-      detail.hidden = !detail.textContent;
-      if (!detail.hidden) tab.setAttribute("aria-describedby", detail.id);
-      remove.type = "button";
-      remove.className = "session-lifecycle";
-      remove.style.minWidth = "44px";
-      remove.style.minHeight = "44px";
-      const actionIcon = tabs.ownerDocument.createElement("span");
-      actionIcon.className = "session-lifecycle-icon";
-      actionIcon.textContent = terminate ? "■" : "×";
-      actionIcon.setAttribute("aria-hidden", "true");
-      const bell = tabs.ownerDocument.createElementNS("http://www.w3.org/2000/svg", "svg");
-      bell.classList.add("session-bell-icon");
-      bell.setAttribute("viewBox", "0 0 24 24");
-      bell.setAttribute("aria-hidden", "true");
-      const bellPath = tabs.ownerDocument.createElementNS("http://www.w3.org/2000/svg", "path");
-      bellPath.setAttribute("d", "M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4");
-      bell.append(bellPath);
-      remove.append(actionIcon, bell);
-      remove.setAttribute("aria-label", `${terminate ? "Terminate" : "Remove"} ${label}`);
-      remove.title = `${terminate ? "Terminate" : "Remove"} ${label}`;
-      remove.disabled = metadata.state === "creating" || metadata.state === "terminating";
-      copy.append(name, detail);
-      row.append(tab, copy, remove);
-      tabs.append(row);
-      this.#tabs.set(id, tab);
-      tab.addEventListener("click", (event) => {
-        const suppressed = this.#suppressedClick;
-        if (suppressed?.id === id && suppressed.until > performance.now()) {
-          event.preventDefault();
-          event.stopPropagation();
-          this.#suppressedClick = null;
-          return;
+    this.#renderRows(sessions, activeId, focusId);
+    if (this.#refs.workspace) {
+      if (activeId && activeId !== this.#workspaceFor) {
+        const tab = this.#tabs.get(activeId);
+        if (tab) {
+          this.#refs.workspace.setAttribute("role", "tabpanel");
+          this.#refs.workspace.setAttribute("aria-labelledby", tab.id);
+          this.#workspaceFor = activeId;
         }
-        this.#suppressedClick = null;
-        this.#closeContextMenu();
-        this.#select(id);
-      });
-      remove.addEventListener("click", (event) => {
-        event.stopPropagation();
-        this.#showConfirm(id, action);
-      });
+      } else if (!activeId) this.#workspaceFor = null;
     }
-    for (const row of tabs.children) {
-      const previousMotion = motion.get(row.dataset.sessionId);
-      if (previousMotion?.state === row.dataset.programStatus && previousMotion?.time != null) {
-        const animation = row.getAnimations()[0];
-        if (animation) animation.currentTime = previousMotion.time;
-      }
+    // Rows persist across renders, so a press in flight keeps its target and
+    // focus never moves while its element is still connected. Only a removed
+    // row needs a replacement focus target.
+    if (focusedInside && focusedElement && !focusedElement.isConnected && focusId) {
+      const targetRow = this.#tabs.get(focusId)?.closest(".session-row") ?? null;
+      const sameControl =
+        targetRow && focusedControl ? targetRow.querySelector(`.${focusedControl}`) : null;
+      if (sameControl && !sameControl.disabled) sameControl.focus();
+      else this.#tabs.get(focusId)?.focus();
     }
-    if (this.#refs.workspace && activeId) {
-      const tab = this.#tabs.get(activeId);
-      if (tab) {
-        this.#refs.workspace.setAttribute("role", "tabpanel");
-        this.#refs.workspace.setAttribute("aria-labelledby", tab.id);
-      }
-    }
-    const focusedRow =
-      focusedRowId && [...tabs.children].find((row) => row.dataset.sessionId === focusedRowId);
-    const replacement =
-      focusedRow && focusedControl && focusedRow.querySelector(`.${focusedControl}`);
-    if (replacement && !replacement.disabled) replacement.focus();
-    else if (focusedRowId && this.#tabs.has(focusedRowId)) this.#tabs.get(focusedRowId).focus();
-    else if (focusedRowId) this.#tabs.get(focusId)?.focus();
     return this;
+  }
+
+  // Keyed row list: repeat() keeps row elements stable across renders (so
+  // clicks and focus survive reorder-free updates) and writes only the
+  // bindings whose values changed, which is what makes title, status, and
+  // unread ticks cheap.
+  #renderRows(sessions, activeId, focusId) {
+    const tabs = this.#refs.tabs;
+    const workspaceId = this.#refs.workspace?.id ?? "";
+    render(
+      html`${repeat(
+        sessions,
+        (metadata) => String(metadata.id),
+        (metadata) => {
+          const id = String(metadata.id);
+          const label = String(metadata.name || metadata.title || "Untitled terminal");
+          const attached = Boolean(this.#controller.isAttached?.(id));
+          const disconnected = id === activeId && !attached;
+          const action = lifecycleAction(metadata);
+          const status = sessionStatus(metadata);
+          const statusLabel = programStatusLabel(status);
+          const detailText = [
+            metadata.state === "running" ? "" : metadata.state || "unknown",
+            statusLabel,
+            disconnected ? "disconnected" : "",
+          ]
+            .filter(Boolean)
+            .join(" · ");
+          const active = id === activeId;
+          const rowClass = [
+            "session-row",
+            active ? "is-active" : "",
+            metadata.unread ? "is-unread" : "",
+            metadata.unreadBell ? "is-unread-bell" : "",
+          ]
+            .filter(Boolean)
+            .join(" ");
+          const progress = status?.state === "done" ? 100 : status?.progress;
+          const tabId = `session-tab-${id.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
+          const tabLabel = metadata.unreadBell
+            ? `${label} · unread bell · unread activity`
+            : metadata.unread
+              ? `${label} · unread activity`
+              : label;
+          const lifecycleLabel = `${action === "terminate" ? "Terminate" : "Remove"} ${label}`;
+          return html`<div
+            class=${rowClass}
+            data-session-id=${id}
+            data-state=${String(metadata.state || "unknown")}
+            data-program-status=${status?.state ?? nothing}
+            data-progress=${progress ?? nothing}
+          >
+            <button
+              type="button"
+              class="session-tab"
+              role="tab"
+              data-session-id=${id}
+              id=${tabId}
+              .tabIndex=${id === focusId ? 0 : -1}
+              aria-selected=${String(active)}
+              aria-label=${tabLabel}
+              aria-haspopup="menu"
+              aria-controls=${workspaceId || nothing}
+              aria-describedby=${detailText ? `${tabId}-detail` : nothing}
+            ></button>
+            <div class="session-copy">
+              <span class="session-name">${label}</span
+              ><span
+                class="session-detail"
+                id=${`${tabId}-detail`}
+                title=${detailText}
+                ?hidden=${!detailText}
+                >${detailText}</span
+              >
+            </div>
+            <button
+              type="button"
+              class="session-lifecycle"
+              aria-label=${lifecycleLabel}
+              title=${lifecycleLabel}
+              .disabled=${metadata.state === "creating" || metadata.state === "terminating"}
+            >
+              <span class="session-lifecycle-icon" aria-hidden="true"
+                >${action === "terminate" ? "■" : "×"}</span
+              ><svg class="session-bell-icon" viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4" />
+              </svg>
+            </button>
+          </div>`;
+        },
+      )}`,
+      tabs,
+    );
+    this.#tabs.clear();
+    for (const row of tabs.children) {
+      if (row.dataset?.sessionId == null) continue;
+      const tab = row.querySelector(".session-tab");
+      if (tab) this.#tabs.set(row.dataset.sessionId, tab);
+      // The progress custom property goes through CSSOM, not a style
+      // binding: style-src 'self' blocks style attributes but exempts
+      // element.style sets, matching the old manual row builder.
+      const progressStyle = row.dataset.progress ? `${row.dataset.progress}%` : "";
+      if (row.style.getPropertyValue("--session-progress") !== progressStyle) {
+        if (progressStyle) row.style.setProperty("--session-progress", progressStyle);
+        else row.style.removeProperty("--session-progress");
+      }
+    }
   }
 
   open() {
@@ -534,6 +563,32 @@ export class SessionDrawer {
 
   #focusActive() {
     this.#tabs.get(String(this.#controller.activeSessionId))?.focus();
+  }
+
+  #onTabsClick(event) {
+    const lifecycle = event.target.closest(".session-lifecycle");
+    if (lifecycle && this.#refs.tabs.contains(lifecycle)) {
+      event.stopPropagation();
+      const id = lifecycle.closest(".session-row")?.dataset?.sessionId;
+      if (!id) return;
+      const action = lifecycleAction(this.#controller.get(id));
+      this.#showConfirm(id, action);
+      return;
+    }
+    const tab = event.target.closest(".session-tab");
+    if (!tab || !this.#refs.tabs.contains(tab)) return;
+    const id = tab.closest(".session-row")?.dataset?.sessionId ?? tab.dataset.sessionId;
+    if (!id) return;
+    const suppressed = this.#suppressedClick;
+    if (suppressed?.id === id && suppressed.until > performance.now()) {
+      event.preventDefault();
+      event.stopPropagation();
+      this.#suppressedClick = null;
+      return;
+    }
+    this.#suppressedClick = null;
+    this.#closeContextMenu();
+    this.#select(id);
   }
 
   #select(id) {
@@ -766,26 +821,21 @@ export class SessionDrawer {
   }
 
   #ensureContextMenu(doc) {
-    const menu = doc.createElement("div");
-    const rename = doc.createElement("button");
-    const lifecycle = doc.createElement("button");
-    menu.id = "session-context-menu";
-    menu.setAttribute("role", "menu");
-    menu.setAttribute("aria-label", "Session actions");
-    menu.hidden = true;
-    rename.type = "button";
-    rename.setAttribute("role", "menuitem");
-    rename.className = "session-context-rename";
-    lifecycle.type = "button";
-    lifecycle.setAttribute("role", "menuitem");
-    lifecycle.className = "session-context-lifecycle";
-    menu.append(rename, lifecycle);
+    const mount = doc.createElement("div");
+    render(
+      html`<div id="session-context-menu" role="menu" aria-label="Session actions" hidden>
+        <button type="button" role="menuitem" class="session-context-rename"></button
+        ><button type="button" role="menuitem" class="session-context-lifecycle"></button>
+      </div>`,
+      mount,
+    );
+    const menu = mount.querySelector("#session-context-menu");
     doc.body.append(menu);
     this.#ownedDialogs.push(menu);
     Object.assign(this.#refs, {
       contextMenu: menu,
-      contextRename: rename,
-      contextLifecycle: lifecycle,
+      contextRename: menu.querySelector(".session-context-rename"),
+      contextLifecycle: menu.querySelector(".session-context-lifecycle"),
     });
   }
 
