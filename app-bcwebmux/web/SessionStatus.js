@@ -39,16 +39,24 @@ export function programStatusLabel(status) {
 }
 
 export function applySessionStatus(element, status) {
-  if (status) element.dataset.programStatus = status.state;
-  else delete element.dataset.programStatus;
-  element.classList.toggle("is-paused", Boolean(status?.paused));
+  const programStatus = status ? status.state : "";
+  if ((element.dataset.programStatus ?? "") !== programStatus) {
+    if (status) element.dataset.programStatus = status.state;
+    else delete element.dataset.programStatus;
+  }
+  const paused = Boolean(status?.paused);
+  if (element.classList.contains("is-paused") !== paused)
+    element.classList.toggle("is-paused", paused);
   const progress = status?.state === "done" ? 100 : status?.progress;
-  if (progress != null) {
-    element.dataset.progress = String(progress);
-    element.style.setProperty("--session-progress", `${progress}%`);
-  } else {
-    delete element.dataset.progress;
-    element.style.removeProperty("--session-progress");
+  const progressText = progress == null ? "" : String(progress);
+  if ((element.dataset.progress ?? "") !== progressText) {
+    if (progress != null) element.dataset.progress = String(progress);
+    else delete element.dataset.progress;
+  }
+  const progressStyle = progress == null ? "" : `${progress}%`;
+  if (element.style.getPropertyValue("--session-progress") !== progressStyle) {
+    if (progress != null) element.style.setProperty("--session-progress", `${progress}%`);
+    else element.style.removeProperty("--session-progress");
   }
   return progress ?? null;
 }

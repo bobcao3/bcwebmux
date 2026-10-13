@@ -260,10 +260,10 @@ function renderConnectionStatus() {
 }
 
 function setConnectionStatus(state, label, detail = label) {
-  status.dataset.state = state;
-  status.textContent = label;
-  status.setAttribute("aria-label", label);
-  status.setAttribute("title", detail);
+  if (status.dataset.state !== state) status.dataset.state = state;
+  if (status.textContent !== label) status.textContent = label;
+  if (status.getAttribute("aria-label") !== label) status.setAttribute("aria-label", label);
+  if (status.getAttribute("title") !== detail) status.setAttribute("title", detail);
 }
 
 function updateTerminalIdentity(metadata, terminalTitle = metadata?.title) {
@@ -271,20 +271,59 @@ function updateTerminalIdentity(metadata, terminalTitle = metadata?.title) {
   const title = typeof terminalTitle === "string" ? terminalTitle.trim() : "";
   const primary = name || title || "Terminal";
   const secondary = name && title;
-  terminalIdentityPrimary.textContent = primary;
-  terminalIdentitySecondary.textContent = secondary ? title : "";
-  terminalIdentitySecondary.hidden = !secondary;
+  if (terminalIdentityPrimary.textContent !== primary)
+    terminalIdentityPrimary.textContent = primary;
+  const secondaryText = secondary ? title : "";
+  if (terminalIdentitySecondary.textContent !== secondaryText)
+    terminalIdentitySecondary.textContent = secondaryText;
+  if (terminalIdentitySecondary.hidden !== !secondary)
+    terminalIdentitySecondary.hidden = !secondary;
   updateTerminalIdentityDetail();
   const label = secondary ? `${name} — ${title}` : primary;
-  terminalIdentity.setAttribute("aria-label", label);
-  terminalIdentity.setAttribute("title", label);
+  if (terminalIdentity.getAttribute("aria-label") !== label)
+    terminalIdentity.setAttribute("aria-label", label);
+  if (terminalIdentity.getAttribute("title") !== label)
+    terminalIdentity.setAttribute("title", label);
 }
 
 function updateTerminalIdentityDetail() {
   const simple = perf.dataset.mode === "simple";
   const hasTitle = !terminalIdentitySecondary.hidden;
-  terminalIdentityDetail.hidden = !simple && !hasTitle;
-  terminalIdentityDetail.classList.toggle("alternating", simple && hasTitle);
+  const hidden = !simple && !hasTitle;
+  if (terminalIdentityDetail.hidden !== hidden) terminalIdentityDetail.hidden = hidden;
+  const alternating = simple && hasTitle;
+  if (terminalIdentityDetail.classList.contains("alternating") !== alternating)
+    terminalIdentityDetail.classList.toggle("alternating", alternating);
+}
+
+// Title sequences arrive at output rate but only paint a tab label and the
+// tab strip text. Collapse them to 10Hz with a trailing flush of the latest
+// value, matching the controller's title emission budget.
+const DOCUMENT_TITLE_MS = 100;
+let pendingDocumentTitle = null;
+let documentTitleTimer = 0;
+let lastDocumentTitleWrite = 0;
+function setDocumentTitleThrottled(next) {
+  pendingDocumentTitle = next;
+  const now = performance.now();
+  if (now - lastDocumentTitleWrite >= DOCUMENT_TITLE_MS) {
+    lastDocumentTitleWrite = now;
+    pendingDocumentTitle = null;
+    if (document.title !== next) document.title = next;
+    return;
+  }
+  if (!documentTitleTimer) {
+    documentTitleTimer = setTimeout(
+      () => {
+        documentTitleTimer = 0;
+        lastDocumentTitleWrite = performance.now();
+        const latest = pendingDocumentTitle;
+        pendingDocumentTitle = null;
+        if (latest !== null && document.title !== latest) document.title = latest;
+      },
+      DOCUMENT_TITLE_MS - (now - lastDocumentTitleWrite),
+    );
+  }
 }
 
 function showDesktopNotification(title, body) {
@@ -465,22 +504,29 @@ function updateSoftkeysUi() {
 }
 
 function updateSelectionModeUi(active = terminal?.selectionMode || false) {
-  terminalElement.classList.toggle("selection-mode", active);
-  selectionButton?.setAttribute("aria-pressed", String(active));
-  selectionButton?.setAttribute(
-    "aria-label",
-    active ? "Exit selection mode" : "Enter selection mode",
-  );
-  selectionButton?.setAttribute(
-    "title",
-    active ? "Resume live terminal" : "Select frozen terminal text",
-  );
+  if (terminalElement.classList.contains("selection-mode") !== active)
+    terminalElement.classList.toggle("selection-mode", active);
+  const pressed = String(active);
+  if (selectionButton?.getAttribute("aria-pressed") !== pressed)
+    selectionButton?.setAttribute("aria-pressed", pressed);
+  const label = active ? "Exit selection mode" : "Enter selection mode";
+  if (selectionButton?.getAttribute("aria-label") !== label)
+    selectionButton?.setAttribute("aria-label", label);
+  const title = active ? "Resume live terminal" : "Select frozen terminal text";
+  if (selectionButton?.getAttribute("title") !== title)
+    selectionButton?.setAttribute("title", title);
 }
 
+const softkeyModButtons = [...softkeys.querySelectorAll("[data-mod]")].map((button) => ({
+  button,
+  mod: Number(button.dataset.mod),
+}));
 function updateSoftModifiers(value) {
-  softkeys.querySelectorAll("[data-mod]").forEach((button) => {
-    button.setAttribute("aria-pressed", String((value & Number(button.dataset.mod)) !== 0));
-  });
+  for (const { button, mod } of softkeyModButtons) {
+    const pressed = String((value & mod) !== 0);
+    if (button.getAttribute("aria-pressed") !== pressed)
+      button.setAttribute("aria-pressed", pressed);
+  }
 }
 
 updateSoftkeysUi();
@@ -581,9 +627,11 @@ const drawer = new SessionDrawer({
 drawer.init();
 if (query.has("gpu-test")) drawer.close();
 const terminalProgress = document.querySelector("#terminal-progress");
+const drawerStatusElement = document.querySelector("#session-drawer-status");
 const PROGRESS_AUTOHIDE_MS = 4000;
 let progressAutoHideTimer = null;
 let progressCompleteKey = null;
+let lastTerminalProgressKey = null;
 function renderTerminalProgress() {
   const status = sessionStatus(sessionController.activeSession);
   const progress = applySessionStatus(terminalProgress, status);
@@ -595,25 +643,39 @@ function renderTerminalProgress() {
     if (progressAutoHideTimer !== null) clearTimeout(progressAutoHideTimer);
     progressAutoHideTimer = null;
     progressCompleteKey = null;
-    terminalProgress.hidden = !status || status.state === "idle";
+    const hidden = !status || status.state === "idle";
+    if (terminalProgress.hidden !== hidden) terminalProgress.hidden = hidden;
   } else if (progressCompleteKey !== key) {
     if (progressAutoHideTimer !== null) clearTimeout(progressAutoHideTimer);
     progressCompleteKey = key;
-    terminalProgress.hidden = false;
+    if (terminalProgress.hidden !== false) terminalProgress.hidden = false;
     progressAutoHideTimer = setTimeout(() => {
       progressAutoHideTimer = null;
       terminalProgress.hidden = true;
       terminal.setProgress(null);
+      lastTerminalProgressKey = "hidden";
     }, PROGRESS_AUTOHIDE_MS);
   } else {
-    terminalProgress.hidden = progressAutoHideTimer === null;
+    const hidden = progressAutoHideTimer === null;
+    if (terminalProgress.hidden !== hidden) terminalProgress.hidden = hidden;
   }
-  terminal.setProgress(terminalProgress.hidden ? null : status);
-  if (progress === null) terminalProgress.removeAttribute("aria-valuenow");
-  else terminalProgress.setAttribute("aria-valuenow", String(progress));
+  const progressKey = terminalProgress.hidden
+    ? "hidden"
+    : `${status?.state ?? ""}|${progress ?? ""}|${status?.paused ? "1" : "0"}`;
+  if (progressKey !== lastTerminalProgressKey) {
+    lastTerminalProgressKey = progressKey;
+    terminal.setProgress(terminalProgress.hidden ? null : status);
+  }
+  if (progress === null) {
+    if (terminalProgress.hasAttribute("aria-valuenow"))
+      terminalProgress.removeAttribute("aria-valuenow");
+  } else if (terminalProgress.getAttribute("aria-valuenow") !== String(progress)) {
+    terminalProgress.setAttribute("aria-valuenow", String(progress));
+  }
   const label = programStatusLabel(status);
-  terminalProgress.setAttribute("aria-valuetext", label);
-  terminalProgress.title = label;
+  if (terminalProgress.getAttribute("aria-valuetext") !== label)
+    terminalProgress.setAttribute("aria-valuetext", label);
+  if (terminalProgress.title !== label) terminalProgress.title = label;
 }
 sessionController.onChange(() => {
   notifyProgramStatusTransitions();
@@ -624,8 +686,9 @@ sessionController.onChange(() => {
   renderConnectionStatus();
   const count = sessionController.sessions.length;
   queueMicrotask(renderTerminalProgress);
-  document.querySelector("#session-drawer-status").textContent =
-    `[ ${count} ${count === 1 ? "SESSION" : "SESSIONS"} ]`;
+  const drawerStatusText = `[ ${count} ${count === 1 ? "SESSION" : "SESSIONS"} ]`;
+  if (drawerStatusElement.textContent !== drawerStatusText)
+    drawerStatusElement.textContent = drawerStatusText;
 });
 sessionController.onActiveChange(() => {
   terminal.setProgressBell(false);
@@ -639,7 +702,7 @@ sessionController.onActiveChange(() => {
 });
 terminal.onError((error) => showClientError(error, "terminal error"));
 terminal.onTitleChange((title) => {
-  document.title = title || "bcwebmux";
+  setDocumentTitleThrottled(title || "bcwebmux");
   if (query.has("gpu-test")) updateTerminalIdentity(null, title);
 });
 terminal.onBell(() => {
@@ -651,7 +714,7 @@ terminal.onBell(() => {
 });
 terminal.onNotification(({ title, body }) => showDesktopNotification(title, body));
 sessionController.onTitleChange((title, metadata) => {
-  document.title = title || metadata?.name || "bcwebmux";
+  setDocumentTitleThrottled(title || metadata?.name || "bcwebmux");
   updateTerminalIdentity(metadata, title);
 });
 sessionController.onNotification(({ title, body }, metadata, active) => {

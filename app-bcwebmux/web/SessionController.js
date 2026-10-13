@@ -3,6 +3,11 @@
 
 const STORAGE_VERSION = "v1";
 const DEFAULT_CORE_LIMIT = 4;
+// Title sequences can arrive at output rate (a spinner rewriting OSC 0/2 per
+// frame, a loop echoing escape codes). The title only feeds tab labels and
+// document.title, so emit UI updates at most every 100ms with a trailing
+// flush that always delivers the latest value.
+const TITLE_EMIT_MS = 100;
 
 function emitter() {
   const listeners = new Set();
@@ -610,6 +615,8 @@ export class SessionController {
         eventSeq: 0n,
         outputOffset: 0n,
         listeners: [],
+        lastTitleEmit: null,
+        titleTimer: 0,
         used: 0,
       };
       this.#cores.set(metadata.id, entry);
@@ -639,8 +646,7 @@ export class SessionController {
     };
     bind("onTitleChange", (title) => {
       metadata.title = String(title ?? "");
-      this.#events.change.emit({ type: "title", session: metadata, controller: this });
-      if (this.#activeId === entry.id) this.#events.title.emit(metadata.title, metadata, this);
+      this.#emitTitleThrottled(entry, metadata);
     });
     bind("onBell", () => {
       if (this.#activeId === entry.id) this.#events.bell.emit(metadata, this);
@@ -665,6 +671,28 @@ export class SessionController {
       this.#events.change.emit({ type: "core-error", session: metadata, controller: this });
       if (this.#activeId === entry.id) this.#reportError(error, false);
     });
+  }
+
+  #emitTitleThrottled(entry, metadata) {
+    const now = globalThis.performance?.now?.() ?? Date.now();
+    if (entry.titleTimer) return;
+    const elapsed = entry.lastTitleEmit == null ? Infinity : now - entry.lastTitleEmit;
+    if (elapsed >= TITLE_EMIT_MS) {
+      entry.lastTitleEmit = now;
+      this.#emitTitle(entry, metadata);
+      return;
+    }
+    entry.titleTimer = setTimeout(() => {
+      entry.titleTimer = 0;
+      if (this.#disposed || this.#cores.get(entry.id) !== entry) return;
+      entry.lastTitleEmit = globalThis.performance?.now?.() ?? Date.now();
+      this.#emitTitle(entry, metadata);
+    }, TITLE_EMIT_MS - elapsed);
+  }
+
+  #emitTitle(entry, metadata) {
+    this.#events.change.emit({ type: "title", session: metadata, controller: this });
+    if (this.#activeId === entry.id) this.#events.title.emit(metadata.title, metadata, this);
   }
 
   #syncEntry(entry, record) {
@@ -714,6 +742,10 @@ export class SessionController {
   }
 
   #closeEntry(entry) {
+    if (entry.titleTimer) {
+      clearTimeout(entry.titleTimer);
+      entry.titleTimer = 0;
+    }
     this.#detach(entry);
     for (const disposable of entry.listeners.splice(0)) disposable?.dispose?.();
     entry.core?.dispose?.();
