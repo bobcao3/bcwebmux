@@ -107,6 +107,18 @@ this project's build and are not distributed here.
   [app-bcwebmux/web/fonts/NotoEmoji-OFL.txt](app-bcwebmux/web/fonts/NotoEmoji-OFL.txt),
   which is also served next to the font.
 
+### lit-html (session drawer rows)
+
+- **License:** BSD-3-Clause
+- **Copyright:** Copyright 2017 Google LLC
+- **Used as:** the vendored `web/lib/lit-html/` ES modules (`lit-html.js`,
+  `directive.js`, `directive-helpers.js`, `directives/repeat.js`), copied from
+  the `lit-html` 3.3.3 npm package and served as web assets. They render the
+  session drawer rows.
+- **License text:**
+  [app-bcwebmux/web/lib/lit-html/LICENSE](app-bcwebmux/web/lib/lit-html/LICENSE),
+  which is also served next to the modules.
+
 ### Go dependencies
 
 Downloaded using `app-bcwebmux/go/go.mod` and `go.sum`, then linked into
