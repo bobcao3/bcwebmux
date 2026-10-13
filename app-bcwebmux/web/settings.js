@@ -8,6 +8,8 @@ import {
   normalizeFileServiceConfig,
   resolveFileServiceLink,
 } from "./FileServiceLinks.js";
+import { html, render } from "./lib/lit-html/lit-html.js";
+import { repeat } from "./lib/lit-html/directives/repeat.js";
 
 const STORAGE_KEY = "bcwebmux.settings.v1";
 // The server publishes machine-local defaults there (the file service this machine runs);
@@ -543,70 +545,55 @@ export function initializeSettings() {
     onChange(profile);
   };
 
-  for (const [id, profile] of Object.entries(BUILTIN_PROFILES)) {
-    const label = document.createElement("label");
-    label.className = "profile-option";
-    const radio = document.createElement("input");
-    radio.type = "radio";
-    radio.name = "color-profile";
-    radio.value = id;
-    radio.checked = settings.selected === id;
-    const copy = document.createElement("span");
-    copy.className = "profile-copy";
-    const title = document.createElement("strong");
-    title.textContent = profile.name;
-    const description = document.createElement("small");
-    description.textContent = profile.description;
-    copy.append(title, description);
-    const swatches = document.createElement("span");
-    swatches.className = "profile-swatches";
-    swatches.setAttribute("aria-hidden", "true");
-    for (const color of [
-      profile.background,
-      profile.foreground,
-      profile.accent,
-      profile.success,
-      profile.danger,
-    ]) {
-      const swatch = document.createElement("i");
-      swatch.style.background = color;
-      swatches.append(swatch);
-    }
-    label.append(radio, copy, swatches);
-    profileList.append(label);
-  }
-  {
-    const label = document.createElement("label");
-    label.className = "profile-option";
-    const radio = document.createElement("input");
-    radio.type = "radio";
-    radio.name = "color-profile";
-    radio.value = "custom";
-    radio.checked = settings.selected === "custom";
-    const copy = document.createElement("span");
-    copy.className = "profile-copy";
-    const title = document.createElement("strong");
-    title.textContent = settings.custom.name;
-    const description = document.createElement("small");
-    description.textContent = settings.custom.description;
-    copy.append(title, description);
-    const swatches = document.createElement("span");
-    swatches.className = "profile-swatches";
-    swatches.setAttribute("aria-hidden", "true");
-    for (const color of [
-      settings.custom.background,
-      settings.custom.foreground,
-      settings.custom.accent,
-      settings.custom.success,
-      settings.custom.danger,
-    ]) {
-      const swatch = document.createElement("i");
-      swatch.style.background = color;
-      swatches.append(swatch);
-    }
-    label.append(radio, copy, swatches);
-    profileList.append(label);
-  }
+  // Profile options render as a keyed lit list; swatch backgrounds go
+  // through CSSOM after render because style-src 'self' blocks style
+  // attributes but exempts element.style sets.
+  const swatchColors = (profile) => [
+    profile.background,
+    profile.foreground,
+    profile.accent,
+    profile.success,
+    profile.danger,
+  ];
+  const renderProfileList = () => {
+    const rows = [
+      ...Object.entries(BUILTIN_PROFILES).map(([id, profile]) => ({
+        id,
+        name: profile.name,
+        description: profile.description,
+        colors: swatchColors(profile),
+      })),
+      {
+        id: "custom",
+        name: settings.custom.name,
+        description: settings.custom.description,
+        colors: swatchColors(settings.custom),
+      },
+    ];
+    render(
+      html`${repeat(
+        rows,
+        (row) => row.id,
+        (row) =>
+          html`<label class="profile-option"
+            ><input
+              type="radio"
+              name="color-profile"
+              value=${row.id}
+              .checked=${settings.selected === row.id}
+            /><span class="profile-copy"
+              ><strong>${row.name}</strong><small>${row.description}</small></span
+            ><span class="profile-swatches" aria-hidden="true"
+              >${row.colors.map((color) => html`<i data-swatch=${color}></i>`)}</span
+            ></label
+          >`,
+      )}`,
+      profileList,
+    );
+    for (const swatch of profileList.querySelectorAll("i[data-swatch]"))
+      swatch.style.background = swatch.dataset.swatch;
+  };
+  renderProfileList();
 
   const setTab = (id) => {
     dialog.querySelectorAll('[role="tab"]').forEach((tab) => {
@@ -668,18 +655,7 @@ export function initializeSettings() {
         DEFAULT_CUSTOM[field],
       );
     settings.custom.ansi = customAnsi(settings.custom);
-    const customOption = profileList
-      .querySelector('input[value="custom"]')
-      .closest(".profile-option");
-    [
-      settings.custom.background,
-      settings.custom.foreground,
-      settings.custom.accent,
-      settings.custom.success,
-      settings.custom.danger,
-    ].forEach((color, index) => {
-      customOption.querySelectorAll(".profile-swatches i")[index].style.background = color;
-    });
+    renderProfileList();
     activate("custom");
   });
   fontSettingsForm.elements.fontFamily.value = settings.fontFamily;

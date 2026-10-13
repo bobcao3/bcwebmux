@@ -12,6 +12,7 @@ import { initializeGlyphAtlasDialog } from "./GlyphAtlasDialog.js";
 import { initializePasteDialog } from "./PasteDialog.js";
 import { initializeAuthSettings } from "./AuthSettings.js";
 import { resolveFileServiceLink } from "./FileServiceLinks.js";
+import { html, nothing, render } from "./lib/lit-html/lit-html.js";
 
 // Network-only worker: installation should not cache terminal output or authenticated assets.
 if ("serviceWorker" in navigator && isSecureContext) {
@@ -400,14 +401,18 @@ function validatedWebLink(uri) {
 }
 
 function renderLinkDestination(uri, served) {
-  linkDialogUri.replaceChildren(document.createTextNode(uri));
-  if (served) {
-    const detail = document.createElement("span");
-    detail.className = "link-dialog-resolved";
-    detail.textContent = `→ ${served.url}`;
-    detail.title = "Served address, opened in a new tab.";
-    linkDialogUri.append(document.createElement("br"), detail);
-  }
+  // A lit template keeps the text/br/detail sequence gapless, matching the
+  // old replaceChildren/append build exactly.
+  render(
+    html`${uri}${
+      served
+        ? html`<br /><span class="link-dialog-resolved" title="Served address, opened in a new tab."
+              >${`→ ${served.url}`}</span
+            >`
+        : nothing
+    }`,
+    linkDialogUri,
+  );
 }
 
 function showLinkConfirmation(uri) {
@@ -436,7 +441,7 @@ linkDialogOpen.addEventListener("click", () => {
 });
 linkDialog.addEventListener("close", () => {
   pendingLinkTarget = null;
-  linkDialogUri.replaceChildren();
+  render(nothing, linkDialogUri);
   terminal.resumeFocus({ focus: true });
 });
 

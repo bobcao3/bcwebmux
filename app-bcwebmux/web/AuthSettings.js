@@ -16,6 +16,8 @@ import {
   supported,
   unsupportedReason,
 } from "/webauthn.js";
+import { html, nothing, render as litRender } from "./lib/lit-html/lit-html.js";
+import { repeat } from "./lib/lit-html/directives/repeat.js";
 
 const disarmDelayMs = 5000;
 
@@ -33,9 +35,13 @@ export function initializeAuthSettings() {
   // With nothing enrolled the server is open and nothing can step up, so key
   // enrollment waits for an authenticator app enrolled on the host.
   let nothingEnrolled = false;
-  let armed = null;
+  // armedId tracks the credential awaiting a CONFIRM click by id, so the
+  // armed state survives list re-renders (a refresh no longer strands it on
+  // a detached button).
+  let armedId = null;
   let armedTimer = null;
   let askForCode = null;
+  let lastList = { credentials: [], rpId: "", totp: null };
 
   // failure keeps an expired session from stranding the panel: the server
   // answers 401 "unauthenticated" for a cookie that aged out mid-action, which
@@ -71,9 +77,9 @@ export function initializeAuthSettings() {
   function disarm() {
     clearTimeout(armedTimer);
     armedTimer = null;
-    if (armed) {
-      armed.textContent = "REMOVE";
-      armed = null;
+    if (armedId !== null) {
+      armedId = null;
+      renderList();
     }
   }
 
@@ -98,67 +104,79 @@ export function initializeAuthSettings() {
     });
   }
 
+  function totpDetail(entry) {
+    return `authenticator app · enrolled ${formatTime(entry.enrolledAt)} · last used ${formatTime(entry.lastUsedAt)} · ${entry.digits} digits every ${entry.period}s · enrolled on the host`;
+  }
+
+  function credentialDetail(credential) {
+    const transports = credential.transports?.length
+      ? ` · ${credential.transports.join(", ")}`
+      : "";
+    return `created ${formatTime(credential.createdAt)} · last used ${formatTime(credential.lastUsedAt)}${transports}`;
+  }
+
+  function onRemove(credential) {
+    if (armedId !== credential.id) {
+      disarm();
+      armedId = credential.id;
+      renderList();
+      armedTimer = setTimeout(disarm, disarmDelayMs);
+      report(
+        `Remove "${credential.name}"? Click CONFIRM to drop it, and this session with it if it is the key you are using.`,
+      );
+      return;
+    }
+    disarm();
+    removeCredential(credential).catch(() => {});
+  }
+
+  // renderList rebuilds the credential rows as a keyed lit list. removeCredential
+  // is async and refreshes mid-arm, so keying by credential id keeps the armed
+  // CONFIRM label on the right row instead of a detached button.
+  function renderList() {
+    const { credentials, totp } = lastList;
+    litRender(
+      html`${
+        totp
+          ? html`<div class="auth-credential">
+              <div class="auth-credential-copy">
+                <strong
+                  >${totp.name || "authenticator app"}
+                  <span class="auth-credential-badge auth-credential-badge-factor"
+                    >TOTP</span
+                  ></strong
+                ><small>${totpDetail(totp)}</small>
+              </div>
+            </div>`
+          : nothing
+      }${repeat(
+        credentials,
+        (credential) => credential.id,
+        (credential) =>
+          html`<div class="auth-credential">
+            <div class="auth-credential-copy">
+              <strong
+                >${credential.name}${credential.current ? html` <span class="auth-credential-badge">THIS DEVICE</span>` : nothing}</strong
+              ><small>${credentialDetail(credential)}</small>
+            </div>
+            <button
+              type="button"
+              class="auth-credential-remove"
+              @click=${() => onRemove(credential)}
+            >
+              ${armedId === credential.id ? "CONFIRM" : "REMOVE"}
+            </button>
+          </div>`,
+      )}`,
+      list,
+    );
+  }
+
   function render(credentials, rpId, totp) {
-    list.textContent = "";
+    lastList = { credentials, rpId, totp };
     nothingEnrolled = !totp && !credentials.length;
     addButton.disabled = busy || nothingEnrolled;
-    if (totp) {
-      const row = document.createElement("div");
-      row.className = "auth-credential";
-      const copy = document.createElement("div");
-      copy.className = "auth-credential-copy";
-      const title = document.createElement("strong");
-      title.textContent = totp.name || "authenticator app";
-      const badge = document.createElement("span");
-      badge.className = "auth-credential-badge auth-credential-badge-factor";
-      badge.textContent = "TOTP";
-      title.append(" ", badge);
-      const detail = document.createElement("small");
-      detail.textContent = `authenticator app · enrolled ${formatTime(totp.enrolledAt)} · last used ${formatTime(totp.lastUsedAt)} · ${totp.digits} digits every ${totp.period}s · enrolled on the host`;
-      copy.append(title, detail);
-      row.append(copy);
-      list.append(row);
-    }
-    for (const credential of credentials) {
-      const row = document.createElement("div");
-      row.className = "auth-credential";
-      const copy = document.createElement("div");
-      copy.className = "auth-credential-copy";
-      const title = document.createElement("strong");
-      title.textContent = credential.name;
-      if (credential.current) {
-        const badge = document.createElement("span");
-        badge.className = "auth-credential-badge";
-        badge.textContent = "THIS DEVICE";
-        title.append(" ", badge);
-      }
-      const detail = document.createElement("small");
-      const transports = credential.transports?.length
-        ? ` · ${credential.transports.join(", ")}`
-        : "";
-      detail.textContent = `created ${formatTime(credential.createdAt)} · last used ${formatTime(credential.lastUsedAt)}${transports}`;
-      copy.append(title, detail);
-      const remove = document.createElement("button");
-      remove.type = "button";
-      remove.className = "auth-credential-remove";
-      remove.textContent = "REMOVE";
-      remove.addEventListener("click", () => {
-        if (armed !== remove) {
-          disarm();
-          armed = remove;
-          remove.textContent = "CONFIRM";
-          armedTimer = setTimeout(disarm, disarmDelayMs);
-          report(
-            `Remove "${credential.name}"? Click CONFIRM to drop it, and this session with it if it is the key you are using.`,
-          );
-          return;
-        }
-        disarm();
-        removeCredential(credential).catch(() => {});
-      });
-      row.append(copy, remove);
-      list.append(row);
-    }
+    renderList();
     const factors = [];
     if (totp) factors.push("the authenticator app");
     if (credentials.length)
