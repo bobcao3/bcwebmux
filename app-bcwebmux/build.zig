@@ -160,8 +160,12 @@ pub fn build(b: *std.Build) void {
     terminal_wasm_step.dependOn(&terminal_licenses_install.step);
     _ = web_assets.addCopyFile(b.path("../THIRD_PARTY_NOTICES.md"), "THIRD_PARTY_NOTICES.md");
     _ = web_assets.addCopyFile(
-        b.path("../node_modules/@fontsource/noto-emoji/files/noto-emoji-emoji-400-normal.woff2"),
-        "fonts/NotoEmoji-Regular.woff2",
+        b.path("../node_modules/@fontsource/noto-color-emoji/files/noto-color-emoji-emoji-400-normal.woff2"),
+        "fonts/NotoColorEmoji-Regular.woff2",
+    );
+    _ = web_assets.addCopyFile(
+        b.path("../node_modules/@fontsource/noto-color-emoji/LICENSE"),
+        "fonts/NotoColorEmoji-OFL.txt",
     );
     _ = web_assets.addCopyFile(wasm.getEmittedBin(), "terminal.wasm");
 

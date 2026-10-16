@@ -54,7 +54,7 @@ export class TerminalCore {
     this.options = {
       wasmUrl,
       wasmFontUrls: resolveWasmFontUrls(wasmUrl, options.wasmFontUrls),
-      renderer: options.renderer === "canvas" ? "canvas" : "kb-stb",
+      renderer: options.renderer === "kb-stb" ? "kb-stb" : "canvas",
       font: normalizeFont(options.font || DEFAULT_FONT),
       theme: options.theme || DEFAULT_THEME,
       clipboardWrite: options.clipboardWrite,
@@ -695,7 +695,7 @@ export class TerminalCore {
   async setRenderer(rendererName) {
     this.assertMutable();
     if (this._disposed) throw new Error("terminal core is disposed");
-    const renderer = rendererName === "canvas" ? "canvas" : "kb-stb";
+    const renderer = rendererName === "kb-stb" ? "kb-stb" : "canvas";
     const generation = ++this._rendererChangeGeneration;
     if (this._wasm) await this._prepareRenderer(renderer);
     if (generation !== this._rendererChangeGeneration) return this.options.renderer;

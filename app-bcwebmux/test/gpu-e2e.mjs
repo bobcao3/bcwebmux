@@ -142,7 +142,7 @@ try {
     fetch(`http://127.0.0.1:${bundledPort}/client.js`),
     fetch(`http://127.0.0.1:${bundledPort}/terminal.wasm`),
     fetch(`http://127.0.0.1:${bundledPort}/fonts/OFL.txt`),
-    fetch(`http://127.0.0.1:${bundledPort}/fonts/NotoEmoji-Regular.woff2`),
+    fetch(`http://127.0.0.1:${bundledPort}/fonts/NotoColorEmoji-Regular.woff2`),
   ]);
   const [bundledIndex, bundledClient, bundledWasm, bundledLicense, bundledEmojiFont] =
     bundledResponses;
@@ -515,24 +515,24 @@ try {
     if (new Set(fallbackFamilies.map(family => family.toLowerCase())).size !== fallbackFamilies.length) {
       throw new Error("font fallbacks contain duplicate family names");
     }
-    const notoEmojiIndex = fallbackFamilies.indexOf("Noto Emoji");
+    const notoEmojiIndex = fallbackFamilies.indexOf("Noto Color Emoji");
     const notoSymbolsIndex = fallbackFamilies.indexOf("Noto Sans Symbols 2");
     if (notoEmojiIndex !== 1 || notoSymbolsIndex < 0 || notoEmojiIndex >= notoSymbolsIndex) {
-      throw new Error("font fallbacks must place Noto Emoji immediately after ui-monospace and before Noto Sans Symbols 2");
+      throw new Error("font fallbacks must place Noto Color Emoji immediately after ui-monospace and before Noto Sans Symbols 2");
     }
-    if (!document.fonts.check('15px "Noto Emoji"', "😀")) {
-      throw new Error("Noto Emoji font was not loaded");
+    if (!document.fonts.check('15px "Noto Color Emoji"', "😀")) {
+      throw new Error("Noto Color Emoji font was not loaded");
     }
     const emojiCanvas = document.createElement("canvas");
     emojiCanvas.width = 64;
     emojiCanvas.height = 64;
     const emojiContext = emojiCanvas.getContext("2d");
     if (!emojiContext) throw new Error("emoji rasterization context is unavailable");
-    emojiContext.font = 'normal 400 32px "Noto Emoji"';
+    emojiContext.font = 'normal 400 32px "Noto Color Emoji"';
     emojiContext.fillStyle = "#fff";
     emojiContext.fillText("\u{1FAE0}", 0, 32);
     const emojiPixels = emojiContext.getImageData(0, 0, emojiCanvas.width, emojiCanvas.height).data;
-    if (!emojiPixels.some((value, index) => index % 4 === 3 && value !== 0)) throw new Error("Noto Emoji did not rasterize");
+    if (!emojiPixels.some((value, index) => index % 4 === 3 && value !== 0)) throw new Error("Noto Color Emoji did not rasterize");
     const perfOutput = document.querySelector("#perf");
     if (!perfOutput) throw new Error("performance output is missing");
     const simple = settingsDialog.querySelector('input[type="radio"][value="simple"]');
@@ -574,6 +574,28 @@ try {
     if (Math.abs(glyphCanvas.getBoundingClientRect().width - glyphCanvas.width) > 1) throw new Error("glyph actual pixels were scaled");
     actualSize.click();
     glyphRefresh.click();
+    await waitGlyphTexture();
+    const glyphLayer = document.querySelector("#glyph-atlas-layer");
+    if (!glyphLayer) throw new Error("glyph layer select is missing");
+    if (glyphLayer.value !== "coverage") throw new Error("glyph layer did not default to coverage");
+    glyphLayer.value = "color";
+    glyphLayer.dispatchEvent(new Event("change", { bubbles: true }));
+    await (async () => {
+      const end = deadline(5000);
+      while (glyphRefresh.disabled && performance.now() < end) await sleep(20);
+      if (glyphCanvas.hidden || glyphCanvas.width < 2 || !glyphStatus.textContent.includes("RGBA")) {
+        throw new Error("glyph color preview failed: " + glyphStatus.textContent);
+      }
+      const image = glyphCanvas.getContext("2d").getImageData(0, 0, glyphCanvas.width, glyphCanvas.height);
+      let opaque = 0;
+      for (let i = 0; i < image.data.length; i += 4) {
+        if (image.data[i + 3] !== 255) throw new Error("glyph color preview is not composited opaque");
+        opaque++;
+      }
+      if (!opaque) throw new Error("glyph color preview is empty");
+    })();
+    glyphLayer.value = "coverage";
+    glyphLayer.dispatchEvent(new Event("change", { bubbles: true }));
     await waitGlyphTexture();
     document.querySelector("#glyph-atlas-close").click();
     await sleep(20);
@@ -746,8 +768,8 @@ try {
       if (window.bcwebmux.state.atlasRequiredSlots !== previousAtlasRequiredSlots) {
         throw new Error("WebGL2 glyph atlas required slots grew");
       }
-      if (window.bcwebmux.state.atlasCapacity < window.bcwebmux.state.atlasRequiredSlots) {
-        throw new Error("WebGL2 glyph atlas capacity does not cover required slots");
+      if (window.bcwebmux.state.atlasCapacity < window.bcwebmux.state.glyphSlotsUsed) {
+        throw new Error("WebGL2 physical glyph atlas does not cover uploaded slots");
       }
       await capture();
     }
@@ -1009,7 +1031,7 @@ try {
     Number.isInteger(state.atlasRequiredSlots) &&
       state.atlasRequiredSlots >= state.cols * state.rows,
   );
-  assert.ok(state.atlasCapacity >= state.atlasRequiredSlots);
+  assert.ok(Number.isInteger(state.atlasCapacity) && state.atlasCapacity >= 256);
   assert.ok(state.glyphSlotsUsed >= 1 && state.glyphSlotsUsed <= state.atlasCapacity);
   if (["kb-stb", "canvas"].includes(state.textRenderer)) {
     assert.ok(state.cacheHits > 0);

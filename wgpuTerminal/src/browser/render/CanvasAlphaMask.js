@@ -5,6 +5,55 @@ import { decodeCanvasText } from "../../FramePacket.js";
 import { CanvasFontSizing } from "./CanvasFontSizing.js";
 import { MAX_RUN_PIXELS } from "./FrameSchema.js";
 
+export const COLOR_CHROMA_THRESHOLD = 12;
+
+export function isChromaticPixel(r, g, b, a) {
+  if (a <= 8) return false;
+  const maxChannel = Math.max(r, g, b);
+  const minChannel = Math.min(r, g, b);
+  return maxChannel - minChannel > COLOR_CHROMA_THRESHOLD;
+}
+
+export function splitCanvasLayers(imageData, width, height, maskStorage, overlayStorage) {
+  const pixelCount = width * height;
+  if (!Number.isSafeInteger(pixelCount) || pixelCount <= 0 || pixelCount > MAX_RUN_PIXELS) {
+    throw new RangeError("invalid Canvas glyph mask dimensions");
+  }
+  const rgba = imageData?.data ?? imageData;
+  if (!rgba || rgba.byteLength !== pixelCount * 4) throw new Error("invalid Canvas glyph raster");
+  const maskTarget =
+    maskStorage?.byteLength >= pixelCount ? maskStorage : new Uint8Array(pixelCount);
+  const overlayTarget =
+    overlayStorage?.byteLength >= pixelCount * 4 ? overlayStorage : new Uint8Array(pixelCount * 4);
+  let hasColor = false;
+  for (let index = 0; index < pixelCount; index += 1) {
+    const r = rgba[index * 4];
+    const g = rgba[index * 4 + 1];
+    const b = rgba[index * 4 + 2];
+    const a = rgba[index * 4 + 3];
+    maskTarget[index] = a;
+    if (isChromaticPixel(r, g, b, a)) {
+      overlayTarget[index * 4] = r;
+      overlayTarget[index * 4 + 1] = g;
+      overlayTarget[index * 4 + 2] = b;
+      overlayTarget[index * 4 + 3] = a;
+      hasColor = true;
+    } else {
+      overlayTarget[index * 4] = 0;
+      overlayTarget[index * 4 + 1] = 0;
+      overlayTarget[index * 4 + 2] = 0;
+      overlayTarget[index * 4 + 3] = 0;
+    }
+  }
+  return {
+    maskStorage: maskTarget,
+    mask: maskTarget.subarray(0, pixelCount),
+    overlayStorage: overlayTarget,
+    overlay: overlayTarget.subarray(0, pixelCount * 4),
+    hasColor,
+  };
+}
+
 export function extractCanvasAlpha(context, x, y, width, height, storage) {
   const pixelCount = width * height;
   if (!Number.isSafeInteger(pixelCount) || pixelCount <= 0 || pixelCount > MAX_RUN_PIXELS) {
@@ -49,10 +98,24 @@ export class CanvasGlyphRasterizer {
     this.runContext = configureRasterContext(this.runCanvas);
     this.canvasMask = new Uint8Array(0);
     this.uploadMask = new Uint8Array(0);
+    this.canvasOverlay = new Uint8Array(0);
+    this.uploadOverlay = new Uint8Array(0);
     this.fontSizing = new CanvasFontSizing();
   }
 
-  rasterize(firstSlot, slotCount, spanCells, bytes, offset, count, style, atlas, font, upload) {
+  rasterize(
+    firstSlot,
+    slotCount,
+    spanCells,
+    bytes,
+    offset,
+    count,
+    style,
+    atlas,
+    font,
+    upload,
+    uploadColor,
+  ) {
     validateAtlasGeometry(atlas);
     if (
       !Number.isInteger(atlas.tileWidth) ||
@@ -70,7 +133,7 @@ export class CanvasGlyphRasterizer {
       slotCount < 1 ||
       slotCount > 16 ||
       spanCells !== slotCount ||
-      firstSlot + slotCount > atlas.columns * atlas.rows
+      firstSlot + slotCount > (atlas.logicalCapacity ?? atlas.columns * atlas.rows)
     ) {
       throw new Error("invalid glyph atlas run");
     }
@@ -129,8 +192,18 @@ export class CanvasGlyphRasterizer {
       const advance = context.measureText(text).width;
       context.fillText(text, (runWidth - advance) / 2, this.baseline);
     } else context.fillText(text, 0, this.baseline, runWidth);
-    const mask = extractCanvasAlpha(this.runContext, 0, 0, runWidth, runHeight, this.canvasMask);
-    this.canvasMask = mask.storage;
+    const imageData = this.runContext.getImageData(0, 0, runWidth, runHeight);
+    const layers = splitCanvasLayers(
+      imageData,
+      runWidth,
+      runHeight,
+      this.canvasMask,
+      this.canvasOverlay,
+    );
+    this.canvasMask = layers.maskStorage;
+    this.canvasOverlay = layers.overlayStorage;
+    const mask = { storage: layers.maskStorage, pixels: layers.mask };
+    const overlay = layers.overlay;
     for (let tileOffset = 0; tileOffset < slotCount;) {
       const rowOffset = (firstSlot + tileOffset) % atlas.columns;
       const chunkSlots = Math.min(slotCount - tileOffset, atlas.columns - rowOffset);
@@ -148,6 +221,25 @@ export class CanvasGlyphRasterizer {
         );
       }
       upload(firstSlot + tileOffset, chunkSlots, packedPixels, 0, chunkWidth);
+      if (layers.hasColor && typeof uploadColor === "function") {
+        const chunkOverlayPixels = chunkWidth * runHeight * 4;
+        if (this.uploadOverlay.byteLength < chunkOverlayPixels) {
+          this.uploadOverlay = new Uint8Array(chunkOverlayPixels);
+        }
+        const packedOverlay = this.uploadOverlay.subarray(0, chunkOverlayPixels);
+        const rowStride = runWidth * 4;
+        const rowChunk = chunkWidth * 4;
+        for (let y = 0; y < runHeight; y += 1) {
+          packedOverlay.set(
+            overlay.subarray(
+              y * rowStride + tileOffset * atlas.tileWidth * 4,
+              y * rowStride + tileOffset * atlas.tileWidth * 4 + rowChunk,
+            ),
+            y * rowChunk,
+          );
+        }
+        uploadColor(firstSlot + tileOffset, chunkSlots, packedOverlay, 0, chunkWidth * 4);
+      }
       tileOffset += chunkSlots;
     }
   }

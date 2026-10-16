@@ -45,7 +45,7 @@ export const DEFAULT_FONT = Object.freeze({
   ligatures: true,
   fallbacks: Object.freeze([
     "ui-monospace",
-    "Noto Emoji",
+    "Noto Color Emoji",
     "SFMono-Regular",
     "Cascadia Mono",
     "Noto Sans Mono CJK SC",
@@ -128,8 +128,8 @@ export function loadTerminalFonts(font) {
   for (const style of ["normal 400", "normal 700", "italic 400", "italic 700"]) {
     loads.push(document.fonts.load(`${style} ${font.size}px ${fallback_family}`, "水"));
   }
-  if (font.fallbacks.some((fallback) => /noto emoji/i.test(fallback))) {
-    loads.push(document.fonts.load(`normal 400 ${font.size}px "Noto Emoji"`, "😀"));
+  if (font.fallbacks.some((fallback) => fallback.toLowerCase() === "noto color emoji")) {
+    loads.push(document.fonts.load(`normal 400 ${font.size}px "Noto Color Emoji"`, "😀"));
   }
   return loads;
 }

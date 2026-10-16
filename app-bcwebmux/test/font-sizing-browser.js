@@ -45,7 +45,7 @@ export async function run() {
   document.fonts.add(
     await new FontFace(
       "Sizing Emoji",
-      'url("/app-bcwebmux/zig-out/web/fonts/NotoEmoji-Regular.woff2")',
+      'url("/app-bcwebmux/zig-out/web/fonts/NotoColorEmoji-Regular.woff2")',
     ).load(),
   );
   await document.fonts.ready;

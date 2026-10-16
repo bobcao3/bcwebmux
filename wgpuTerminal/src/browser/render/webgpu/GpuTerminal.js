@@ -73,6 +73,7 @@ export class GpuTerminal {
     this.canvas = canvas;
     this.device = device;
     this.glyphAtlasMaxDimension = device.limits.maxTextureDimension2D;
+    this.glyphAtlasMaxLayers = device.limits.maxTextureArrayLayers;
     this.textRenderer = textRenderer;
     this.shaderF16 = shaderF16;
     this.glyphCacheMaxBytes = glyphCacheMaxBytes;
@@ -274,26 +275,6 @@ export class GpuTerminal {
     return resizeResources(this, widthValue, heightValue);
   }
 
-  flushAtlasGrowthCopies() {
-    const copies = this.atlas.takePendingTextureCopies();
-    if (copies.length === 0) return;
-    try {
-      const encoder = this.device.createCommandEncoder();
-      for (const copy of copies) {
-        encoder.copyTextureToTexture({ texture: copy.source }, { texture: copy.destination }, [
-          copy.width,
-          copy.height,
-          1,
-        ]);
-      }
-      this.device.queue.submit([encoder.finish()]);
-    } catch (error) {
-      this.atlas.pendingTextureCopies.unshift(...copies);
-      throw error;
-    }
-    for (const copy of copies) copy.source.destroy();
-  }
-
   reloadFont(fontFamily) {
     if (!this.initialized) throw new Error("GPU terminal is not initialized");
     const preferredColumns = this.glyphPartitions.preferredColumns;
@@ -321,21 +302,21 @@ export class GpuTerminal {
   }
 
   uploadBitmap(firstSlot, slotCount, pixels, pixelOffset, bytesPerRow) {
-    this.flushAtlasGrowthCopies();
-    this.device.queue.writeTexture(
-      {
-        texture: this.atlas.texture,
-        origin: [
-          (firstSlot % this.atlas.columns) * this.atlas.tileWidth,
-          Math.floor(firstSlot / this.atlas.columns) * this.atlas.tileHeight,
-          0,
-        ],
-      },
-      pixels,
-      { offset: pixelOffset, bytesPerRow, rowsPerImage: this.atlas.tileHeight },
-      [slotCount * this.atlas.tileWidth, this.atlas.tileHeight, 1],
-    );
-    this.atlas.nextSlot = Math.max(this.atlas.nextSlot, firstSlot + slotCount);
+    const textureVersion = this.atlas.textureVersion;
+    try {
+      this.atlas.uploadBitmap(firstSlot, slotCount, pixels, pixelOffset, bytesPerRow);
+    } finally {
+      if (this.atlas.textureVersion !== textureVersion) this.glyphAtlasChanged();
+    }
+  }
+
+  uploadColorBitmap(firstSlot, slotCount, pixels, pixelOffset, bytesPerRow) {
+    const textureVersion = this.atlas.textureVersion;
+    try {
+      this.atlas.uploadColorBitmap(firstSlot, slotCount, pixels, pixelOffset, bytesPerRow);
+    } finally {
+      if (this.atlas.textureVersion !== textureVersion) this.glyphAtlasChanged();
+    }
   }
 
   uploadStyles(first, styles, bytes) {
@@ -396,14 +377,6 @@ export class GpuTerminal {
       );
       this.indirectDirty = false;
     }
-    const textureCopies = this.atlas.takePendingTextureCopies();
-    for (const copy of textureCopies) {
-      encoder.copyTextureToTexture({ texture: copy.source }, { texture: copy.destination }, [
-        copy.width,
-        copy.height,
-        1,
-      ]);
-    }
     const r = ((this.background >> 16) & 255) / 255;
     const g = ((this.background >> 8) & 255) / 255;
     const b = (this.background & 255) / 255;
@@ -432,7 +405,6 @@ export class GpuTerminal {
       [this.canvas.width, this.canvas.height],
     );
     queue.submit([encoder.finish()]);
-    for (const copy of textureCopies) copy.source.destroy();
     const submittedAt = performance.now();
     const frameMs = submittedAt - drawStartedAt;
     this.frameMs = this.frameMs === null ? frameMs : this.frameMs * 0.8 + frameMs * 0.2;
@@ -463,6 +435,9 @@ export class GpuTerminal {
 
   readGlyphAtlas() {
     return this.atlas.readPixels();
+  }
+  readColorAtlas() {
+    return this.atlas.readColorPixels();
   }
 
   createGraphicsTexture(width, height, data) {
@@ -501,6 +476,9 @@ export class GpuTerminal {
       glyphSlotsUsed: this.glyphSlotsUsed,
       grainStrength: this.grainStrength,
       atlasCapacity: this.atlas.capacity,
+      colorAtlasCapacity: this.atlas.columns * this.atlas.colorRows,
+      colorAtlasSlotsUsed: this.atlas.colorSlots.size,
+      atlasLogicalCapacity: this.atlas.logicalCapacity,
       atlasRequiredSlots: this.glyphPartitions?.reservedSlots ?? 0,
       viewportWidth: this.viewportWidth,
       viewportHeight: this.viewportHeight,

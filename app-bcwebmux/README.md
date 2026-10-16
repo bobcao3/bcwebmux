@@ -63,6 +63,7 @@ zig build test && zig build gotest
 node test/session-controller-contract.mjs
 node test/session-ui-e2e.mjs ./zig-out/bin/bcwebmux-server ./zig-out/web
 ...and the other `test/*-e2e.mjs` with the same arguments.
+Color emoji coverage saves screenshots without goldens: `node test/color-emoji-e2e.mjs ./zig-out/bin/bcwebmux-server ./zig-out/web` (honors `RENDER_BACKEND=webgpu|webgl2`).
 ```
 
 Browser tests need Chromium, a physical Vulkan GPU, and Noto CJK fonts; without

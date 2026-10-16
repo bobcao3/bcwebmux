@@ -58,11 +58,14 @@ standalone frames, such as a compressed snapshot.
 
 ## Text paths and fonts
 
-`terminal.wasm` holds no fonts. `kb-stb` (the default) shapes
-and rasterizes the supplied TTFs in WASM; CSS fallbacks affect
-only DOM measurement there. `canvas` shapes with the browser,
-so system fonts supply CJK and emoji; emoji are foreground
-coverage, never color RGB. Switch with `setRenderer`.
+`terminal.wasm` holds no fonts. `canvas` (the default) shapes
+with the browser, so system fonts supply CJK and emoji; color
+emoji render through a dedicated RGBA overlay cache where each
+colored glyph keeps its grayscale coverage entry in the main
+atlas plus one RGBA overlay entry blended on top. `kb-stb`
+shapes and rasterizes the supplied TTFs in WASM; CSS fallbacks
+affect only DOM measurement there and color glyphs are
+unsupported. Switch with `setRenderer`.
 
 ## More than one terminal
 

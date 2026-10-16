@@ -1,22 +1,11 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Cheng Cao
 
-import {
-  GLYPH_SLOT_PROTOCOL_LIMIT,
-  GlyphAtlasCapacityError,
-  planGlyphAtlasGeometry,
-} from "./GlyphAtlasLimits.js";
+import { GLYPH_SLOT_PROTOCOL_LIMIT, planGlyphAtlasGeometry } from "./GlyphAtlasLimits.js";
 
 function slotCount(value, label) {
   if (!Number.isSafeInteger(value) || value <= 0 || value > GLYPH_SLOT_PROTOCOL_LIMIT)
     throw new RangeError(`${label} must be a positive protocol slot count`);
-  return value;
-}
-
-function checkedAdd(left, right, label) {
-  const value = left + right;
-  if (!Number.isSafeInteger(value) || value > GLYPH_SLOT_PROTOCOL_LIMIT)
-    throw new RangeError(`${label} exceeds protocol range`);
   return value;
 }
 
@@ -39,6 +28,7 @@ export class GlyphAtlasPartitions {
     this.limits = limits;
     this.preferredColumns = slotCount(preferredColumns, "preferred atlas columns");
     this.entries = new Map();
+    this.activeTerminal = null;
     this.settingsEpoch = 1;
     this.revision = 0;
     this.geometry = planGlyphAtlasGeometry(limits, 1, { preferredColumns: this.preferredColumns });
@@ -48,10 +38,8 @@ export class GlyphAtlasPartitions {
     return this.entries.size;
   }
   get reservedSlots() {
-    let total = 0;
-    for (const record of this.entries.values())
-      total = checkedAdd(total, record.slotCapacity, "shared glyph reservation");
-    return total;
+    const terminal = this.activeTerminal ?? this.entries.keys().next().value;
+    return this.entries.get(terminal)?.slotCapacity ?? 0;
   }
 
   get(terminal) {
@@ -68,7 +56,7 @@ export class GlyphAtlasPartitions {
     const capacity = slotCount(visibleSlots, "visible terminal cells");
     const records = cloneRecords(this.entries);
     records.set(terminal, {
-      baseSlot: this.reservedSlots,
+      baseSlot: 0,
       slotCapacity: capacity,
       viewportCellHighWater: capacity,
       visibleSlots: capacity,
@@ -96,6 +84,26 @@ export class GlyphAtlasPartitions {
     const records = cloneRecords(this.entries);
     records.delete(terminal);
     return this._plan(records, this.limits, this.geometry.columns, false, true);
+  }
+
+  planActivate(terminal) {
+    if (!this.entries.has(terminal)) throw new Error("terminal has no glyph partition");
+    const records = cloneRecords(this.entries);
+    const invalidated = new Set();
+    if (this.activeTerminal !== terminal) {
+      incrementGeneration(records.get(terminal));
+      invalidated.add(terminal);
+    }
+    return this._plan(
+      records,
+      this.limits,
+      this.geometry.columns,
+      false,
+      false,
+      invalidated,
+      this.settingsEpoch,
+      terminal,
+    );
   }
 
   planSettings(limits, preferredColumns, visibleSlotsByTerminal) {
@@ -131,27 +139,12 @@ export class GlyphAtlasPartitions {
     keepGeometry = false,
     invalidated = new Set(),
     settingsEpoch = this.settingsEpoch,
+    activeTerminal = this.activeTerminal,
   ) {
-    let reservedSlots = 0;
-    for (const record of records.values())
-      reservedSlots = checkedAdd(reservedSlots, record.slotCapacity, "shared glyph reservation");
-    if (reservedSlots > limits.slotLimit)
-      throw new GlyphAtlasCapacityError("shared-demand", {
-        requestedSlots: reservedSlots,
-        reservedSlots: this.reservedSlots,
-        slotLimit: limits.slotLimit,
-        bytesPerSlot: limits.bytesPerSlot,
-        byteLimit: limits.byteLimit,
-      });
-    let baseSlot = 0;
-    for (const [terminal, record] of records) {
-      if (record.baseSlot !== baseSlot) {
-        record.baseSlot = baseSlot;
-        incrementGeneration(record);
-        invalidated.add(terminal);
-      }
-      baseSlot = checkedAdd(baseSlot, record.slotCapacity, "glyph partition extent");
-    }
+    const capacityOwner = records.has(activeTerminal)
+      ? activeTerminal
+      : records.keys().next().value;
+    const reservedSlots = records.get(capacityOwner)?.slotCapacity ?? 0;
     const geometry = keepGeometry
       ? this.geometry
       : planGlyphAtlasGeometry(
@@ -169,6 +162,7 @@ export class GlyphAtlasPartitions {
       owner: this,
       revision: this.revision,
       records,
+      activeTerminal: records.has(activeTerminal) ? activeTerminal : null,
       invalidated,
       limits,
       preferredColumns,
@@ -185,6 +179,7 @@ export class GlyphAtlasPartitions {
     if (plan.owner !== this || plan.revision !== this.revision)
       throw new Error("stale glyph atlas plan");
     this.entries = plan.records;
+    this.activeTerminal = plan.activeTerminal;
     this.limits = plan.limits;
     this.preferredColumns = plan.preferredColumns;
     this.geometry = plan.geometry;

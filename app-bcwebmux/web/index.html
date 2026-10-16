@@ -309,8 +309,9 @@
     </header>
     <div class="glyph-atlas-toolbar">
       <button id="glyph-atlas-refresh" type="button">REFRESH</button>
+      <label>Layer <select id="glyph-atlas-layer"><option value="coverage" selected>Coverage (R8)</option><option value="color">Color overlay (RGBA)</option></select></label>
       <label><input id="glyph-atlas-actual-size" type="checkbox"> Actual pixels</label>
-      <span>Alpha mask: black = empty, white = opaque.</span>
+      <span>Coverage: black equals empty, white equals opaque. Color: dark equals no color layer.</span>
     </div>
     <output id="glyph-atlas-status" role="status"></output>
     <div class="glyph-atlas-viewport" tabindex="0" role="region" aria-label="Scrollable glyph texture">

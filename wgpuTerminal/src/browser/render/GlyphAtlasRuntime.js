@@ -15,6 +15,7 @@ function metrics(renderer) {
 function limits(renderer, width, height) {
   return computeGlyphAtlasLimits({
     maxTextureDimension: renderer.glyphAtlasMaxDimension,
+    maxTextureArrayLayers: renderer.glyphAtlasMaxLayers,
     cellWidth: width,
     cellHeight: height,
     configuredMaxBytes: renderer.glyphCacheMaxBytes,
@@ -117,7 +118,16 @@ export function reconfigureGlyphAtlas(
 
 export function selectTerminal(renderer, terminal) {
   if (!renderer.initialized) throw new Error("GPU terminal is not initialized");
-  if (!renderer.glyphPartitions.get(terminal)) throw new Error("terminal has no glyph partition");
+  const plan = renderer.glyphPartitions.planActivate(terminal);
+  apply(renderer, plan, metrics(renderer));
+  if (plan.invalidated.has(terminal)) {
+    const record = plan.records.get(terminal);
+    if (terminal.ready && terminal.setGlyphPartition(record, renderer.atlas.columns) !== 1)
+      throw new Error("terminal glyph partition activation failed");
+    renderer.atlas.colorSlots.clear();
+    renderer.atlas.freeColorSlots.length = 0;
+    renderer.atlas.nextColorSlot = 0;
+  }
   for (const field of ["cols", "rows", "cursorFlags", "drawnCellCount"]) renderer[field] = 0;
   if (renderer.indirectData) {
     renderer.indirectData[1] = 0;

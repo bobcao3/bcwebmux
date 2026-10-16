@@ -51,8 +51,26 @@ struct VertexOutput {
 @group(0) @binding(1) var<storage, read> cells: array<Cell>;
 @group(0) @binding(2) var<storage, read> styles: array<Style>;
 @group(0) @binding(3) var<storage, read> selections: array<u32>;
-@group(0) @binding(4) var atlas_texture: texture_2d<f32>;
+@group(0) @binding(4) var atlas_texture: texture_2d_array<f32>;
 @group(0) @binding(5) var grain_texture: texture_2d<f32>;
+@group(0) @binding(6) var color_atlas_texture: texture_2d_array<f32>;
+@group(0) @binding(7) var color_map_texture: texture_2d_array<u32>;
+
+fn glyph_color(slot: u32, pixel: vec2<u32>) -> vec4<f32> {
+  let map_rows_per_page = textureDimensions(color_map_texture).y;
+  let virtual_row = slot / uniforms.atlas_cols;
+  let slot_coord = vec2<u32>(slot % uniforms.atlas_cols, virtual_row % map_rows_per_page);
+  let mapped = textureLoad(color_map_texture, vec2<i32>(slot_coord), i32(virtual_row / map_rows_per_page), 0).r;
+  if (mapped == 0u) {
+    return vec4<f32>(0.0);
+  }
+  let color_slot = mapped - 1u;
+  let color_rows_per_page = textureDimensions(color_atlas_texture).y / uniforms.tile_height;
+  let color_row = color_slot / uniforms.atlas_cols;
+  let tile = vec2<u32>(color_slot % uniforms.atlas_cols, color_row % color_rows_per_page) *
+    vec2<u32>(uniforms.tile_width, uniforms.tile_height);
+  return textureLoad(color_atlas_texture, vec2<i32>(tile + pixel), i32(color_row / color_rows_per_page), 0);
+}
 
 fn rgb(value: u32) -> vec3<Lowp> {
   return vec3<Lowp>(
@@ -203,17 +221,22 @@ fn fragment(input: VertexOutput) -> @location(0) vec4<f32> {
   if (text_visible) {
     let subcell = u32(input.local.x) / uniforms.cell_width;
     let absolute_slot = input.glyph - 1u + subcell;
+    let rows_per_page = textureDimensions(atlas_texture).y / uniforms.tile_height;
+    let virtual_row = absolute_slot / uniforms.atlas_cols;
     let tile_origin = vec2<u32>(
       absolute_slot % uniforms.atlas_cols,
-      absolute_slot / uniforms.atlas_cols
+      virtual_row % rows_per_page
     ) * vec2<u32>(uniforms.tile_width, uniforms.tile_height);
     let local_texel = vec2<u32>(
       u32(input.local.x) % uniforms.cell_width,
       u32(input.local.y)
     );
-    let atlas_texel = textureLoad(atlas_texture, vec2<i32>(tile_origin + local_texel), 0);
+    let atlas_texel = textureLoad(atlas_texture, vec2<i32>(tile_origin + local_texel), i32(virtual_row / rows_per_page), 0);
     let coverage = Lowp(atlas_texel.r) * select(Lowp(1.0), Lowp(0.62), (flags & 4u) != 0u);
     result = mix(result, rgb(fg), coverage);
+    let color_texel = glyph_color(absolute_slot, local_texel);
+    let color_alpha = Lowp(color_texel.a) * select(Lowp(1.0), Lowp(0.62), (flags & 4u) != 0u);
+    result = mix(result, vec3<Lowp>(color_texel.rgb), color_alpha);
   }
   return vec4<f32>(vec3<f32>(result), 1.0);
 }
@@ -241,13 +264,19 @@ fn fragmentGlyph(input: VertexOutput) -> @location(0) vec4<f32> {
   if (input.glyph != 0u && ((flags & 128u) == 0u || uniforms.blink_on != 0u)) {
     let subcell = u32(input.local.x) / uniforms.cell_width;
     let slot = input.glyph - 1u + subcell;
-    let tile = vec2<u32>(slot % uniforms.atlas_cols, slot / uniforms.atlas_cols) *
+    let rows_per_page = textureDimensions(atlas_texture).y / uniforms.tile_height;
+    let virtual_row = slot / uniforms.atlas_cols;
+    let tile = vec2<u32>(slot % uniforms.atlas_cols, virtual_row % rows_per_page) *
       vec2<u32>(uniforms.tile_width, uniforms.tile_height);
     let pixel = vec2<u32>(u32(input.local.x) % uniforms.cell_width, u32(input.local.y));
-    let coverage = textureLoad(atlas_texture, vec2<i32>(tile + pixel), 0).r *
+    let coverage = textureLoad(atlas_texture, vec2<i32>(tile + pixel), i32(virtual_row / rows_per_page), 0).r *
       select(1.0, 0.62, (flags & 4u) != 0u);
     color = rgb(input.fg);
     opacity = opacity + (1.0 - opacity) * coverage;
+    let color_texel = glyph_color(slot, pixel);
+    let color_alpha = color_texel.a * select(1.0, 0.62, (flags & 4u) != 0u);
+    color = mix(color, vec3<Lowp>(color_texel.rgb), Lowp(color_alpha));
+    opacity = opacity + (1.0 - opacity) * color_alpha;
   }
   return vec4<f32>(vec3<f32>(color), opacity);
 }

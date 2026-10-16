@@ -110,6 +110,9 @@ export class FramePresenter {
         b.atlas,
         b.activeTerminal.options.font,
         (...args) => b.uploadBitmap(...args),
+        typeof b.uploadColorBitmap === "function"
+          ? (...args) => b.uploadColorBitmap(...args)
+          : undefined,
       );
     }
     b.uploadStyles(packet.stylesFirst, packet.styles, packet.styleBytes);

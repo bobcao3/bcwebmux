@@ -112,8 +112,22 @@ export function initialize(
       { binding: 1, visibility: GPUShaderStage.VERTEX, buffer: { type: "read-only-storage" } },
       { binding: 2, visibility: GPUShaderStage.VERTEX, buffer: { type: "read-only-storage" } },
       { binding: 3, visibility: GPUShaderStage.VERTEX, buffer: { type: "read-only-storage" } },
-      { binding: 4, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
+      {
+        binding: 4,
+        visibility: GPUShaderStage.FRAGMENT,
+        texture: { sampleType: "float", viewDimension: "2d-array" },
+      },
       { binding: 5, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
+      {
+        binding: 6,
+        visibility: GPUShaderStage.FRAGMENT,
+        texture: { sampleType: "float", viewDimension: "2d-array" },
+      },
+      {
+        binding: 7,
+        visibility: GPUShaderStage.FRAGMENT,
+        texture: { sampleType: "uint", viewDimension: "2d-array" },
+      },
     ],
   });
   const cellPipelineLayout = device.createPipelineLayout({ bindGroupLayouts: [cellLayout] });
@@ -222,8 +236,13 @@ export function rebuildCellBundle(renderer) {
       { binding: 1, resource: { buffer: renderer.cellBuffer } },
       { binding: 2, resource: { buffer: renderer.styleBuffer } },
       { binding: 3, resource: { buffer: renderer.selectionBuffer } },
-      { binding: 4, resource: renderer.atlas.texture.createView() },
+      { binding: 4, resource: renderer.atlas.texture.createView({ dimension: "2d-array" }) },
       { binding: 5, resource: renderer.grainTexture.createView() },
+      { binding: 6, resource: renderer.atlas.colorTexture.createView({ dimension: "2d-array" }) },
+      {
+        binding: 7,
+        resource: renderer.atlas.colorMapTexture.createView({ dimension: "2d-array" }),
+      },
     ],
   });
   const encoder = renderer.device.createRenderBundleEncoder({ colorFormats: [renderer.format] });

@@ -59,7 +59,7 @@ export class Terminal {
     this.options = {
       wasmUrl: options.wasmUrl || "/terminal.wasm",
       wasmFontUrls: options.wasmFontUrls,
-      renderer: options.renderer === "canvas" ? "canvas" : "kb-stb",
+      renderer: options.renderer === "kb-stb" ? "kb-stb" : "canvas",
       renderBackend: normalizeRenderBackend(options.renderBackend),
       powerPreference: normalizePowerPreference(options.powerPreference),
       font: normalizeFont(options.font),
@@ -813,7 +813,7 @@ export class Terminal {
   async setRenderer(rendererName) {
     this._assertMutable();
     if (this._disposed) throw new Error("terminal is disposed");
-    const normalized = rendererName === "canvas" ? "canvas" : "kb-stb";
+    const normalized = rendererName === "kb-stb" ? "kb-stb" : "canvas";
     validateRendererFont(normalized, this.options.font);
     const generation = ++this._rendererChangeGeneration;
     if (!this._core?.ready || !this._renderer) {
@@ -1138,6 +1138,39 @@ export class Terminal {
         renderer.atlas.texture !== texture
       ) {
         throw new Error("Glyph texture changed during readback; refresh to retry");
+      }
+      return snapshot;
+    } finally {
+      this._glyphAtlasReadPending = false;
+    }
+  }
+
+  async readColorAtlas() {
+    this._assertMutable();
+    const renderer = this._renderer;
+    if (
+      this._disposed ||
+      !renderer?.atlas?.colorTexture ||
+      renderer.error ||
+      renderer.available === false ||
+      this._recovering
+    ) {
+      throw new Error("Glyph color texture is unavailable");
+    }
+    if (this._glyphAtlasReadPending) throw new Error("Glyph color readback is already pending");
+    const texture = renderer.atlas.colorTexture;
+    this._glyphAtlasReadPending = true;
+    try {
+      const snapshot = await renderer.readColorAtlas();
+      if (
+        this._disposed ||
+        this._renderer !== renderer ||
+        this._recovering ||
+        renderer.error ||
+        renderer.available === false ||
+        renderer.atlas.colorTexture !== texture
+      ) {
+        throw new Error("Glyph color texture changed during readback; refresh to retry");
       }
       return snapshot;
     } finally {

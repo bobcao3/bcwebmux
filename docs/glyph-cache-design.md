@@ -14,63 +14,82 @@
    bumped up, never shrinks, as viewports resizes.
 6. Updating render settings necessatates recompute of these constraints and
    sizing.
-7. Glyph cache can be expanded and shared between terminals, the max size grows
-   with number of running terminals, until reaching device limits or safety
-   ceiling.
+7. Terminals share the physical cache. Inactive terminals must not consume
+   full-screen GPU reservations.
 
 ## Design
 
 The page has one renderer, device/context, R8 atlas, and partition allocator.
 Each live terminal has one libghostty backend, local glyph-key mappings, and one
-atlas reservation. Switching terminals changes only active frame state. Disposal
-releases the reservation and terminal allocations without shrinking the physical
-texture.
+logical capacity. Only the active terminal owns the physical slot space.
+Switching ownership increments the incoming terminal's generation and
+invalidates its glyph mappings, so the incoming terminal rebuilds glyphs before
+drawing. Disposal releases terminal allocations without shrinking the physical
+textures.
 
 For terminal `i` in one render-settings epoch:
 
 ```text
 visible_i = columns_i * rows_i
 capacity_i = max observed visible_i
-reserved = sum capacity_i over live terminals
+reserved = capacity_active
 ```
 
 Ordinary resize only raises `capacity_i`. A font, ligature, physical-metric,
 rasterizer, or cache-budget change starts a settings epoch, invalidates
 mappings, and resets every `capacity_i` to its current visible size.
 
-The atlas always stores one byte of coverage per physical cell-sized R8 slot.
-Canvas text is converted from Canvas alpha to R8; color glyphs are unsupported.
-Wide glyphs and ligatures reserve consecutive slots, one per occupied terminal
-cell. Uploads split only where a run crosses a texture row.
+The renderer separates logical reservations from physical texture allocation.
+The geometry planner in
+[`GlyphAtlasLimits.js`](../wgpuTerminal/src/browser/render/GlyphAtlasLimits.js)
+defines the fixed pixel width, initial allocation, and hardware and byte limits.
+The planner packs whole cell tiles across the fixed width and leaves unused
+pixels at the right edge. Window resizing changes the height ceiling, never the
+page width. Texture arrays add pages when a full screen exceeds the GPU's
+maximum page height. Physical glyph cells wider or taller than one page cannot
+fit.
 
-For cell width `W`, height `H`, maximum texture dimension `D`, configured budget
-`B`, absolute budget `A`, and protocol limit `P`:
+The R8 coverage texture and RGBA color overlay start with partial-screen
+allocations and grow independently. Each texture doubles its height when an
+upload exceeds allocated capacity, up to the committed reservation ceiling. Once
+a texture needs multiple pages, the renderer allocates whole array layers.
+Growth preserves existing pixels before the renderer uploads new pixels. The
+configured byte budget limits the R8 texture, including right-edge padding; the
+RGBA overlay and slot mapping require additional memory.
 
-```text
-slot_bytes = W * H
-hardware_slots = floor(D / W) * floor(D / H)
-budget_slots = floor(min(B, A) / slot_bytes)
-slot_limit = min(hardware_slots, budget_slots, P)
-```
+Canvas rasterization retains R8 coverage for every glyph. The renderer packs
+colored tiles into a separate compact RGBA slot space and stores the association
+in an integer mapping texture. The shader composites the mapped overlay on top
+of coverage, preserving fonts that mix colored and foreground-colored layers.
+Monochrome uploads neither consume color slots nor force RGBA growth. Reusing a
+coverage slot releases the previous color association. kb-stb has no color
+support. Wide glyphs and ligatures reserve consecutive coverage slots, one per
+occupied terminal cell; color tiles need not remain consecutive.
 
-Logical partitions are contiguous and deterministic. Growth or disposal may
-repack them; any moved partition receives a new generation. Texture padding is
-never reservable. Physical allocation grows to committed demand and does not use
+The backend retains historical glyph entries until the logical partition fills.
+Before reusing slots, the backend clears its glyph mappings and rebuilds every
+visible row. A full-screen reservation guarantees enough slots for the rebuild,
+even when every cell needs a distinct entry.
+
+Logical partitions reuse the same base slot. The renderer accepts submissions
+only from the active owner and committed generation. Texture padding is never
+reservable. Logical admission checks the active terminal's full-screen
+requirement, while physical allocation follows upload demand and does not use
 the absolute ceiling as a requested size.
 
-Capacity changes follow `plan -> allocate -> commit`. Checked capacity and
-allocation errors occur before mutation. The commit installs prevalidated
-partitions through
+Reservation changes follow `plan -> allocate -> commit`. The planner checks
+capacity before mutation; later demand-driven GPU allocations can still fail.
+The commit installs prevalidated partitions through
 `term_set_glyph_partition(base, capacity, columns, generation)`. Unexpected
-commit failures close the renderer. There is no partition eviction, partial
-admission, or silent degradation.
+commit failures close the renderer. Ownership changes invalidate inactive
+caches; the renderer never silently discards glyphs from the submitted frame.
 
 A submission is accepted only for the active terminal and committed generation.
 Every cell, bitmap upload, and Canvas request must remain inside that terminal's
 partition. Cell glyph zero means empty; nonzero values are absolute atlas slot
 plus one.
 
-Verification covers WebGPU and WebGL2, STB and Canvas R8 rasterization, DPR 4,
-wide spans, resize high-water behavior, settings recomputation, multi-terminal
-sharing, partition reuse/relocation, deterministic capacity rollback, and ABI
-validation.
+Verification covers WebGPU and WebGL2, STB and Canvas R8 rasterization, wide
+spans, resize high-water behavior, settings recomputation, multi-terminal
+sharing, ownership changes, cross-page growth, deterministic capacity rollback,
+and ABI validation.

@@ -97,15 +97,15 @@ this project's build and are not distributed here.
   [app-bcwebmux/web/fonts/OFL.txt](app-bcwebmux/web/fonts/OFL.txt), also
   installed to `zig-out/wgpu-terminal/fonts/OFL.txt`.
 
-### Noto Emoji
+### Noto Color Emoji
 
 - **License:** SIL Open Font License 1.1
-- **Copyright:** Copyright 2013 Google LLC
-- **Used as:** the served emoji fallback font (`fonts/NotoEmoji-Regular.woff2`,
-  copied from the `@fontsource/noto-emoji` 5.3.0 npm package).
+- **Copyright:** Copyright 2021 Google Inc. All Rights Reserved.
+- **Used as:** the served emoji fallback font (`fonts/NotoColorEmoji-Regular.woff2`,
+  copied from the `@fontsource/noto-color-emoji` 5.3.2 npm package).
 - **License text:**
-  [app-bcwebmux/web/fonts/NotoEmoji-OFL.txt](app-bcwebmux/web/fonts/NotoEmoji-OFL.txt),
-  which is also served next to the font.
+  [@fontsource/noto-color-emoji/LICENSE](https://unpkg.com/@fontsource/noto-color-emoji@5.3.2/LICENSE),
+  copied to `fonts/NotoColorEmoji-OFL.txt` and served next to the font.
 
 ### lit-html (session drawer rows)
 
@@ -160,7 +160,7 @@ included in the artifacts:
 - **Ghostty build helpers** `aro` (MIT, Copyright (c) 2021 Veikka Tuominen) and
   `translate_c`.
 - **npm dependencies** — `npm install` resolves the workspace packages plus
-  `@fontsource/noto-emoji` (covered above) and the build/test-only `sharp`
+  `@fontsource/noto-color-emoji` (covered above) and the build/test-only `sharp`
   (Apache-2.0) and its transitive dependencies.
 - **Chromium** and **OpenSSL**, used by the browser and HTTPS test suites.
 

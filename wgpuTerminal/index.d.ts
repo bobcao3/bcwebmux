@@ -28,6 +28,9 @@ export interface GpuTerminalStatsDraft {
   cacheMisses: number;
   grainStrength: number;
   atlasCapacity: number;
+  colorAtlasCapacity: number;
+  colorAtlasSlotsUsed: number;
+  atlasLogicalCapacity: number;
   atlasRequiredSlots: number;
   glyphSlotsUsed: number;
   viewportWidth: number;
@@ -361,7 +364,7 @@ export declare class Terminal implements IDisposable {
   reset(): boolean;
   restoreSnapshot(data: string | ArrayBuffer | ArrayBufferView, core?: TerminalCore): void;
   readPixels(): Promise<{ width: number; height: number; format: string; data: Uint8Array }>;
-  /** On-demand shared atlas snapshot (top-first R8), limited to 16 Mi pixels. */
+  /** On-demand shared atlas snapshot (top-first R8), with pages stacked vertically and a 16 Mi-pixel limit. */
   readGlyphAtlas(): Promise<{
     width: number;
     height: number;
@@ -370,6 +373,17 @@ export declare class Terminal implements IDisposable {
     tileWidth: number;
     tileHeight: number;
     format: "r8unorm";
+    data: Uint8Array;
+  }>;
+  /** On-demand compact color overlay snapshot (top-first RGBA), with independent capacity and slot indices; pages stack vertically. */
+  readColorAtlas(): Promise<{
+    width: number;
+    height: number;
+    columns: number;
+    rows: number;
+    tileWidth: number;
+    tileHeight: number;
+    format: "rgba8unorm";
     data: Uint8Array;
   }>;
   clearPendingLatency(): void;

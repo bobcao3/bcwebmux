@@ -38,11 +38,11 @@ export const FONT_OPTIONS = Object.freeze({
   },
   "fira-code": { name: "Fira Code", cssFamily: "Fira Code", wasmId: 0, canvasOnly: true },
 });
-export const FONT_FALLBACK_VERSION = 1;
+export const FONT_FALLBACK_VERSION = 2;
 export const DEFAULT_FONT_FALLBACKS = Object.freeze({
   "jetbrains-mono": Object.freeze([
     "ui-monospace",
-    "Noto Emoji",
+    "Noto Color Emoji",
     "SFMono-Regular",
     "Cascadia Mono",
     "Noto Sans Mono CJK SC",
@@ -54,7 +54,7 @@ export const DEFAULT_FONT_FALLBACKS = Object.freeze({
   ]),
   "fira-code": Object.freeze([
     "ui-monospace",
-    "Noto Emoji",
+    "Noto Color Emoji",
     "SFMono-Regular",
     "Cascadia Mono",
     "Noto Sans Mono CJK SC",
@@ -92,8 +92,13 @@ export function normalizeFontFamilies(value, fallback = DEFAULT_FONT_FALLBACKS["
   return families;
 }
 
-function migrateFontFamilies(families) {
-  if (families.some((family) => family.toLowerCase() === "noto emoji")) return families;
+function migrateFontFamilies(families, version = 0) {
+  if (version >= FONT_FALLBACK_VERSION) return families;
+  families = normalizeFontFamilies(
+    families.map((family) => (family.toLowerCase() === "noto emoji" ? "Noto Color Emoji" : family)),
+  );
+  if (version >= 1 || families.some((family) => family.toLowerCase() === "noto color emoji"))
+    return families;
   const uiMonospaceIndex = families.findIndex((family) => family.toLowerCase() === "ui-monospace");
   const symbolsIndex = families.findIndex(
     (family) => family.toLowerCase() === "noto sans symbols 2",
@@ -104,7 +109,11 @@ function migrateFontFamilies(families) {
       : symbolsIndex >= 0
         ? symbolsIndex
         : families.length - 1;
-  return [...families.slice(0, insertionIndex), "Noto Emoji", ...families.slice(insertionIndex)];
+  return [
+    ...families.slice(0, insertionIndex),
+    "Noto Color Emoji",
+    ...families.slice(insertionIndex),
+  ];
 }
 
 const DEFAULT_SETTINGS = Object.freeze({
@@ -114,7 +123,7 @@ const DEFAULT_SETTINGS = Object.freeze({
   grainStrength: 4,
   glyphCacheMaxMiB: GLYPH_CACHE_MAX_MIB,
   perfMode: "simple",
-  renderer: "kb-stb",
+  renderer: "canvas",
 });
 
 export const BUILTIN_PROFILES = Object.freeze({
@@ -341,14 +350,13 @@ function loadSettings() {
         : ["kb-stb", "canvas"].includes(saved.renderer)
           ? saved.renderer
           : DEFAULT_SETTINGS.renderer;
-    const migrateFontFallbacks = !Object.hasOwn(saved, "fontFallbackVersion");
     const fontFallbacks = Object.fromEntries(
       Object.keys(FONT_OPTIONS).map((id) => {
         const fallbacks = normalizeFontFamilies(
           saved.fontFallbacks?.[id],
           DEFAULT_FONT_FALLBACKS[id],
         );
-        return [id, migrateFontFallbacks ? migrateFontFamilies(fallbacks) : fallbacks];
+        return [id, migrateFontFamilies(fallbacks, saved.fontFallbackVersion)];
       }),
     );
     const fileService = normalizeFileServiceConfig(saved.fileService);

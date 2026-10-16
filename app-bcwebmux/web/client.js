@@ -735,7 +735,10 @@ transport.onStatus(() => {
 });
 
 settings.setOnChange((profile) => terminal.setTheme(profile));
-initializeGlyphAtlasDialog(() => terminal.readGlyphAtlas());
+initializeGlyphAtlasDialog(
+  () => terminal.readGlyphAtlas(),
+  () => terminal.readColorAtlas(),
+);
 settings.setOnFontChange(async (font) => {
   try {
     await terminal.setFont(font);
@@ -906,6 +909,8 @@ window.bcwebmux = {
 };
 if (query.has("gpu-test") || query.has("session-test")) {
   window.bcwebmux.readPixels = () => terminal.readPixels();
+  window.bcwebmux.readColorAtlas = () => terminal.readColorAtlas();
+  window.bcwebmux.readGlyphAtlas = () => terminal.readGlyphAtlas();
 }
 if (query.has("session-test")) {
   Object.defineProperties(window.bcwebmux, {

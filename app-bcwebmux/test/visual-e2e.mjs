@@ -349,7 +349,7 @@ async function run(backend, device) {
       assert.ok(probe, `${prefix}: ${text} did not reach Canvas as intact text`);
       assert.ok(probe.ink > 0, `${prefix}: ${text} rendered blank`);
       assert.equal(probe.missing, false, `${prefix}: ${text} rendered a missing-glyph box`);
-      assert.match(probe.font, /JetBrains Mono Nerd Font.*Noto Emoji/);
+      assert.match(probe.font, /JetBrains Mono Nerd Font.*Noto Color Emoji/);
     }
     await writeFile(
       path.join(outputDir, `${prefix}-font-probe.json`),

@@ -17,7 +17,7 @@ for (const Constructor of [TerminalCore, Terminal]) {
     await assert.rejects(stb.setFont({ canvasOnly: true }), /wasmFontUrls/);
   else assert.throws(() => stb.setFont({ canvasOnly: true }), /wasmFontUrls/);
   const canvas = new Constructor({ renderer: "canvas", font: { canvasOnly: true } });
-  await canvas.setFont({ cssFamily: "system-monospace", fallbacks: ["Noto Emoji"] });
+  await canvas.setFont({ cssFamily: "system-monospace", fallbacks: ["Noto Color Emoji"] });
   await assert.rejects(canvas.setRenderer("kb-stb"), /wasmFontUrls/);
   assert.equal(canvas.options.renderer, "canvas");
   if (Constructor === TerminalCore) {

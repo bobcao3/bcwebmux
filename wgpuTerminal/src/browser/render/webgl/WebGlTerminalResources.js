@@ -100,9 +100,10 @@ uniform uint u_cursor_flags;
 uniform uint u_cursor_style;
 uniform uint u_blink_on;
 uniform float u_grain_strength;
-uniform sampler2D u_atlas;
+uniform highp sampler2DArray u_atlas;
+uniform highp sampler2DArray u_color_atlas;
+uniform highp usampler2DArray u_color_map;
 uniform sampler2D u_grain;
-
 in vec2 v_local;
 flat in uvec2 v_cell_size;
 flat in uvec2 v_cell_coord;
@@ -156,12 +157,27 @@ void main() {
   if (text_visible) {
     uint subcell = uint(v_local.x) / u_cell_width;
     uint absolute_slot = glyph - 1u + subcell;
-    uvec2 tile_origin = uvec2(absolute_slot % u_atlas_cols, absolute_slot / u_atlas_cols) *
-      uvec2(u_tile_width, u_tile_height);
+    uvec2 tile_coord = uvec2(absolute_slot % u_atlas_cols, absolute_slot / u_atlas_cols);
+    uint page_rows = uint(textureSize(u_color_map, 0).y);
+    uint page = tile_coord.y / page_rows;
+    tile_coord.y %= page_rows;
+    uvec2 tile_origin = tile_coord * uvec2(u_tile_width, u_tile_height);
     uvec2 local_texel = uvec2(uint(v_local.x) % u_cell_width, uint(v_local.y));
-    vec4 atlas_texel = texelFetch(u_atlas, ivec2(tile_origin + local_texel), 0);
+    vec4 atlas_texel = texelFetch(u_atlas, ivec3(tile_origin + local_texel, int(page)), 0);
     float coverage = atlas_texel.r * ((flags & 4u) != 0u ? 0.62 : 1.0);
     result = mix(result, rgb(fg), coverage);
+    uint color_index = texelFetch(u_color_map, ivec3(tile_coord, int(page)), 0).r;
+    if (color_index != 0u) {
+      uint color_slot = color_index - 1u;
+      uint color_page_rows = uint(textureSize(u_color_atlas, 0).y) / u_tile_height;
+      uint color_row = color_slot / u_atlas_cols;
+      uint color_page = color_row / color_page_rows;
+      uvec2 color_origin = uvec2(color_slot % u_atlas_cols, color_row % color_page_rows) *
+        uvec2(u_tile_width, u_tile_height);
+      vec4 color_texel = texelFetch(u_color_atlas, ivec3(color_origin + local_texel, int(color_page)), 0);
+      float color_alpha = color_texel.a * ((flags & 4u) != 0u ? 0.62 : 1.0);
+      result = mix(result, color_texel.rgb, color_alpha);
+    }
   }
   output_color = vec4(result, 1.0);
 }
@@ -180,7 +196,9 @@ uniform uint u_cursor_y;
 uniform uint u_cursor_flags;
 uniform uint u_cursor_style;
 uniform uint u_blink_on;
-uniform sampler2D u_atlas;
+uniform highp sampler2DArray u_atlas;
+uniform highp sampler2DArray u_color_atlas;
+uniform highp usampler2DArray u_color_map;
 in vec2 v_local;
 flat in uvec2 v_cell_size;
 flat in uvec2 v_cell_coord;
@@ -210,11 +228,28 @@ void main() {
   if (v_flags_glyph.y != 0u && ((flags & 128u) == 0u || u_blink_on != 0u)) {
     uint subcell = uint(v_local.x) / u_cell_width;
     uint slot = v_flags_glyph.y - 1u + subcell;
-    uvec2 tile = uvec2(slot % u_atlas_cols, slot / u_atlas_cols) * uvec2(u_tile_width, u_tile_height);
+    uvec2 tile_coord = uvec2(slot % u_atlas_cols, slot / u_atlas_cols);
+    uint page_rows = uint(textureSize(u_color_map, 0).y);
+    uint page = tile_coord.y / page_rows;
+    tile_coord.y %= page_rows;
+    uvec2 tile = tile_coord * uvec2(u_tile_width, u_tile_height);
     uvec2 pixel = uvec2(uint(v_local.x) % u_cell_width, uint(v_local.y));
-    float coverage = texelFetch(u_atlas, ivec2(tile + pixel), 0).r * ((flags & 4u) != 0u ? 0.62 : 1.0);
+    float coverage = texelFetch(u_atlas, ivec3(tile + pixel, int(page)), 0).r * ((flags & 4u) != 0u ? 0.62 : 1.0);
     color = rgb(v_colors.x);
     opacity = opacity + (1.0 - opacity) * coverage;
+    uint color_index = texelFetch(u_color_map, ivec3(tile_coord, int(page)), 0).r;
+    if (color_index != 0u) {
+      uint color_slot = color_index - 1u;
+      uint color_page_rows = uint(textureSize(u_color_atlas, 0).y) / u_tile_height;
+      uint color_row = color_slot / u_atlas_cols;
+      uint color_page = color_row / color_page_rows;
+      uvec2 color_tile = uvec2(color_slot % u_atlas_cols, color_row % color_page_rows) *
+        uvec2(u_tile_width, u_tile_height);
+      vec4 color_texel = texelFetch(u_color_atlas, ivec3(color_tile + pixel, int(color_page)), 0);
+      float color_alpha = color_texel.a * ((flags & 4u) != 0u ? 0.62 : 1.0);
+      color = mix(color, color_texel.rgb, color_alpha);
+      opacity = opacity + (1.0 - opacity) * color_alpha;
+    }
   }
   output_color = vec4(color, opacity);
 }
@@ -352,6 +387,8 @@ export function initializeWebGl(
     "style_texture_width",
     "selection_texture_width",
     "atlas",
+    "color_atlas",
+    "color_map",
     "styles",
     "selections",
     "grain",
@@ -368,10 +405,14 @@ export function initializeWebGl(
   );
   gl.useProgram(renderer.glyphProgram);
   gl.uniform1i(renderer.glyphUniforms.atlas, 0);
+  gl.uniform1i(renderer.glyphUniforms.color_atlas, 4);
+  gl.uniform1i(renderer.glyphUniforms.color_map, 5);
   gl.uniform1i(renderer.glyphUniforms.styles, 1);
   gl.uniform1i(renderer.glyphUniforms.selections, 2);
   gl.useProgram(renderer.program);
   gl.uniform1i(renderer.uniforms.atlas, 0);
+  gl.uniform1i(renderer.uniforms.color_atlas, 4);
+  gl.uniform1i(renderer.uniforms.color_map, 5);
   gl.uniform1i(renderer.uniforms.styles, 1);
   gl.uniform1i(renderer.uniforms.selections, 2);
   gl.uniform1i(renderer.uniforms.grain, 3);

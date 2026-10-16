@@ -71,6 +71,7 @@ export class WebGlTerminal {
     this.canvas = canvas;
     this.gl = gl;
     this.glyphAtlasMaxDimension = gl.getParameter(gl.MAX_TEXTURE_SIZE);
+    this.glyphAtlasMaxLayers = gl.getParameter(gl.MAX_ARRAY_TEXTURE_LAYERS);
     this.textRenderer = textRenderer;
     this.glyphCacheMaxBytes = glyphCacheMaxBytes;
     const debug = gl.getExtension("WEBGL_debug_renderer_info");
@@ -240,6 +241,10 @@ export class WebGlTerminal {
     this.atlas.uploadBitmap(...args);
   }
 
+  uploadColorBitmap(...args) {
+    this.atlas.uploadColorBitmap(...args);
+  }
+
   createGraphicsTexture(width, height, data) {
     return createWebGlGraphicsTexture(this, width, height, data);
   }
@@ -313,13 +318,17 @@ export class WebGlTerminal {
     gl.viewport(0, 0, this.canvas.width, this.canvas.height);
     this.applyCellUniforms(this.uniforms, blinkOn);
     gl.activeTexture(gl.TEXTURE0);
-    gl.bindTexture(gl.TEXTURE_2D, this.atlas.texture);
+    gl.bindTexture(gl.TEXTURE_2D_ARRAY, this.atlas.texture);
     gl.activeTexture(gl.TEXTURE1);
     gl.bindTexture(gl.TEXTURE_2D, this.styleTexture);
     gl.activeTexture(gl.TEXTURE2);
     gl.bindTexture(gl.TEXTURE_2D, this.selectionTexture);
     gl.activeTexture(gl.TEXTURE3);
     gl.bindTexture(gl.TEXTURE_2D, this.grainTexture);
+    gl.activeTexture(gl.TEXTURE4);
+    gl.bindTexture(gl.TEXTURE_2D_ARRAY, this.atlas.colorTexture);
+    gl.activeTexture(gl.TEXTURE5);
+    gl.bindTexture(gl.TEXTURE_2D_ARRAY, this.atlas.colorMapTexture);
     gl.clearColor(
       ((this.background >> 16) & 255) / 255,
       ((this.background >> 8) & 255) / 255,
@@ -332,6 +341,10 @@ export class WebGlTerminal {
       gl.useProgram(this.glyphProgram);
       gl.bindVertexArray(this.vertexArray);
       this.applyCellUniforms(this.glyphUniforms, blinkOn);
+      gl.activeTexture(gl.TEXTURE4);
+      gl.bindTexture(gl.TEXTURE_2D_ARRAY, this.atlas.colorTexture);
+      gl.activeTexture(gl.TEXTURE5);
+      gl.bindTexture(gl.TEXTURE_2D_ARRAY, this.atlas.colorMapTexture);
       gl.enable(gl.BLEND);
       gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
       gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, this.drawnCellCount);
@@ -350,6 +363,10 @@ export class WebGlTerminal {
 
   readGlyphAtlas() {
     return this.atlas.readPixels();
+  }
+
+  readColorAtlas() {
+    return this.atlas.readColorPixels();
   }
 
   readPixels() {
@@ -381,6 +398,9 @@ export class WebGlTerminal {
       glyphSlotsUsed: this.glyphSlotsUsed,
       grainStrength: this.grainStrength,
       atlasCapacity: this.atlas.capacity,
+      colorAtlasCapacity: this.atlas.columns * this.atlas.colorRows,
+      colorAtlasSlotsUsed: this.atlas.colorSlots.size,
+      atlasLogicalCapacity: this.atlas.logicalCapacity,
       atlasRequiredSlots: this.glyphPartitions?.reservedSlots ?? 0,
       viewportWidth: this.viewportWidth,
       viewportHeight: this.viewportHeight,

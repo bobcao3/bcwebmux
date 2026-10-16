@@ -34,8 +34,8 @@
 }
 
 @font-face {
-  font-family: "Noto Emoji";
-  src: url("/fonts/NotoEmoji-Regular.woff2") format("woff2");
+  font-family: "Noto Color Emoji";
+  src: url("/fonts/NotoColorEmoji-Regular.woff2") format("woff2");
   font-style: normal;
   font-weight: 400;
   font-display: block;
