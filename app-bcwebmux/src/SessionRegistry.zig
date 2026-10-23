@@ -563,8 +563,8 @@ test "session IDs and names are bounded" {
     try std.testing.expectEqualStrings("00010203-0405-4607-8809-0a0b0c0d0e0f", text);
     try std.testing.expectEqual(id, parseId(text).?);
     try std.testing.expect(parseId("not-an-id") == null);
-    const valid_name = [_]u8{'a'} ** 80;
-    const oversized_name = [_]u8{'a'} ** 81;
+    const valid_name: [80]u8 = @splat('a');
+    const oversized_name: [81]u8 = @splat('a');
     try std.testing.expect(validName(&valid_name, 100));
     try std.testing.expect(!validName(&oversized_name, 100));
     try std.testing.expect(!validName(&[_]u8{0xff}, 100));

@@ -33,8 +33,8 @@ pub fn main(init: std.process.Init) !void {
         .{ "GOFLAGS", "" },               .{ "GOTELEMETRY", "off" },
     }) |entry| try env.put(entry[0], entry[1]);
     try env.put("CC", try quote(arena, cc));
-    try env.put("CGO_CFLAGS", try quote(arena, try std.fmt.allocPrint(arena, "-I{s}", .{std.fs.path.dirname(header).?})));
-    try env.put("CGO_LDFLAGS", try std.fmt.allocPrint(arena, "{s} {s} {s}", .{ try quote(arena, core), try quote(arena, zstd), try quote(arena, webp) }));
+    try env.put("CGO_CFLAGS", try quote(arena, try arena.print("-I{s}", .{std.fs.path.dirname(header).?})));
+    try env.put("CGO_LDFLAGS", try arena.print("{s} {s} {s}", .{ try quote(arena, core), try quote(arena, zstd), try quote(arena, webp) }));
     for ([_][2][]const u8{ .{ "GOCACHE", "build" }, .{ "GOMODCACHE", "modules" }, .{ "GOPATH", "path" }, .{ "TMPDIR", "tmp" } }) |entry| {
         const path = try std.fs.path.join(arena, &.{ cache, entry[1] });
         try std.Io.Dir.cwd().createDirPath(init.io, path);
@@ -52,17 +52,17 @@ pub fn main(init: std.process.Init) !void {
         return;
     }
 
-    var argv: std.array_list.Managed([]const u8) = .init(arena);
-    try argv.append(try std.fs.path.join(arena, &.{ goroot, "bin", "go" }));
-    try argv.appendSlice(args[9..]);
+    var argv: std.ArrayList([]const u8) = .empty;
+    try argv.append(arena, try std.fs.path.join(arena, &.{ goroot, "bin", "go" }));
+    try argv.appendSlice(arena, args[9..]);
     return std.process.replace(init.io, .{ .argv = argv.items, .environ_map = &env });
 }
 
 // cmd/go's quoted flag syntax supports surrounding quotes, not shell escapes.
 fn quote(arena: std.mem.Allocator, value: []const u8) ![]const u8 {
     if (std.mem.indexOfScalar(u8, value, '"') == null)
-        return std.fmt.allocPrint(arena, "\"{s}\"", .{value});
+        return arena.print("\"{s}\"", .{value});
     if (std.mem.indexOfScalar(u8, value, '\'') == null)
-        return std.fmt.allocPrint(arena, "'{s}'", .{value});
+        return arena.print("'{s}'", .{value});
     return error.PathContainsBothQuoteStyles;
 }

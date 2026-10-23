@@ -4,7 +4,6 @@
 const std = @import("std");
 const ghostty = @import("ghostty-vt");
 const Graphics = @import("terminal-graphics");
-const GraphicsCheckpoint = @import("terminal-graphics-checkpoint");
 const ProgramStatus = @import("ProgramStatus.zig");
 const manifest = @import("session_manifest.zig");
 const worker = @import("session_worker.zig");
@@ -41,19 +40,19 @@ pub const AttachmentState = struct {
     barrier_event_seq: u64 = 0,
     barrier_output_offset: u64 = 0,
     key: AttachmentKey = .{ .connection_id = 0, .attachment_id = 0, .epoch = 0 },
-    client_id: Id = .{0} ** 16,
+    client_id: Id = @splat(0),
     activity_order: u64 = 0,
     last_input_seq: u64 = 0,
-    last_input_hash: [32]u8 = .{0} ** 32,
+    last_input_hash: [32]u8 = @splat(0),
     acknowledged_event_seq: u64 = 0,
     acknowledged_output_offset: u64 = 0,
 };
 
 pub const InputDedupEntry = struct {
     active: bool = false,
-    client_id: Id = .{0} ** 16,
+    client_id: Id = @splat(0),
     input_seq: u64 = 0,
-    sha256: [32]u8 = .{0} ** 32,
+    sha256: [32]u8 = @splat(0),
 };
 
 pub const PendingResize = struct {
@@ -167,7 +166,7 @@ pub const Journal = struct {
             .output_offset = offset,
             .byte_start = @intCast(start),
             .byte_len = @intCast(bytes.len),
-            .crc32c = std.hash.crc.Crc32Iscsi.hash(bytes),
+            .crc32c = std.hash.crc.@"CRC-32/ISCSI".hash(bytes),
             .timestamp_ms = timestamp_ms,
         });
     }
@@ -276,10 +275,10 @@ mirror_terminal: ghostty.Terminal,
 mirror_stream: ghostty.TerminalStream,
 graphics: Graphics,
 mirror_reply_failed: bool = false,
-attachments: [max_attachment_slots]AttachmentState = [_]AttachmentState{.{}} ** max_attachment_slots,
-input_dedup: [max_input_dedup_entries]InputDedupEntry = [_]InputDedupEntry{.{}} ** max_input_dedup_entries,
+attachments: [max_attachment_slots]AttachmentState = @splat(.{}),
+input_dedup: [max_input_dedup_entries]InputDedupEntry = @splat(.{}),
 input_dedup_cursor: u8 = 0,
-pending_resizes: [max_attachment_slots]PendingResize = [_]PendingResize{.{}} ** max_attachment_slots,
+pending_resizes: [max_attachment_slots]PendingResize = @splat(.{}),
 pending_resize_count: u8 = 0,
 next_resize_operation: u64 = 1,
 attachment_count: u8 = 0,
@@ -697,20 +696,8 @@ fn createCheckpoint(self: *Self, now: i64) !void {
         else
             .{ .bytes = continuation.written() },
     });
-    var metadata: std.Io.Writer.Allocating = .init(self.allocator);
-    defer metadata.deinit();
-    try GraphicsCheckpoint.encode(self.allocator, &metadata.writer, &self.mirror_terminal);
-    var packaged: std.Io.Writer.Allocating = .init(self.allocator);
-    defer packaged.deinit();
-    var header: [12]u8 = undefined;
-    @memcpy(header[0..4], "KGST");
-    std.mem.writeInt(u32, header[4..8], @intCast(encoded.written().len), .little);
-    std.mem.writeInt(u32, header[8..12], @intCast(metadata.written().len), .little);
-    try packaged.writer.writeAll(&header);
-    try packaged.writer.writeAll(encoded.written());
-    try packaged.writer.writeAll(metadata.written());
-    if (packaged.written().len > self.limits.max_checkpoint_bytes) return error.CheckpointTooLarge;
-    const bytes = try packaged.toOwnedSlice();
+    if (encoded.written().len > self.limits.max_checkpoint_bytes) return error.CheckpointTooLarge;
+    const bytes = try encoded.toOwnedSlice();
     var digest: [32]u8 = undefined;
     std.crypto.hash.sha2.Sha256.hash(bytes, &digest, .{});
     freeCheckpoint(self.allocator, &self.current_checkpoint);
@@ -793,10 +780,10 @@ const Handler = ghostty.TerminalStream.Handler;
 
 fn configuredHandler(value: *ghostty.Terminal, term: []const u8) Handler {
     var handler = value.vtHandler();
-    handler.kitty_graphics = executeGraphics;
     handler.apc_handler.max_bytes.put(.kitty, Graphics.apc_limit);
     handler.terminfo_name = term;
     handler.effects.write_pty = effectWritePty;
+    handler.effects.kitty_graphics = executeGraphics;
     handler.effects.device_attributes = effectDeviceAttributes;
     handler.effects.title_changed = effectTitle;
     handler.effects.program_status = effectProgramStatus;
@@ -892,7 +879,7 @@ fn effectTitle(handler: *Handler) void {
 test "terminal answers device attribute and program status support probes" {
     const testing = std.testing;
     const Capture = struct {
-        var reply: [64]u8 = undefined;
+        var reply: [128]u8 = undefined;
         var length: usize = 0;
 
         fn write(_: *Handler, bytes: []const u8) void {
@@ -911,7 +898,7 @@ test "terminal answers device attribute and program status support probes" {
     try testing.expectEqualStrings("\x1b[?62;22c", Capture.reply[0..Capture.length]);
     Capture.length = 0;
     stream.nextSlice("\x1b]7501;?\x1b\\");
-    try testing.expectEqualStrings("\x1b]7501;?\x1b\\", Capture.reply[0..Capture.length]);
+    try testing.expectEqualStrings("\x1b]7501;" ++ ghostty.osc.program_status.query_reply ++ "\x1b\\", Capture.reply[0..Capture.length]);
 }
 
 test "journal preserves ordered output and resize" {
@@ -921,7 +908,7 @@ test "journal preserves ordered output and resize" {
     try journal.appendResize(.{ .cols = 90, .rows = 30 }, 2, 3, 11);
     try std.testing.expectEqual(@as(usize, 2), journal.events.items.len);
     try std.testing.expectEqualStrings("abc", journal.output(journal.events.items[0]));
-    try std.testing.expectEqual(std.hash.crc.Crc32Iscsi.hash("abc"), journal.events.items[0].crc32c);
+    try std.testing.expectEqual(std.hash.crc.@"CRC-32/ISCSI".hash("abc"), journal.events.items[0].crc32c);
     try std.testing.expectEqual(EventKind.resize, journal.events.items[1].kind);
 }
 
@@ -956,7 +943,7 @@ test "journal grows lazily within configured bounds" {
     try std.testing.expectEqual(@as(usize, 0), journal.bytes.capacity);
     try std.testing.expectEqual(@as(usize, 0), journal.events.capacity);
 
-    const data = [_]u8{0} ** (70 * 1024);
+    const data: [70 * 1024]u8 = @splat(0);
     try journal.appendOutput(&data, 1, 0, 10);
     try std.testing.expectEqual(data.len, journal.bytes.items.len);
     try std.testing.expect(journal.bytes.capacity >= data.len);

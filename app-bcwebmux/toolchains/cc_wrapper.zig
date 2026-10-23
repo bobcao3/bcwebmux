@@ -8,13 +8,10 @@ pub fn main(init: std.process.Init) !void {
     const arena = init.arena.allocator();
     const args = try init.minimal.args.toSlice(arena);
 
-    var child_args = std.array_list.Managed([]const u8).init(arena);
-    try child_args.append(config.zig_exe);
-    try child_args.append("cc");
-    try child_args.append("-target");
-    try child_args.append(config.target);
-    try child_args.append(try std.fmt.allocPrint(arena, "-mcpu={s}", .{config.cpu}));
-    if (args.len > 1) try child_args.appendSlice(args[1..]);
+    var child_args: std.ArrayList([]const u8) = .empty;
+    try child_args.appendSlice(arena, &.{ config.zig_exe, "cc", "-target", config.target });
+    try child_args.append(arena, try arena.print("-mcpu={s}", .{config.cpu}));
+    if (args.len > 1) try child_args.appendSlice(arena, args[1..]);
 
     return std.process.replace(init.io, .{
         .argv = child_args.items,

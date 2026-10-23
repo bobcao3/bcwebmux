@@ -303,9 +303,9 @@ fn prepareRunKey(self: *Self, raws: anytype, graphemes: anytype, y: usize, start
     const slot_count: u32 = @intCast(end - start);
     const first_style_id = self.cells.items[y * cols + start].meta & 0xffff;
     const style_flags = self.styles.items[first_style_id].flags;
-    const style_index: FontEngine.FontStyle = @enumFromInt(@as(u2, @intCast((style_flags & 1) | (style_flags & 2))));
+    const style_index: FontEngine.FontStyle = @fromBackingInt(@intCast((style_flags & 1) | (style_flags & 2)));
     var cache_key: CacheKey = undefined;
-    cache_key.style = @intFromEnum(style_index);
+    cache_key.style = @backingInt(style_index);
     cache_key.span = span;
     cache_key.codepoint_count = 0;
     var input_count: usize = 0;
@@ -325,7 +325,7 @@ fn prepareRunKey(self: *Self, raws: anytype, graphemes: anytype, y: usize, start
     const key: PreparedKey = if (input_count == 1 and slot_count == 1)
         .{ .ordinary = .{
             .codepoint = cache_key.codepoints[0],
-            .meta = (@as(u32, span) << 2) | @intFromEnum(style_index),
+            .meta = (@as(u32, span) << 2) | @backingInt(style_index),
         } }
     else
         .{ .complex = cache_key };
@@ -408,7 +408,7 @@ pub fn setGlyphPartition(self: *Self, base_slot: u32, slot_capacity: u32, column
 
 pub fn setTextBackend(self: *Self, value: u32) bool {
     if (value > 1) return false;
-    const backend: TextBackend = @enumFromInt(value);
+    const backend: TextBackend = @fromBackingInt(value);
     if (self.text_backend != backend) {
         self.text_backend = backend;
         self.bitmap_cache_reset = true;
@@ -757,7 +757,7 @@ fn prepareCached(self: *Self, state: *ghostty.RenderState, terminal: *ghostty.Te
                         .span_cells = span,
                         .text_offset = @intCast(text_offset),
                         .text_len = @intCast(self.canvas_text.items.len - text_offset),
-                        .style = @intFromEnum(style_index),
+                        .style = @backingInt(style_index),
                     };
                 }
                 for (0..end - start) |offset| {
@@ -800,7 +800,7 @@ fn prepareCached(self: *Self, state: *ghostty.RenderState, terminal: *ghostty.Te
         .cursor_x = cursor_x,
         .cursor_y = if (cursor) |pos| pos.y else std.math.maxInt(u16),
         .cursor_flags = 0,
-        .cursor_style = @intFromEnum(state.cursor.visual_style),
+        .cursor_style = @backingInt(state.cursor.visual_style),
         .scroll_total = @intCast(bar.total),
         .scroll_offset = @intCast(bar.offset),
         .scroll_length = @intCast(bar.len),
@@ -825,7 +825,7 @@ fn prepareCached(self: *Self, state: *ghostty.RenderState, terminal: *ghostty.Te
         self.text_view.inactiveSnapshot();
     const bitmap_uploads = self.bitmap_batch.uploads();
     const bitmap_upload_pixels = self.bitmap_batch.uploadPixels();
-    try self.graphics_scene.prepare(std.heap.wasm_allocator, terminal, graphics, self.font_cell_width, self.font_cell_height);
+    try self.graphics_scene.prepare(std.heap.wasm_allocator, state, terminal, graphics, self.font_cell_width, self.font_cell_height);
     self.packet = .{
         .magic = 0x5355424d,
         .version = 8,

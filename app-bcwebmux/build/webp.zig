@@ -145,7 +145,7 @@ pub fn add(
     b: *std.Build,
     dep: *std.Build.Dependency,
     target: std.Build.ResolvedTarget,
-    optimize: std.builtin.OptimizeMode,
+    optimize: std.lang.Optimize,
 ) *std.Build.Step.Compile {
     const module = b.createModule(.{
         .target = target,

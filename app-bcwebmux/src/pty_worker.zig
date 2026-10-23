@@ -3,20 +3,7 @@ const std = @import("std");
 const manifest = @import("session_manifest.zig");
 const worker = @import("session_worker.zig");
 const GraphicsTranscoder = @import("GraphicsTranscoder.zig");
-const c = @cImport({
-    @cDefine("_XOPEN_SOURCE", "600");
-    @cDefine("_FORTIFY_SOURCE", "0");
-    @cInclude("fcntl.h");
-    @cInclude("poll.h");
-    @cInclude("pty.h");
-    @cInclude("pwd.h");
-    @cInclude("signal.h");
-    @cInclude("stdlib.h");
-    @cInclude("sys/ioctl.h");
-    @cInclude("sys/socket.h");
-    @cInclude("sys/wait.h");
-    @cInclude("unistd.h");
-});
+const c = @import("posix-c");
 
 const packet_capacity = worker.packet_capacity;
 pub fn validTerm(term: []const u8) bool {
@@ -38,7 +25,7 @@ fn resolveHome(allocator: std.mem.Allocator) ![:0]const u8 {
     };
     // Relative HOME would still depend on the server's launch directory.
     if (!std.fs.path.isAbsolute(path)) return error.InvalidHomeDirectory;
-    return allocator.dupeZ(u8, path);
+    return allocator.dupeSentinel(u8, path, 0);
 }
 
 // Unix seqpacket send/recv retain MSG_NOSIGNAL/DONTWAIT/TRUNC absent from
@@ -133,7 +120,7 @@ pub fn run(io: std.Io, shell: [:0]const u8, term: [:0]const u8, kitty_graphics: 
     const output: OutputSink = .{ .channel = channel, .transcoder = &transcoder };
 
     // Signal handler and PTY cleanup are installed before the parent may signal termination.
-    const ready_packet = [_]u8{@intFromEnum(worker.Kind.ready)};
+    const ready_packet = [_]u8{@backingInt(worker.Kind.ready)};
     if (!sendPacket(channel, &ready_packet)) return error.WorkerReadyFailed;
 
     var termination_started_ms: ?i64 = null;
@@ -191,7 +178,7 @@ pub fn run(io: std.Io, shell: [:0]const u8, term: [:0]const u8, kitty_graphics: 
                         next_size.ws_row = std.mem.readInt(u16, resize_payload[10..12], .little);
                         const status: u8 = if (next_size.ws_col != 0 and next_size.ws_row != 0 and c.ioctl(master, c.TIOCSWINSZ, &next_size) == 0) 0 else 1;
                         var acknowledgement: [18]u8 = undefined;
-                        acknowledgement[0] = @intFromEnum(worker.Kind.resize_applied);
+                        acknowledgement[0] = @backingInt(worker.Kind.resize_applied);
                         std.mem.copyForwards(u8, acknowledgement[1..17], &resize_payload);
                         acknowledgement[17] = status;
                         if (!sendPacket(channel, &acknowledgement)) {
@@ -240,7 +227,7 @@ pub fn run(io: std.Io, shell: [:0]const u8, term: [:0]const u8, kitty_graphics: 
             transcoder.finish(output) catch |err| std.log.err("worker graphics normalization failed: {t}", .{err});
             drainChannel(channel, &packet);
             var exit_packet: [5]u8 = undefined;
-            exit_packet[0] = @intFromEnum(worker.Kind.exited);
+            exit_packet[0] = @backingInt(worker.Kind.exited);
             std.mem.writeInt(i32, exit_packet[1..5], child_status, .little);
             _ = sendPacket(channel, &exit_packet);
             return;
@@ -285,11 +272,11 @@ const OutputSink = struct {
     pub fn output(sink: OutputSink, bytes: []const u8) !void {
         var packet: [packet_capacity]u8 = undefined;
         if (bytes.len > packet.len - 1) {
-            packet[0] = @intFromEnum(worker.Kind.output_reserve);
+            packet[0] = @backingInt(worker.Kind.output_reserve);
             std.mem.writeInt(u64, packet[1..9], @intCast(bytes.len), .little);
             if (!sendPacket(sink.channel, packet[0..9])) return error.OutputClosed;
         }
-        packet[0] = @intFromEnum(worker.Kind.output);
+        packet[0] = @backingInt(worker.Kind.output);
         var remaining = bytes;
         while (remaining.len != 0) {
             const length = @min(remaining.len, packet.len - 1);

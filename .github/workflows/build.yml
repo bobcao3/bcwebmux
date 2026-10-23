@@ -17,7 +17,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  ZIG_VERSION: 0.16.0
+  ZIG_VERSION: 0.17.0
   NODE_VERSION: 24
 
 jobs:
@@ -59,7 +59,7 @@ jobs:
         env:
           TARGET: ${{ matrix.target }}
           CPU: ${{ matrix.cpu }}
-        run: zig build install test gotest -Dtarget="$TARGET" -Dcpu="$CPU" -Doptimize=ReleaseSmall
+        run: zig build install test gotest -Dtarget="$TARGET" -Dcpu="$CPU" -Doptimize=small
       - name: Verify static linkage and package executables with licenses
         env:
           TARGET_NAME: ${{ matrix.name }}

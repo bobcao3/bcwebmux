@@ -595,11 +595,11 @@ test "a full listing of worst-case session metadata outgrows 64 KiB" {
     // that JSON escaping doubles; the listing used to be rendered into a fixed
     // 64 KiB stack buffer and failed with 500 once enough sessions were kept.
     const metadata = Session.Metadata{
-        .id = .{0} ** 16,
-        .generation = .{0} ** 16,
-        .name = .{'"'} ** 80,
+        .id = @splat(0),
+        .generation = @splat(0),
+        .name = @splat('"'),
         .name_len = 80,
-        .title = .{'"'} ** 256,
+        .title = @splat('"'),
         .title_len = 256,
         .state = .running,
         .geometry = .{ .cols = 80, .rows = 24 },

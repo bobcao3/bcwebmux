@@ -9,7 +9,6 @@ test {
     _ = @import("Session.zig");
     _ = @import("GraphicsTranscoder.zig");
     _ = @import("terminal-graphics");
-    _ = @import("terminal-graphics-checkpoint");
     _ = @import("SessionRegistry.zig");
     _ = @import("c_api.zig");
 }
@@ -19,7 +18,6 @@ test "graphics checkpoint continues old-ID placement and subsequent text" {
     const ghostty = @import("ghostty-vt");
     const gfx = ghostty.kitty.graphics;
     const Graphics = @import("terminal-graphics");
-    const checkpoint_codec = @import("terminal-graphics-checkpoint");
     const testing = std.testing;
     const alloc = testing.allocator;
     const io = testing.io;
@@ -41,7 +39,7 @@ test "graphics checkpoint continues old-ID placement and subsequent text" {
     defer last.deinit(alloc);
     try testing.expectEqualStrings("OK", adapter.execute(&original, &last).?.message);
     try testing.expect(adapter.safeToCapture());
-    try testing.expectEqual(@as(usize, 16), adapter.source(screen, 42, screen.kitty_images.imageById(42).?.generation).?.bytes.len);
+    try testing.expectEqual(@as(usize, 16), adapter.source(screen, 42, screen.kitty_images.imageById(42).?.transmission).?.bytes.len);
     try testing.expectEqualStrings("OK", adapter.execute(&original, &query).?.message);
     try testing.expectEqual(@as(usize, 1), screen.kitty_images.images.count());
     try testing.expect(screen.kitty_images.imageById(42) != null);
@@ -54,15 +52,14 @@ test "graphics checkpoint continues old-ID placement and subsequent text" {
     var snapshot: std.Io.Writer.Allocating = .init(alloc);
     defer snapshot.deinit();
     try ghostty.snapshot.encode(alloc, &snapshot.writer, &original, .{ .continuation = .ground });
-    var graphics: std.Io.Writer.Allocating = .init(alloc);
-    defer graphics.deinit();
-    try checkpoint_codec.encode(alloc, &graphics.writer, &original);
     var source: std.Io.Reader = .fixed(snapshot.written());
-    var decoded = try ghostty.snapshot.decodeExact(alloc, io, &source, .{ .max_continuation_bytes = 0 });
+    var decoded = try ghostty.snapshot.decodeExact(alloc, io, &source, .{
+        .max_continuation_bytes = 0,
+        .kitty_image_storage_limit = Graphics.image_limit,
+    });
     defer decoded.deinit(alloc);
     var resumed = decoded.toOwned();
     defer resumed.deinit(alloc);
-    try checkpoint_codec.restore(alloc, &resumed, graphics.written(), decoded.history_rows);
     try testing.expectEqual(screen.kitty_images.next_image_id, resumed.screens.active.kitty_images.next_image_id);
     try testing.expectEqual(screen.kitty_images.placements.count(), resumed.screens.active.kitty_images.placements.count());
     const replay = try gfx.CommandParser.parseString(alloc, "a=p,i=42,p=9,c=2,r=2,C=1");
@@ -85,7 +82,6 @@ test "graphics checkpoint remaps placements when snapshot history is discarded" 
     const ghostty = @import("ghostty-vt");
     const gfx = ghostty.kitty.graphics;
     const Graphics = @import("terminal-graphics");
-    const checkpoint_codec = @import("terminal-graphics-checkpoint");
     const testing = std.testing;
     const alloc = testing.allocator;
     const io = testing.io;
@@ -126,23 +122,23 @@ test "graphics checkpoint remaps placements when snapshot history is discarded" 
     var snapshot: std.Io.Writer.Allocating = .init(alloc);
     defer snapshot.deinit();
     try ghostty.snapshot.encode(alloc, &snapshot.writer, &original, .{ .continuation = .ground });
-    var graphics: std.Io.Writer.Allocating = .init(alloc);
-    defer graphics.deinit();
-    try checkpoint_codec.encode(alloc, &graphics.writer, &original);
 
     var source: std.Io.Reader = .fixed(snapshot.written());
-    var decoded = try ghostty.snapshot.decodeExact(alloc, io, &source, .{ .max_continuation_bytes = 0 });
+    var decoded = try ghostty.snapshot.decodeExact(alloc, io, &source, .{
+        .max_continuation_bytes = 0,
+        .kitty_image_storage_limit = Graphics.image_limit,
+    });
     defer decoded.deinit(alloc);
     var restored = decoded.toOwned();
     defer restored.deinit(alloc);
-    try checkpoint_codec.restore(alloc, &restored, graphics.written(), decoded.history_rows);
 
     const restored_screen = restored.screens.active;
     try testing.expect(restored_screen.pages.scrollbar().total < screen.pages.scrollbar().total);
+    // The placement on discarded history is dropped with its page.
     try testing.expect(restored_screen.kitty_images.placements.get(.{
         .image_id = 42,
         .placement_id = .{ .tag = .external, .id = 7 },
-    }).?.location.pin.garbage);
+    }) == null);
     const restored_pin = restored_screen.kitty_images.placements.get(.{
         .image_id = 42,
         .placement_id = .{ .tag = .external, .id = 8 },

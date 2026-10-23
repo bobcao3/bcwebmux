@@ -47,7 +47,7 @@ pub fn add(
     b: *std.Build,
     dep: *std.Build.Dependency,
     target: std.Build.ResolvedTarget,
-    optimize: std.builtin.OptimizeMode,
+    optimize: std.lang.Optimize,
 ) *std.Build.Step.Compile {
     const module = b.createModule(.{
         .target = target,
@@ -81,7 +81,7 @@ pub fn addWasmDecoder(
     b: *std.Build,
     dep: *std.Build.Dependency,
     target: std.Build.ResolvedTarget,
-    optimize: std.builtin.OptimizeMode,
+    optimize: std.lang.Optimize,
     libc_include: std.Build.LazyPath,
 ) *std.Build.Step.Compile {
     const module = b.createModule(.{
@@ -108,7 +108,7 @@ pub fn addWasmDecoder(
                 "-DZSTD_malloc(s)=((void)(s), (void *)0)",
                 "-DZSTD_calloc(n,s)=((void)(n), (void)(s), (void *)0)",
                 "-DZSTD_free(p)=((void)(p))",
-                // Size over peak throughput, like the rest of the ReleaseSmall module.
+                // Size over peak throughput, like the rest of the size-optimized module.
                 "-DHUF_FORCE_DECOMPRESS_X1",
                 "-DZSTD_FORCE_DECOMPRESS_SEQUENCES_SHORT",
             },

@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: MIT
 const std = @import("std");
-const c = @cImport({
-    @cInclude("bcwebmux.h");
-});
+const c = @import("bcwebmux-c");
 const Registry = @import("SessionRegistry.zig");
 const SessionSocket = @import("SessionSocket.zig");
 const session_api = @import("session_api.zig");
@@ -134,7 +132,7 @@ export fn bcwebmux_http_request(engine: ?*Engine, request: ?*const CHttpRequest,
         .body = slice(raw.body, raw.body_len, value.registry.limits.max_request_bytes + 1) catch |err| return mapError(err),
     };
     const result = session_api.serveMemory(&value.registry, value.expected_origin, allocator, input) catch |err| return mapError(err);
-    output.status = @intFromEnum(result.status);
+    output.status = @backingInt(result.status);
     output.replayed = @intFromBool(result.replayed);
     output.body_len = result.body.len;
     output.body = if (result.body.len == 0) null else result.body.ptr;

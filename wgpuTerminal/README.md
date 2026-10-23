@@ -9,7 +9,7 @@ an xterm.js-compatible drop-in. The API is [index.d.ts](index.d.ts).
 ## Build and consume
 
 Private npm workspace (no published install); building needs
-Zig 0.16.0 and Node/npm. Packed-asset consumers need no Zig.
+Zig 0.17.0 and Node/npm. Packed-asset consumers need no Zig.
 
 ```sh
 npm install; npm pack --workspace=@bcwebmux/wgpu-terminal

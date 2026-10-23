@@ -8,7 +8,7 @@ from snapshots.
 ## Build and run
 
 First run: [repository quickstart](../README.md#run-it). Building needs Linux,
-Zig 0.16.0, and Node/npm plus network access; the build embeds the web UI, and
+Zig 0.17.0, and Node/npm plus network access; the build embeds the web UI, and
 any browser with WebGPU or WebGL2 uses it.
 
 Before exposing the terminal remotely or reaching it from a phone, configure
@@ -58,7 +58,7 @@ resolution clamping remains active
 Run from `app-bcwebmux/`:
 
 ```sh
-zig build -Doptimize=ReleaseSmall
+zig build -Doptimize=small
 zig build test && zig build gotest
 node test/session-controller-contract.mjs
 node test/session-ui-e2e.mjs ./zig-out/bin/bcwebmux-server ./zig-out/web

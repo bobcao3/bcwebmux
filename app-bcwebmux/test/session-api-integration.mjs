@@ -62,7 +62,7 @@ try {
   assert.equal(info.principal, "local");
   assert.equal(info.persistence, "memory");
   assert.equal(info.liveSessionLifetime, "daemon");
-  assert.equal(info.checkpointCodec.name, "ghostty-snapshot+kitty-graphics-v1");
+  assert.equal(info.checkpointCodec.name, "ghostty-snapshot");
   assert.equal(info.commandProfiles[0].id, "shell");
   assert.equal(info.limits.maxLiveSessions, 2);
   assert.equal(info.limits.scrollbackBytes, 8 * 1024 * 1024);

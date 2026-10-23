@@ -6,7 +6,7 @@ pub const GoBuild = struct {
     server: std.Build.LazyPath,
 };
 
-pub fn add(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode, web_assets: std.Build.LazyPath, core: *std.Build.Step.Compile, zstd: *std.Build.Step.Compile, webp: *std.Build.Step.Compile) GoBuild {
+pub fn add(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.lang.Optimize, web_assets: std.Build.LazyPath, core: *std.Build.Step.Compile, zstd: *std.Build.Step.Compile, webp: *std.Build.Step.Compile) GoBuild {
     if (target.result.os.tag != .linux) @panic("Go frontend prototype supports Linux targets");
     const arch = switch (target.result.cpu.arch) {
         .x86_64 => "amd64",
@@ -32,25 +32,29 @@ pub fn add(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builti
     const driver = hostTool(b, "bcwebmux-go", "toolchains/go.zig");
     driver.root_module.addOptions("config", options);
     const provision = b.addRunArtifact(hostTool(b, "bcwebmux-provision-go", "toolchains/provision.zig"));
-    // Zig 0.16 displays any successful run's stderr as a "failed command".
+    // Zig displays any successful run's stderr as a "failed command".
     // Save normal download progress, but still report it when the run fails.
     _ = provision.captureStdErr(.{});
     provision.addArg("--manifest");
     provision.addFileArg(b.path("toolchains/go-manifest.json"));
     provision.addArg("--output");
-    const toolchain = provision.addOutputDirectoryArg("go-toolchain");
+    const toolchain = provision.addOutputDirectoryArg2("go-toolchain", .{});
+    // Go requires absolute cache paths; only the path, not its contents, keys the runs.
+    const cache = std.Build.LazyPath.cache_root.path(b, "go");
 
     // Explicit dependency maintenance using the same pinned compiler.
     for ([_][]const u8{ "deps", "fmt" }) |command| {
         const maintenance = b.addRunArtifact(driver);
         _ = maintenance.captureStdErr(.{});
-        maintenance.addDirectoryArg(toolchain);
-        maintenance.addArtifactArg(cc);
+        maintenance.addDirectoryArg2(toolchain, .{});
+        maintenance.addArtifactArg2(cc, .{});
         maintenance.addFileArg(b.path("include/bcwebmux.h"));
         maintenance.addFileArg(core.getEmittedBin());
         maintenance.addFileArg(zstd.getEmittedBin());
         maintenance.addFileArg(webp.getEmittedBin());
-        maintenance.addArgs(&.{ arch, b.pathFromRoot(b.fmt("{s}/go", .{b.cache_root.path orelse ".zig-cache"})), command });
+        maintenance.addArg(arch);
+        maintenance.addDirectoryArg2(cache, .{ .make_absolute = true });
+        maintenance.addArg(command);
         if (std.mem.eql(u8, command, "fmt")) maintenance.addArg("./...");
         maintenance.setCwd(b.path("go"));
         maintenance.has_side_effects = true;
@@ -60,32 +64,33 @@ pub fn add(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builti
     const stage = b.addWriteFiles();
     _ = stage.addCopyDirectory(b.path("go"), "", .{});
     _ = stage.addCopyDirectory(web_assets, "cmd/bcwebmux-server/web", .{});
-    const cache = b.pathFromRoot(b.fmt("{s}/go", .{b.cache_root.path orelse ".zig-cache"}));
     const static = if (target.result.abi.isMusl()) " -extldflags=-static" else "";
-    const strip = if (optimize == .ReleaseSmall) " -s -w" else "";
+    const strip = if (optimize == .small) " -s -w" else "";
     const link_flags = b.fmt("-ldflags=-linkmode=external{s}{s}", .{ static, strip });
     var runs: [2]*std.Build.Step.Run = undefined;
     for (&runs, [_][]const u8{ "build", "test" }) |*slot, command| {
         const run = b.addRunArtifact(driver);
         _ = run.captureStdErr(.{});
-        run.addDirectoryArg(toolchain);
-        run.addArtifactArg(cc);
+        run.addDirectoryArg2(toolchain, .{});
+        run.addArtifactArg2(cc, .{});
         run.addFileArg(b.path("include/bcwebmux.h"));
         run.addFileArg(core.getEmittedBin());
         run.addFileArg(zstd.getEmittedBin());
         run.addFileArg(webp.getEmittedBin());
-        run.addArgs(&.{ arch, cache, command, "-trimpath", "-buildvcs=false", "-mod=readonly", link_flags });
+        run.addArg(arch);
+        run.addDirectoryArg2(cache, .{ .make_absolute = true });
+        run.addArgs(&.{ command, "-trimpath", "-buildvcs=false", "-mod=readonly", link_flags });
         run.setCwd(stage.getDirectory());
         slot.* = run;
     }
     runs[0].addArg("-o");
-    const server = runs[0].addOutputFileArg("bcwebmux-server");
+    const server = runs[0].addOutputFileArg2("bcwebmux-server", .{});
     runs[0].addArg("./cmd/bcwebmux-server");
     if (race) runs[1].addArg("-race");
     const test_step = b.step("gotest", "Run Go tests natively, or compile them for a cross target");
     if (target.result.cpu.arch != b.graph.host.result.cpu.arch or target.result.os.tag != b.graph.host.result.os.tag) {
         runs[1].addArgs(&.{ "-c", "-o" });
-        _ = runs[1].addOutputDirectoryArg("go-tests");
+        _ = runs[1].addOutputDirectoryArg2("go-tests", .{});
     }
     runs[1].addArg("./...");
     test_step.dependOn(&runs[1].step);
@@ -96,6 +101,6 @@ fn hostTool(b: *std.Build, name: []const u8, source: []const u8) *std.Build.Step
     return b.addExecutable(.{ .name = name, .root_module = b.createModule(.{
         .root_source_file = b.path(source),
         .target = b.graph.host,
-        .optimize = .ReleaseSafe,
+        .optimize = .safe,
     }) });
 }

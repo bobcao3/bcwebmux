@@ -40,13 +40,13 @@ pub fn main(init: std.process.Init) !void {
 
     const host_os = hostOs() orelse return error.UnsupportedHost;
     const host_arch = hostArch() orelse return error.UnsupportedHost;
-    const host_key = try std.fmt.allocPrint(arena, "{s}-{s}", .{ host_os, host_arch });
+    const host_key = try arena.print("{s}-{s}", .{ host_os, host_arch });
     const pinned_archive = pin.archives.map.get(host_key) orelse {
         log.err("the pinned Go release has no archive for host {s}", .{host_key});
         return error.UnsupportedHost;
     };
 
-    const filename_prefix = try std.fmt.allocPrint(arena, "{s}.", .{pin.version});
+    const filename_prefix = try arena.print("{s}.", .{pin.version});
     if (std.mem.indexOfAny(u8, pinned_archive.filename, "/\\") != null or
         !std.mem.startsWith(u8, pinned_archive.filename, filename_prefix) or
         !std.mem.endsWith(u8, pinned_archive.filename, ".tar.gz"))
@@ -59,7 +59,7 @@ pub fn main(init: std.process.Init) !void {
 
     const output = std.Io.Dir.cwd();
 
-    const archive_url = try std.fmt.allocPrint(arena, "https://dl.google.com/go/{s}", .{pinned_archive.filename});
+    const archive_url = try arena.print("https://dl.google.com/go/{s}", .{pinned_archive.filename});
     defer arena.free(archive_url);
     log.info("fetching {s} ({s})", .{ archive_url, pinned_archive.sha256 });
 
@@ -105,7 +105,7 @@ fn parseArgs(argv: []const []const u8) !Args {
 }
 
 fn hostOs() ?[]const u8 {
-    return switch (builtin.os.tag) {
+    return switch (builtin.target.os.tag) {
         .linux => "linux",
         .macos => "darwin",
         .freebsd => "freebsd",
@@ -114,7 +114,7 @@ fn hostOs() ?[]const u8 {
 }
 
 fn hostArch() ?[]const u8 {
-    return switch (builtin.cpu.arch) {
+    return switch (builtin.target.cpu.arch) {
         .x86_64 => "amd64",
         .aarch64 => "arm64",
         else => null,

@@ -2,11 +2,7 @@
 // Copyright (c) 2026 Cheng Cao
 
 const std = @import("std");
-const c = @cImport({
-    @cDefine("_XOPEN_SOURCE", "600");
-    @cInclude("signal.h");
-    @cInclude("sys/socket.h");
-});
+const c = @import("posix-c");
 
 pub const packet_capacity = 64 * 1024 + 1;
 
@@ -41,7 +37,7 @@ pub const Connection = struct {
         try self.send_mutex.lock(io);
         defer self.send_mutex.unlock(io);
         if (self.closed) return error.WorkerClosed;
-        var prefix = [_]u8{@intFromEnum(kind)};
+        var prefix = [_]u8{@backingInt(kind)};
         var iovecs = [_]c.struct_iovec{
             .{ .iov_base = &prefix, .iov_len = 1 },
             .{ .iov_base = @constCast(payload.ptr), .iov_len = payload.len },
@@ -97,7 +93,7 @@ pub const Connection = struct {
         self.send_mutex.lockUncancelable(io);
         defer self.send_mutex.unlock(io);
         if (self.closed) return;
-        var packet = [_]u8{@intFromEnum(Kind.terminate)};
+        var packet = [_]u8{@backingInt(Kind.terminate)};
         // Do not block on a full input queue; the signal fallback wakes the worker.
         _ = c.send(self.channel.handle, &packet, packet.len, c.MSG_NOSIGNAL | c.MSG_DONTWAIT);
         if (self.child.id) |pid| {
@@ -209,7 +205,7 @@ test "seqpacket boundaries, readiness, validation, close, and receive cancellati
     try std.testing.expectEqualSlices(u8, &maximum, full.payload);
 
     var oversized: [packet_capacity + 1]u8 = undefined;
-    oversized[0] = @intFromEnum(Kind.output);
+    oversized[0] = @backingInt(Kind.output);
     @memset(oversized[1..], 0);
     const oversized_sent = c.send(a.channel.handle, &oversized, oversized.len, c.MSG_NOSIGNAL);
     try std.testing.expectEqual(@as(isize, oversized.len), oversized_sent);
@@ -229,7 +225,7 @@ test "seqpacket boundaries, readiness, validation, close, and receive cancellati
     try std.testing.expectError(error.WorkerClosed, b.receive(io, &buffer));
     try std.testing.expectError(error.WorkerClosed, b.awaitReady(io));
 
-    if (@import("builtin").os.tag == .linux) {
+    if (@import("builtin").target.os.tag == .linux) {
         try std.testing.expectError(error.WorkerClosed, spawn(io, "/bin/true", "/bin/sh", "xterm-ghostty", true, 90, 80, 24));
     }
 }

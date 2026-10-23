@@ -5,11 +5,11 @@
     .name = .bcwebmux,
     .version = "2026.9.9",
     .fingerprint = 0xd7f1f8d55ccd9213,
-    .minimum_zig_version = "0.16.0",
+    .minimum_zig_version = "0.17.0",
     .dependencies = .{
         .ghostty = .{
-            .url = "https://github.com/bobcao3/ghostty/archive/acf31468a65f6b9f11e97987dc08fe442e5f4049.tar.gz",
-            .hash = "ghostty-1.3.2-dev-5UdBC9rAeQWwrNnr5-lII-QSY-RFVn87UkOc4jy1ux_q",
+            .url = "https://github.com/bobcao3/ghostty/archive/728bbef6c4738f448b8c7afcdd7a21e5c8a3a9fa.tar.gz",
+            .hash = "ghostty-1.3.2-dev-5UdBCyrfhQULc79O5PykWvthm0EwlMWtZmPcylr3yLtI",
         },
         .kb = .{
             .url = "https://github.com/JimmyLefevre/kb/archive/b07373d.tar.gz",
@@ -31,6 +31,11 @@
         .jetbrains_mono_nerd_font = .{
             .url = "https://github.com/ryanoasis/nerd-fonts/releases/download/v3.5.0/JetBrainsMono.tar.xz",
             .hash = "N-V-__8AAOAWRg4izSfnAMaMM1IV6_UEYFtw9NtPpHjN8F4s",
+        },
+        // Ghostty's translate-c commit, so one translate-c and Aro serve both.
+        .translate_c = .{
+            .url = "git+https://codeberg.org/ziglang/translate-c#02ff0c523fb92a38939b04d0145c4a9602a74d56",
+            .hash = "translate_c-2.0.0-Q_BUWltOBwBYABF84EUL208pIFeUIwbBs29FmVBaafN5",
         },
     },
     .paths = .{

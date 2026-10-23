@@ -5,7 +5,6 @@ const std = @import("std");
 const ghostty = @import("ghostty-vt");
 const RenderFrame = @import("RenderFrame.zig");
 const Graphics = @import("graphics/Adapter.zig");
-const GraphicsCheckpoint = @import("graphics/Checkpoint.zig");
 const FontEngine = @import("FontEngine.zig");
 const ZstdDecoder = @import("ZstdDecoder.zig");
 
@@ -17,11 +16,18 @@ const Handler = ghostty.TerminalStream.Handler;
 const staging_capacity = 64 * 1024;
 const continuation_capacity = 1024 * 1024;
 const snapshot_capacity = 16 * 1024 * 1024;
+/// The browser decodes images, so Ghostty only ever holds their pixels as
+/// pending and must still report where they are placed.
+const empty_render_state: ghostty.RenderState = state: {
+    var state: ghostty.RenderState = .empty;
+    state.pending_images = true;
+    break :state state;
+};
 const default_selection_word_boundaries = [_]u21{ 0, ' ', '\t', '\'', '"', '│', '`', '|', ':', ';', ',', '(', ')', '[', ']', '{', '}', '<', '>', '$' };
 
 terminal: ?ghostty.Terminal = null,
 stream: ?ghostty.TerminalStream = null,
-render_state: ghostty.RenderState = .empty,
+render_state: ghostty.RenderState = empty_render_state,
 staging: [staging_capacity]u8 = undefined,
 snapshot_staging: ?[]u8 = null,
 busy: bool = false,
@@ -54,13 +60,13 @@ extern "host" fn clipboard_write(location: i32, ptr: [*]const u8, len: usize) i3
 
 const ClipboardWriteFn = @typeInfo(@typeInfo(@FieldType(Handler.Effects, "clipboard_write")).optional.child).pointer.child;
 const ClipboardWriteInfo = @typeInfo(ClipboardWriteFn).@"fn";
-const ClipboardWrite = ClipboardWriteInfo.params[1].type.?;
+const ClipboardWrite = ClipboardWriteInfo.param_types[1].?;
 
 pub fn bootstrap(self: *Self) void {
     self.graphics = Graphics.init(alloc);
     self.terminal = null;
     self.stream = null;
-    self.render_state = .empty;
+    self.render_state = empty_render_state;
     self.snapshot_staging = null;
     self.busy = false;
     self.frame_token = 0;
@@ -212,7 +218,7 @@ pub fn term_deinit(self: *Self) void {
     self.graphics = Graphics.init(alloc);
     self.stream = null;
     self.render_state.deinit(alloc);
-    self.render_state = .empty;
+    self.render_state = empty_render_state;
     if (self.terminal) |*value| {
         self.selection_gesture.deinit(value);
         value.deinit(alloc);
@@ -254,18 +260,10 @@ pub fn term_snapshot_restore(self: *Self, len: u32) i32 {
 
     self.busy = true;
     defer self.finishBusy();
-    var snapshot: []const u8 = staged;
-    var metadata: ?[]const u8 = null;
-    if (staged.len >= 12 and std.mem.eql(u8, staged[0..4], "KGST")) {
-        const snapshot_len = std.mem.readInt(u32, staged[4..8], .little);
-        const metadata_len = std.mem.readInt(u32, staged[8..12], .little);
-        if (snapshot_len > staged.len - 12 or metadata_len != staged.len - 12 - snapshot_len) return 0;
-        snapshot = staged[12..][0..snapshot_len];
-        metadata = staged[12 + snapshot_len ..];
-    }
-    var source: std.Io.Reader = .fixed(snapshot);
+    var source: std.Io.Reader = .fixed(staged);
     var decoded = ghostty.snapshot.decodeExact(alloc, io, &source, .{
         .max_continuation_bytes = continuation_capacity,
+        .kitty_image_storage_limit = Graphics.image_limit,
     }) catch |err| {
         std.log.err("terminal snapshot decode failed: {s}", .{@errorName(err)});
         return 0;
@@ -274,12 +272,7 @@ pub fn term_snapshot_restore(self: *Self, len: u32) i32 {
     var replacement_terminal: ghostty.Terminal = decoded.toOwned();
     var replacement_owned = true;
     defer if (replacement_owned) replacement_terminal.deinit(alloc);
-    replacement_terminal.setKittyGraphicsSizeLimit(alloc, 16 * 1024 * 1024);
-    if (metadata) |bytes| GraphicsCheckpoint.restore(alloc, &replacement_terminal, bytes, decoded.history_rows) catch |err| {
-        std.log.err("terminal graphics checkpoint restore failed: {s}", .{@errorName(err)});
-        return 0;
-    };
-    var replacement_render_state: ghostty.RenderState = .empty;
+    var replacement_render_state: ghostty.RenderState = empty_render_state;
     replacement_render_state.update(alloc, &replacement_terminal) catch |err| {
         std.log.err("terminal snapshot render state update failed: {s}", .{@errorName(err)});
         replacement_render_state.deinit(alloc);
@@ -291,7 +284,7 @@ pub fn term_snapshot_restore(self: *Self, len: u32) i32 {
     self.graphics.deinit();
     self.graphics = Graphics.init(alloc);
     self.render_state.deinit(alloc);
-    self.render_state = .empty;
+    self.render_state = empty_render_state;
     if (self.terminal) |*value| {
         self.selection_gesture.deinit(value);
         value.deinit(alloc);
@@ -547,7 +540,7 @@ pub fn term_key(self: *Self, action_raw: u8, mods_raw: u16, consumed_raw: u16, c
     const code = self.staging[0..code_len];
     const text = self.staging[code_len..total_len];
     const key = ghostty.input.Key.fromW3C(code) orelse .unidentified;
-    const action: ghostty.input.KeyAction = @enumFromInt(action_raw);
+    const action: ghostty.input.KeyAction = @fromBackingInt(action_raw);
     const mods: ghostty.input.KeyMods = @bitCast(mods_raw & 0x3f);
     const consumed: ghostty.input.KeyMods = @bitCast(consumed_raw & 0x3f);
     self.busy = true;
@@ -587,8 +580,8 @@ pub fn term_mouse(self: *Self, action_raw: u8, button_raw: u8, mods_raw: u16, x:
     var encoded: [128]u8 = undefined;
     var writer: std.Io.Writer = .fixed(&encoded);
     ghostty.input.encodeMouse(&writer, .{
-        .action = @enumFromInt(action_raw),
-        .button = if (button_raw == 0xff) null else @enumFromInt(button_raw),
+        .action = @fromBackingInt(action_raw),
+        .button = if (button_raw == 0xff) null else @fromBackingInt(button_raw),
         .mods = @bitCast(mods_raw & 0x3f),
         .pos = .{ .x = x, .y = y },
     }, options) catch return 0;
@@ -609,10 +602,10 @@ fn freeSnapshotStaging(self: *Self) void {
 
 fn configuredHandler(value: *ghostty.Terminal) Handler {
     var handler = value.vtHandler();
-    handler.kitty_graphics = effectGraphics;
     handler.apc_handler.max_bytes.put(.kitty, Graphics.apc_limit);
     handler.terminfo_name = "xterm-256color";
     handler.effects.write_pty = effectWritePty;
+    handler.effects.kitty_graphics = effectGraphics;
     handler.effects.device_attributes = effectDeviceAttributes;
     handler.effects.bell = effectBell;
     handler.effects.title_changed = effectTitle;
@@ -973,7 +966,7 @@ fn effectClipboardWrite(handler: *Handler, write: ClipboardWrite) void {
         data = content.data;
     }
 
-    write.reply(switch (clipboard_write(@intCast(@intFromEnum(write.location)), data.ptr, data.len)) {
+    write.reply(switch (clipboard_write(@intCast(@backingInt(write.location)), data.ptr, data.len)) {
         0 => .{ .success = .{} },
         1 => .denied,
         2 => .unsupported,

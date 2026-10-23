@@ -162,7 +162,7 @@ pub fn beginAttach(
         .replay_geometry = session.initial_geometry,
         .state = session.state,
         .checkpoint = checkpoint,
-        .checkpoint_sha256 = if (session.current_checkpoint) |value| value.sha256 else .{0} ** 32,
+        .checkpoint_sha256 = if (session.current_checkpoint) |value| value.sha256 else @splat(0),
         .checkpoint_event_seq = if (session.current_checkpoint) |value| value.event_seq else 0,
         .checkpoint_output_offset = if (session.current_checkpoint) |value| value.output_offset else 0,
         .high_event_seq = high_event_seq,
@@ -449,7 +449,7 @@ fn resumeTestSession(revision: *std.atomic.Value(u64)) Session {
     session.mutex = .init;
     session.registry_revision = revision;
     session.limits = .{ .max_attachments_per_session = 1 };
-    session.generation = .{1} ** 16;
+    session.generation = @splat(1);
     session.geometry = .{ .cols = 80, .rows = 24 };
     session.initial_geometry = session.geometry;
     session.state = .running;
@@ -458,13 +458,13 @@ fn resumeTestSession(revision: *std.atomic.Value(u64)) Session {
     session.checkpoint_event_seq = 0;
     session.next_event_seq = 1;
     session.output_offset = 0;
-    session.attachments = [_]Session.AttachmentState{.{}} ** Session.max_attachment_slots;
+    session.attachments = @splat(.{});
     session.attachment_count = 0;
     session.next_attachment_epoch = 1;
     session.activity_order = 0;
     session.controller_key = null;
     session.lease_epoch = 0;
-    session.pending_resizes = [_]Session.PendingResize{.{}} ** Session.max_attachment_slots;
+    session.pending_resizes = @splat(.{});
     session.next_resize_operation = 1;
     session.pending_resize_count = 0;
     return session;
@@ -474,15 +474,15 @@ test "logical resume at capacity fences old controller and waits for replay ACK"
     var revision: std.atomic.Value(u64) = .init(0);
     var session = resumeTestSession(&revision);
     defer session.journal.deinit();
-    const client: Session.Id = .{2} ** 16;
+    const client: Session.Id = @splat(2);
     var old = try beginAttach(&session, std.testing.allocator, 1, 10, client, session.generation, 0, 0);
     defer old.deinit();
     try acknowledge(&session, old.key, 0, 0);
     const old_lease = try claimControl(&session, old.key);
     try std.testing.expectError(error.AttachmentExists, beginAttach(&session, std.testing.allocator, 1, 10, client, session.generation, 0, 0));
-    try std.testing.expectError(error.AttachmentLimit, beginAttach(&session, std.testing.allocator, 2, 10, .{3} ** 16, session.generation, 0, 0));
+    try std.testing.expectError(error.AttachmentLimit, beginAttach(&session, std.testing.allocator, 2, 10, @splat(3), session.generation, 0, 0));
     try std.testing.expectError(error.AttachmentLimit, beginAttach(&session, std.testing.allocator, 2, 11, client, session.generation, 0, 0));
-    try std.testing.expectError(error.AttachmentLimit, beginAttach(&session, std.testing.allocator, 2, 10, client, .{9} ** 16, 0, 0));
+    try std.testing.expectError(error.AttachmentLimit, beginAttach(&session, std.testing.allocator, 2, 10, client, @splat(9), 0, 0));
     var resumed = try beginAttach(&session, std.testing.allocator, 2, 10, client, session.generation, 0, 0);
     defer resumed.deinit();
     try std.testing.expectEqual(@as(u8, 1), session.attachment_count);
@@ -508,7 +508,7 @@ test "logical resume preserves readers and pending resize owners" {
     var session = resumeTestSession(&revision);
     defer session.journal.deinit();
     session.limits.max_attachments_per_session = 2;
-    const client: Session.Id = .{2} ** 16;
+    const client: Session.Id = @splat(2);
     var controller = try beginAttach(&session, std.testing.allocator, 1, 10, client, session.generation, 0, 0);
     defer controller.deinit();
     try acknowledge(&session, controller.key, 0, 0);
@@ -550,7 +550,7 @@ test "logical resume epoch failures preserve old slot and counters" {
     var revision: std.atomic.Value(u64) = .init(0);
     var session = resumeTestSession(&revision);
     defer session.journal.deinit();
-    const client: Session.Id = .{2} ** 16;
+    const client: Session.Id = @splat(2);
     var old = try beginAttach(&session, std.testing.allocator, 1, 10, client, session.generation, 0, 0);
     defer old.deinit();
     try acknowledge(&session, old.key, 0, 0);
@@ -576,7 +576,7 @@ test "logical resume replay allocation failures leave old attachment valid" {
             var revision: std.atomic.Value(u64) = .init(0);
             var session = resumeTestSession(&revision);
             defer session.journal.deinit();
-            const client: Session.Id = .{2} ** 16;
+            const client: Session.Id = @splat(2);
             var old = try beginAttach(&session, std.testing.allocator, 1, 10, client, session.generation, 0, 0);
             defer old.deinit();
             try acknowledge(&session, old.key, 0, 0);

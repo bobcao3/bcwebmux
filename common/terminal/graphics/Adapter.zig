@@ -29,7 +29,8 @@ pub const Codec = enum { raw, png, webp };
 
 pub const Source = struct {
     bytes: []const u8,
-    generation: u64,
+    /// The `Image.transmission` these bytes were sent as.
+    transmission: u64,
     width: u32,
     height: u32,
     format: Format,
@@ -70,9 +71,9 @@ pub fn deinit(self: *Self) void {
     self.* = undefined;
 }
 
-pub fn source(self: *const Self, screen: *ghostty.Screen, image_id: u32, generation: u64) ?Source {
+pub fn source(self: *const Self, screen: *ghostty.Screen, image_id: u32, transmission: u64) ?Source {
     const value = self.sources.get(.{ .screen = @intFromPtr(screen), .id = image_id }) orelse return null;
-    return if (value.generation == generation) value else null;
+    return if (value.transmission == transmission) value else null;
 }
 
 pub fn safeToCapture(self: *const Self) bool {
@@ -82,7 +83,7 @@ pub fn safeToCapture(self: *const Self) bool {
 
 pub fn execute(self: *Self, terminal: *ghostty.Terminal, cmd: *gfx.Command) ?gfx.Response {
     self.reconcile(terminal);
-    const index = @intFromEnum(terminal.screens.active_key);
+    const index = @backingInt(terminal.screens.active_key);
     if (self.draining[index] and (cmd.control == .transmit or cmd.control == .transmit_and_display)) {
         self.draining[index] = cmd.transmission().?.more_chunks;
         self.state_changed = true;
@@ -96,7 +97,7 @@ pub fn execute(self: *Self, terminal: *ghostty.Terminal, cmd: *gfx.Command) ?gfx
         .display, .delete => {
             self.state_changed = true;
             if (cmd.control == .delete) {
-                const slot = &self.loading[@intFromEnum(terminal.screens.active_key)];
+                const slot = &self.loading[@backingInt(terminal.screens.active_key)];
                 if (slot.*) |*pending| pending.deinit(self.alloc);
                 slot.* = null;
             }
@@ -138,7 +139,7 @@ fn transmit(self: *Self, terminal: *ghostty.Terminal, cmd: *gfx.Command) ?gfx.Re
     const t = cmd.transmission().?;
     const screen = terminal.screens.active;
     const screen_id = @intFromPtr(screen);
-    const index = @intFromEnum(terminal.screens.active_key);
+    const index = @backingInt(terminal.screens.active_key);
     const slot = &self.loading[index];
     const is_query = cmd.control == .query;
     var response: gfx.Response = .{ .id = t.image_id, .image_number = t.image_number, .placement_id = t.placement_id };
@@ -264,7 +265,7 @@ fn accept(self: *Self, terminal: *ghostty.Terminal, cmd: *const gfx.Command, byt
     const key: Key = .{ .screen = @intFromPtr(screen), .id = pending.id };
     if (self.sources.fetchPutAssumeCapacity(key, .{
         .bytes = copy,
-        .generation = pending.generation,
+        .transmission = pending.transmission,
         .width = image.width,
         .height = image.height,
         .format = t.format,
@@ -304,7 +305,7 @@ fn reconcile(self: *Self, terminal: *ghostty.Terminal) void {
         while (screens.next()) |screen| {
             if (@intFromPtr(screen.value.*) != entry.key_ptr.screen) continue;
             if (screen.value.*.kitty_images.imageById(entry.key_ptr.id)) |image| {
-                found = image.generation == entry.value_ptr.generation;
+                found = image.transmission == entry.value_ptr.transmission;
             }
             break;
         }
@@ -320,11 +321,11 @@ fn reconcile(self: *Self, terminal: *ghostty.Terminal) void {
 
 fn discardOldest(self: *Self) void {
     var oldest_key: ?Key = null;
-    var oldest_generation: u64 = std.math.maxInt(u64);
+    var oldest_transmission: u64 = std.math.maxInt(u64);
     var it = self.sources.iterator();
     while (it.next()) |item| {
-        if (item.value_ptr.generation >= oldest_generation) continue;
-        oldest_generation = item.value_ptr.generation;
+        if (item.value_ptr.transmission >= oldest_transmission) continue;
+        oldest_transmission = item.value_ptr.transmission;
         oldest_key = item.key_ptr.*;
     }
     const stale = self.sources.fetchRemove(oldest_key.?).?.value;
@@ -371,7 +372,7 @@ const EncodedSize = struct { width: u32, height: u32, codec: Codec };
 fn pngSize(png: []const u8) ?EncodedSize {
     if (png.len < 33 or !std.mem.eql(u8, png[0..8], "\x89PNG\r\n\x1a\n") or
         std.mem.readInt(u32, png[8..12], .big) != 13 or !std.mem.eql(u8, png[12..16], "IHDR") or
-        std.hash.crc.Crc32.hash(png[12..29]) != std.mem.readInt(u32, png[29..33], .big)) return null;
+        std.hash.Crc32.hash(png[12..29]) != std.mem.readInt(u32, png[29..33], .big)) return null;
     return .{
         .width = std.mem.readInt(u32, png[16..20], .big),
         .height = std.mem.readInt(u32, png[20..24], .big),
@@ -492,7 +493,7 @@ test "graphics rejected upload drains through final chunk without blocking other
         try testing.expectEqualStrings("OK", adapter.execute(&terminal, &valid).?.message);
         try testing.expectEqualStrings("OK", adapter.execute(&terminal, &query).?.message);
         const image = terminal.screens.active.kitty_images.imageById(99).?;
-        try testing.expectEqualStrings(valid.data, adapter.source(terminal.screens.active, 99, image.generation).?.bytes);
+        try testing.expectEqualStrings(valid.data, adapter.source(terminal.screens.active, 99, image.transmission).?.bytes);
         var stream = ghostty.TerminalStream.init(.{ .allocator = alloc, .handler = terminal.vtHandler() });
         defer stream.deinit();
         stream.nextSlice("X");

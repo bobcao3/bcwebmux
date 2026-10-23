@@ -24,7 +24,7 @@ fn log(
     var writer: std.Io.Writer = .fixed(&buffer);
     writer.print("(" ++ @tagName(scope) ++ "): " ++ format, args) catch {};
     const message = writer.buffered();
-    terminal_log(@intFromEnum(level), message.ptr, message.len);
+    terminal_log(@backingInt(level), message.ptr, message.len);
 }
 
 // A WebAssembly instance exposes one terminal through this C-shaped ABI.

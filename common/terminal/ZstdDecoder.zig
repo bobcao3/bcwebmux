@@ -7,10 +7,7 @@
 
 const std = @import("std");
 const FontEngine = @import("FontEngine.zig");
-const c = @cImport({
-    @cDefine("ZSTD_STATIC_LINKING_ONLY", "1");
-    @cInclude("zstd.h");
-});
+const c = @import("zstd-c");
 
 const Self = @This();
 
@@ -127,7 +124,7 @@ fn outputBuffer(self: *Self, raw_len: usize) Error![]u8 {
 }
 
 fn verify(self: *Self, output: []const u8, crc32c: u32) Error![]const u8 {
-    if (std.hash.crc.Crc32Iscsi.hash(output) != crc32c) return error.ChecksumMismatch;
+    if (std.hash.crc.@"CRC-32/ISCSI".hash(output) != crc32c) return error.ChecksumMismatch;
     self.output_len = output.len;
     return output;
 }

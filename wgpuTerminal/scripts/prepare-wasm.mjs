@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const repositoryRoot = resolve(packageRoot, "..");
-const result = spawnSync("zig", ["build", "terminal-wasm", "-Doptimize=ReleaseSmall"], {
+const result = spawnSync("zig", ["build", "terminal-wasm", "-Doptimize=small"], {
   cwd: resolve(repositoryRoot, "app-bcwebmux"),
   stdio: "inherit",
 });

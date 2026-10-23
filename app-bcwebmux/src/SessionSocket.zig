@@ -7,10 +7,10 @@ const Session = @import("Session.zig");
 const Registry = @import("SessionRegistry.zig");
 const realtime = @import("session_realtime.zig");
 const manifest = @import("session_manifest.zig");
-const c = @cImport(@cInclude("zstd.h"));
+const c = @import("zstd-c");
 
 const Self = @This();
-const zero_id: Session.Id = .{0} ** 16;
+const zero_id: Session.Id = @splat(0);
 const event_prefix_length = 32;
 const checkpoint_chunk_prefix_length = 16;
 
@@ -188,7 +188,7 @@ const ConnectionAttachment = struct {
     last_claim_request: u64 = 0,
     last_resize_request: u64 = 0,
     last_resize_operation: u64 = 0,
-    last_resize_payload: [24]u8 = .{0} ** 24,
+    last_resize_payload: [24]u8 = @splat(0),
 };
 
 allocator: std.mem.Allocator,
@@ -199,7 +199,7 @@ connection_id: u64,
 client_id: Session.Id = zero_id,
 state_mutex: std.Io.Mutex = .init,
 send_mutex: std.Io.Mutex = .init,
-attachments: [manifest.max_connection_attachments]ConnectionAttachment = [_]ConnectionAttachment{.{}} ** manifest.max_connection_attachments,
+attachments: [manifest.max_connection_attachments]ConnectionAttachment = @splat(.{}),
 output_compressors: [manifest.max_connection_attachments]OutputCompressor,
 sender_sequence: u64 = 0,
 receiver_sequence: u64 = 0,
@@ -481,9 +481,9 @@ fn receiveInput(self: *Self, frame: protocol.Frame) !void {
         error.SessionNotRunning => .not_running,
         else => .invalid,
     };
-    var payload: [12]u8 = .{0} ** 12;
+    var payload: [12]u8 = @splat(0);
     protocol.writeU64LE(&payload, 0, input_seq);
-    protocol.writeU16LE(&payload, 8, @intFromEnum(status));
+    protocol.writeU16LE(&payload, 8, @backingInt(status));
     try self.sendParts(.input_ack, 0, frame.request_id, frame.attachment_id, frame.attachment_epoch, frame.session_id, &.{&payload});
 }
 
@@ -544,10 +544,10 @@ fn receivePing(self: *Self, frame: protocol.Frame) !void {
 
 fn sendReplay(self: *Self, index: usize, request_id: u64, replay: *const realtime.Replay) !void {
     const slot = self.slotSnapshot(index) orelse return;
-    var begin: [80]u8 = .{0} ** 80;
+    var begin: [80]u8 = @splat(0);
     @memcpy(begin[0..16], &replay.generation);
-    begin[16] = @intFromEnum(replay.mode);
-    begin[17] = @intFromEnum(replay.state);
+    begin[16] = @backingInt(replay.mode);
+    begin[17] = @backingInt(replay.state);
     writeGeometry(begin[20..28], replay.geometry);
     writeGeometry(begin[28..36], replay.replay_geometry);
     protocol.writeU64LE(&begin, 48, replay.high_event_seq);
@@ -580,7 +580,7 @@ fn sendCheckpoint(self: *Self, index: usize, session_id: Session.Id, replay: *co
         var prefix: [checkpoint_chunk_prefix_length]u8 = undefined;
         protocol.writeU32LE(&prefix, 0, @intCast(offset));
         protocol.writeU32LE(&prefix, 4, @intCast(raw.len));
-        protocol.writeU32LE(&prefix, 8, std.hash.crc.Crc32Iscsi.hash(raw));
+        protocol.writeU32LE(&prefix, 8, std.hash.crc.@"CRC-32/ISCSI".hash(raw));
         protocol.writeU32LE(&prefix, 12, @intCast(compressed.len));
         try self.sendParts(.checkpoint_chunk, protocol.compressed_flag, 0, replay.key.attachment_id, replay.key.epoch, session_id, &.{ &prefix, compressed });
         offset += raw.len;
@@ -589,8 +589,8 @@ fn sendCheckpoint(self: *Self, index: usize, session_id: Session.Id, replay: *co
 }
 
 fn sendEvent(self: *Self, index: usize, key: Session.AttachmentKey, session_id: Session.Id, event: Session.Event, output: []const u8) !void {
-    var prefix: [event_prefix_length]u8 = .{0} ** event_prefix_length;
-    prefix[0] = @intFromEnum(event.kind);
+    var prefix: [event_prefix_length]u8 = @splat(0);
+    prefix[0] = @backingInt(event.kind);
     protocol.writeU64LE(&prefix, 16, event.seq);
     protocol.writeU64LE(&prefix, 24, event.output_offset);
     switch (event.kind) {
@@ -624,7 +624,7 @@ fn sendEvent(self: *Self, index: usize, key: Session.AttachmentKey, session_id: 
 }
 
 fn sendWelcome(self: *Self, request_id: u64) !void {
-    var payload: [88]u8 = .{0} ** 88;
+    var payload: [88]u8 = @splat(0);
     @memcpy(payload[0..16], &self.registry.server_instance);
     std.crypto.hash.sha2.Sha256.hash(manifest.terminal_abi, payload[16..48], .{});
     protocol.writeU32LE(&payload, 48, @intCast(protocol.max_frame_length));
@@ -639,8 +639,8 @@ fn sendWelcome(self: *Self, request_id: u64) !void {
 }
 
 fn sendError(self: *Self, code: ErrorCode, fatal: bool, request_id: u64, session_id: Session.Id, attachment_id: u64, epoch: u64, detail: []const u8) !void {
-    var prefix: [4]u8 = .{0} ** 4;
-    protocol.writeU16LE(&prefix, 0, @intFromEnum(code));
+    var prefix: [4]u8 = @splat(0);
+    protocol.writeU16LE(&prefix, 0, @backingInt(code));
     protocol.writeU16LE(&prefix, 2, @intFromBool(fatal));
     const bounded = detail[0..@min(detail.len, 512)];
     try self.sendParts(.error_frame, 0, request_id, attachment_id, epoch, session_id, &.{ &prefix, bounded });
@@ -751,7 +751,7 @@ fn publishSlot(self: *Self, index: usize) !void {
     }
     const metadata = self.registry.get(slot.session_id) orelse return;
     if ((metadata.state == .exited or metadata.state == .failed) and !slot.exit_sent) {
-        var payload: [20]u8 = .{0} ** 20;
+        var payload: [20]u8 = @splat(0);
         protocol.writeU64LE(&payload, 0, metadata.event_seq);
         protocol.writeU32LE(&payload, 8, @bitCast(metadata.exit_status orelse -1));
         protocol.writeU64LE(&payload, 12, @bitCast(metadata.last_activity_ms));
@@ -762,7 +762,7 @@ fn publishSlot(self: *Self, index: usize) !void {
 
 fn resyncAndDetach(self: *Self, index: usize, slot: ConnectionAttachment) !void {
     const metadata = self.registry.get(slot.session_id);
-    var payload: [16]u8 = .{0} ** 16;
+    var payload: [16]u8 = @splat(0);
     if (metadata) |value| {
         protocol.writeU64LE(&payload, 0, value.checkpoint_event_seq);
         protocol.writeU64LE(&payload, 8, value.output_offset);

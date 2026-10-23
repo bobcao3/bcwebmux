@@ -9,10 +9,7 @@ const std = @import("std");
 const ghostty = @import("ghostty-vt");
 const Graphics = @import("terminal-graphics");
 const wuffs = @import("wuffs");
-const webp = @cImport({
-    @cInclude("webp/encode.h");
-    @cInclude("webp/decode.h");
-});
+const webp = @import("webp-c");
 const gfx = ghostty.kitty.graphics;
 const Display = @FieldType(gfx.Command.Control, "display");
 const Self = @This();
@@ -343,7 +340,7 @@ fn reject(self: *Self, sink: anytype) !void {
 fn sendError(self: *Self, sink: anytype) !void {
     try self.flush(sink);
     const t = if (self.upload) |u| u.transmission else Graphics.Transmission{};
-    const quiet: u8 = if (self.upload) |u| @intFromEnum(u.quiet) else 0;
+    const quiet: u8 = if (self.upload) |u| @backingInt(u.quiet) else 0;
     var buffer: [256]u8 = undefined;
     const action: u8 = if (self.upload) |u| switch (u.control) {
         .query => 'q',
@@ -439,7 +436,7 @@ fn inspectSource(self: *Self, t: Graphics.Transmission, payload: []const u8) !Gr
         const bytes = inflated orelse payload;
         if (bytes.len >= 33 and std.mem.eql(u8, bytes[0..8], "\x89PNG\r\n\x1a\n")) {
             if (std.mem.readInt(u32, bytes[8..12], .big) != 13 or !std.mem.eql(u8, bytes[12..16], "IHDR") or
-                std.hash.crc.Crc32.hash(bytes[12..29]) != std.mem.readInt(u32, bytes[29..33], .big)) return error.InvalidData;
+                std.hash.Crc32.hash(bytes[12..29]) != std.mem.readInt(u32, bytes[29..33], .big)) return error.InvalidData;
             width = std.mem.readInt(u32, bytes[16..20], .big);
             height = std.mem.readInt(u32, bytes[20..24], .big);
             codec = .png;
@@ -694,7 +691,7 @@ const Mirror = struct {
         };
         self.terminal.setKittyGraphicsSizeLimit(testing.allocator, 16 * 1024 * 1024);
         var handler = self.terminal.vtHandler();
-        handler.kitty_graphics = execute;
+        handler.effects.kitty_graphics = execute;
         handler.apc_handler.max_bytes.put(.kitty, Graphics.apc_limit);
         handler.effects.write_pty = writePty;
         self.stream = ghostty.TerminalStream.init(.{ .allocator = testing.allocator, .handler = handler });
@@ -801,7 +798,7 @@ fn pngImage(rgba: []const u8, width: u32, height: u32) ![]u8 {
         try out.appendSlice(testing.allocator, chunk[0]);
         try out.appendSlice(testing.allocator, chunk[1]);
         var crc: [4]u8 = undefined;
-        std.mem.writeInt(u32, &crc, std.hash.crc.Crc32.hash(out.items[start..]), .big);
+        std.mem.writeInt(u32, &crc, std.hash.Crc32.hash(out.items[start..]), .big);
         try out.appendSlice(testing.allocator, &crc);
     }
     return out.toOwnedSlice(testing.allocator);
@@ -938,7 +935,7 @@ fn expectRejected(input: []const u8, idle: bool) !void {
     try transcoder.finish(&recorder);
     mirror.stream.nextSlice(recorder.bytes.items);
     const image = mirror.terminal.screens.active.kitty_images.imageById(99).?;
-    try testing.expectEqualStrings("\x01\x02\x03\xff", mirror.graphics.source(mirror.terminal.screens.active, 99, image.generation).?.bytes);
+    try testing.expectEqualStrings("\x01\x02\x03\xff", mirror.graphics.source(mirror.terminal.screens.active, 99, image.transmission).?.bytes);
     try testing.expect(std.mem.indexOf(u8, mirror.replies.items, "i=98;OK") != null);
     const cursor = mirror.terminal.screens.active.cursor;
     try testing.expectEqual(@as(u21, 'R'), mirror.terminal.screens.active.pages.getCell(.{ .active = .{ .x = cursor.x - 1, .y = cursor.y } }).?.cell.codepoint());
@@ -1003,7 +1000,7 @@ test "transcoder stores few-color PNG uploads losslessly" {
     defer testing.allocator.free(png);
     const compressed = try zlibStored(png);
     defer testing.allocator.free(compressed);
-    const control = try std.fmt.allocPrint(testing.allocator, "a=t,f=100,o=z,S={d},i=3", .{png.len});
+    const control = try testing.allocator.print("a=t,f=100,o=z,S={d},i=3", .{png.len});
     defer testing.allocator.free(control);
     for ([_]struct { []const u8, []const u8 }{ .{ "a=t,f=100,i=3", png }, .{ control, compressed } }) |case| {
         const upload = try kittyUpload(case[0], case[1], 4096);
@@ -1178,7 +1175,7 @@ test "rewritten uploads get the original's replies and image state" {
         try testing.expectEqual(image.width, other.width);
         try testing.expectEqual(image.height, other.height);
         try testing.expectEqual(image.metadata.implicit_id, other.metadata.implicit_id);
-        const source = rewritten.graphics.source(rewritten.terminal.screens.active, other.id, other.generation).?;
+        const source = rewritten.graphics.source(rewritten.terminal.screens.active, other.id, other.transmission).?;
         try testing.expectEqual(Graphics.Codec.webp, source.codec);
     }
     try testing.expectEqual(before.placements.count(), after.placements.count());
@@ -1277,7 +1274,7 @@ test "worker normalization clamps raw PNG and WebP sources and rejects resized c
         const image = mirror.terminal.screens.active.kitty_images.imageById(77).?;
         try testing.expectEqual(@as(u32, 2048), image.width);
         try testing.expectEqual(@as(u32, 1024), image.height);
-        const source = mirror.graphics.source(mirror.terminal.screens.active, image.id, image.generation).?;
+        const source = mirror.graphics.source(mirror.terminal.screens.active, image.id, image.transmission).?;
         try testing.expectEqual(Graphics.Codec.webp, source.codec);
         try testing.expect(source.bytes.len < Graphics.upload_limit);
         const decoded = try decodeWebp(source.bytes, image.width, image.height);

@@ -17,7 +17,10 @@ rendering works on WebGPU and WebGL2. This is not full Kitty compatibility.
   without being erased by default cell backgrounds; nonnegative-z images render
   above text. The cell background is opaque, so images with `z < -1073741824`
   are culled: they would be hidden behind every background pixel. Placeholder
-  codepoints are stored in terminal text but not rasterized as glyphs.
+  codepoints are stored in terminal text but not rasterized as glyphs. Ghostty's
+  render state resolves every placement, including those of images whose pixels
+  only the browser decodes; the shared scene converts its pixel geometry from
+  the terminal's cell size to the glyph cell size.
 - Source bytes travel in the existing PTY-output stream, not a separate image
   channel. Ghostty owns image IDs, placements, cursor behavior and decoded-byte
   accounting. The shared Zig adapter owns encoded bytes; browser textures are
@@ -26,11 +29,12 @@ rendering works on WebGPU and WebGL2. This is not full Kitty compatibility.
   copied while the WASM frame lease is valid; browser decoding is asynchronous
   and bounded. Both renderers blend RGBA pixels. Browser decoding does not send
   delayed Kitty replies or change logical terminal state.
-- Session checkpoints wrap the VT snapshot with a bounded `KGST` logical-image
-  envelope. The restore path also accepts VT-only snapshots. If historical
-  encoded bytes are unavailable after restore, image identity and protocol
-  behavior persist but the image remains undrawn until retransmission. Capture
-  waits for a complete APC/chunk boundary, then applies ordered PTY output once.
+- Session checkpoints are Ghostty VT snapshots, whose Kitty graphics records
+  carry images, placements and image IDs. Mirror images have no decoded pixels,
+  so they restore pending: image identity and protocol behavior persist, but an
+  image remains undrawn until retransmission because its encoded bytes are not
+  in the checkpoint. Capture waits for a complete APC/chunk boundary, then
+  applies ordered PTY output once.
 
 Unsupported: animation commands, filesystem/temporary-file/shared-memory
 sources, and the rest of Kitty's full protocol. The worker validates complete
@@ -86,16 +90,24 @@ decoder; the browser still decodes every image the browser draws.
 ## Build dependency
 
 `app-bcwebmux/build.zig.zon` pins the `bobcao3/ghostty` fork at
-[`acf31468a`](https://github.com/bobcao3/ghostty/commit/acf31468a65f6b9f11e97987dc08fe442e5f4049),
+[`728bbef6c`](https://github.com/bobcao3/ghostty/commit/728bbef6c4738f448b8c7afcdd7a21e5c8a3a9fa),
 based on upstream main
-[`c770410db`](https://github.com/ghostty-org/ghostty/commit/c770410dbb57909ff4f6921a6497688a957f85db),
+[`08a951834`](https://github.com/ghostty-org/ghostty/commit/08a9518340e19487bd5fdf96963583fb32f0c41f),
 with a verified archive hash. No local checkout or submodule is needed. Three
-patches enable freestanding Kitty graphics, exclude OS-backed image loaders on
-WASM, and expose Ghostty's APC dispatch through a stream-handler hook. Upstream
-exports `device_attributes`. Upstream's VT snapshot omits image/placement
-registries, which is why `KGST` exists. The server also links libwebp, pinned in
-the same manifest and built by `app-bcwebmux/build/webp.zig` with libwebp's
-runtime SIMD dispatch, and imports Wuffs from the Ghostty dependency.
+patches remain:
+
+- Kitty graphics on freestanding targets. Upstream still disables it there,
+  although it no longer reads a clock; the patch rejects the OS-backed media
+  whose loaders do not compile for WASM.
+- A `kitty_graphics` stream-handler effect, through which the adapter applies
+  its limits and keeps encoded bytes.
+- A render-state `pending_images` option. The WASM terminal never holds decoded
+  pixels, and the render state otherwise omits placements of such images.
+
+C translation uses the official `translate_c` package at Ghostty's commit, since
+Zig 0.17 removed `@cImport`. The server also links libwebp, pinned in the same
+manifest and built by `app-bcwebmux/build/webp.zig` with libwebp's runtime SIMD
+dispatch, and imports Wuffs from the Ghostty dependency.
 
 To bump the pin, rebase the fork patches onto upstream `main` in a clean
 worktree, retain only patches absent from upstream, and push

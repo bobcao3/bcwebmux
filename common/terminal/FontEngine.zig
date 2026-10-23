@@ -4,10 +4,7 @@
 const std = @import("std");
 const Self = @This();
 
-const c = @cImport({
-    @cInclude("kb_text_shape.h");
-    @cInclude("stb_truetype.h");
-});
+const c = @import("font-engine-c");
 
 extern "host" fn font_size(style: u32) u32;
 extern "host" fn font_copy(style: u32, ptr: [*]u8, len: u32) i32;
@@ -68,13 +65,13 @@ const Face = struct {
 
 context: ?*c.kbts_shape_context = null,
 faces: [4]Face = undefined,
-face_ready: [4]bool = [_]bool{false} ** 4,
-font_data: [4]?[]u8 = [_]?[]u8{null} ** 4,
+face_ready: [4]bool = @splat(false),
+font_data: [4]?[]u8 = @splat(null),
 
 pub fn bootstrap(self: *Self) void {
     self.context = null;
-    self.face_ready = [_]bool{false} ** 4;
-    self.font_data = [_]?[]u8{null} ** 4;
+    self.face_ready = @splat(false);
+    self.font_data = @splat(null);
 }
 
 pub fn deinit(self: *Self) void {
@@ -134,7 +131,7 @@ fn loadFont(self: *Self, index: usize) ![]u8 {
 }
 
 fn ensureFace(self: *Self, style: FontStyle) !*Face {
-    const index = @intFromEnum(style);
+    const index = @backingInt(style);
     if (self.face_ready[index]) return &self.faces[index];
     const data = try self.loadFont(index);
     try initFace(&self.faces[index], data);

@@ -2,6 +2,7 @@
 // Copyright (c) 2026 Cheng Cao
 
 const std = @import("std");
+const Translator = @import("translate_c").Translator;
 const go_build = @import("build/go.zig");
 const webp_build = @import("build/webp.zig");
 const zstd_build = @import("build/zstd.zig");
@@ -11,13 +12,13 @@ pub fn build(b: *std.Build) void {
     const runnable_target = target.result.cpu.arch == b.graph.host.result.cpu.arch and target.result.os.tag == b.graph.host.result.os.tag;
     const optimize = b.standardOptimizeOption(.{});
     const test_filters = b.option([][]const u8, "test-filter", "Filter Zig tests") orelse &[0][]const u8{};
-    const wasm_optimize = b.option(std.builtin.OptimizeMode, "wasm-optimize", "Optimization mode for WebAssembly") orelse .ReleaseSmall;
+    const wasm_optimize = b.option(std.lang.Optimize, "wasm-optimize", "Optimization mode for WebAssembly") orelse .small;
 
     var wasm_query = std.Target.Query{
         .cpu_arch = .wasm32,
         .os_tag = .freestanding,
     };
-    wasm_query.cpu_features_add.addFeature(@intFromEnum(std.Target.wasm.Feature.simd128));
+    wasm_query.cpu_features_add.addFeature(@backingInt(std.Target.wasm.Feature.simd128));
     const wasm_target = b.resolveTargetQuery(wasm_query);
     const kb = b.dependency("kb", .{ .target = wasm_target, .optimize = wasm_optimize });
     const stb = b.dependency("stb", .{ .target = wasm_target, .optimize = wasm_optimize });
@@ -32,7 +33,7 @@ pub fn build(b: *std.Build) void {
         .@"vt-features" = "-all,+render-state,+input-encode,+selection,+snapshot,+kitty-graphics",
     });
     // The headless server is latency-sensitive; Debug Ghostty makes output-heavy apps unusably slow.
-    const server_optimize = b.option(std.builtin.OptimizeMode, "server-optimize", "Optimization mode for the native server") orelse if (optimize == .Debug) .ReleaseSafe else optimize;
+    const server_optimize = b.option(std.lang.Optimize, "server-optimize", "Optimization mode for the native server") orelse if (optimize == .debug) .safe else optimize;
     const native_ghostty = b.dependency("ghostty", .{
         .target = target,
         .optimize = server_optimize,
@@ -46,22 +47,39 @@ pub fn build(b: *std.Build) void {
         .optimize = server_optimize,
         .imports = &.{.{ .name = "ghostty-vt", .module = native_ghostty.module("ghostty-vt") }},
     });
-    const native_graphics_checkpoint = b.createModule(.{
-        .root_source_file = b.path("../common/terminal/graphics/Checkpoint.zig"),
-        .target = target,
-        .optimize = server_optimize,
-        .imports = &.{.{ .name = "ghostty-vt", .module = native_ghostty.module("ghostty-vt") }},
-    });
     const target_zstd = zstd_build.add(b, zstd_dep, target, server_optimize);
     // Image encoding is the server's hot path; a size-optimized libwebp encodes
     // markedly slower for a few hundred kilobytes saved.
-    const webp_optimize: std.builtin.OptimizeMode = if (server_optimize == .ReleaseSmall) .ReleaseFast else server_optimize;
+    const webp_optimize: std.lang.Optimize = if (server_optimize == .small) .fast else server_optimize;
     const libwebp = b.dependency("libwebp", .{});
     const target_webp = webp_build.add(b, libwebp, target, webp_optimize);
     // Ghostty already compiles Wuffs for Kitty graphics; the transcoder decodes
     // PNG with that same memory-safe instance.
     const wuffs_dep = native_ghostty.builder.lazyDependency("wuffs", .{ .target = target, .optimize = server_optimize }) orelse return;
     const wuffs = wuffs_dep.module("wuffs");
+    // C declarations for the native server, worker and tests.
+    const posix_c = translateC(b, "posix-c",
+        \\#define _XOPEN_SOURCE 600
+        \\#define _FORTIFY_SOURCE 0
+        \\#include <fcntl.h>
+        \\#include <poll.h>
+        \\#include <pty.h>
+        \\#include <pwd.h>
+        \\#include <signal.h>
+        \\#include <stdlib.h>
+        \\#include <sys/ioctl.h>
+        \\#include <sys/socket.h>
+        \\#include <sys/wait.h>
+        \\#include <unistd.h>
+        \\
+    , target, server_optimize, &.{});
+    const zstd_c = translateC(b, "zstd-c", "#include <zstd.h>\n", target, server_optimize, &.{zstd_dep.path("lib")});
+    const webp_c = translateC(b, "webp-c",
+        \\#include <webp/encode.h>
+        \\#include <webp/decode.h>
+        \\
+    , target, server_optimize, &.{libwebp.path("src")});
+    const bcwebmux_c = translateC(b, "bcwebmux-c", "#include <bcwebmux.h>\n", target, server_optimize, &.{b.path("include")});
     const bcwebmux_core = b.addLibrary(.{
         .name = "bcwebmux_core",
         .linkage = .static,
@@ -73,14 +91,14 @@ pub fn build(b: *std.Build) void {
             .imports = &.{
                 .{ .name = "ghostty-vt", .module = native_ghostty.module("ghostty-vt") },
                 .{ .name = "terminal-graphics", .module = native_graphics },
-                .{ .name = "terminal-graphics-checkpoint", .module = native_graphics_checkpoint },
                 .{ .name = "wuffs", .module = wuffs },
+                .{ .name = "posix-c", .module = posix_c },
+                .{ .name = "zstd-c", .module = zstd_c },
+                .{ .name = "webp-c", .module = webp_c },
+                .{ .name = "bcwebmux-c", .module = bcwebmux_c },
             },
         }),
     });
-    bcwebmux_core.root_module.addIncludePath(b.path("include"));
-    bcwebmux_core.root_module.addIncludePath(zstd_dep.path("lib"));
-    bcwebmux_core.root_module.addIncludePath(libwebp.path("src"));
     bcwebmux_core.root_module.link_libc = true;
     bcwebmux_core.root_module.linkLibrary(target_zstd);
     bcwebmux_core.root_module.linkLibrary(target_webp);
@@ -94,11 +112,12 @@ pub fn build(b: *std.Build) void {
                 .{ .name = "ghostty-vt", .module = native_ghostty.module("ghostty-vt") },
                 .{ .name = "terminal-graphics", .module = native_graphics },
                 .{ .name = "wuffs", .module = wuffs },
+                .{ .name = "posix-c", .module = posix_c },
+                .{ .name = "webp-c", .module = webp_c },
             },
         }),
     });
     bcwebmux_worker.root_module.link_libc = true;
-    bcwebmux_worker.root_module.addIncludePath(libwebp.path("src"));
     bcwebmux_worker.root_module.linkLibrary(target_webp);
     bcwebmux_worker.root_module.linkSystemLibrary("util", .{});
     const wasm = b.addExecutable(.{
@@ -107,10 +126,19 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("../common/terminal/main.zig"),
             .target = wasm_target,
             .optimize = wasm_optimize,
-            .imports = &.{.{
-                .name = "ghostty-vt",
-                .module = ghostty.module("ghostty-vt"),
-            }},
+            .imports = &.{
+                .{ .name = "ghostty-vt", .module = ghostty.module("ghostty-vt") },
+                .{ .name = "font-engine-c", .module = translateC(b, "font-engine-c",
+                    \\#include <kb_text_shape.h>
+                    \\#include <stb_truetype.h>
+                    \\
+                , wasm_target, wasm_optimize, &.{ kb.path(""), stb.path("") }) },
+                .{ .name = "zstd-c", .module = translateC(b, "zstd-c",
+                    \\#define ZSTD_STATIC_LINKING_ONLY 1
+                    \\#include <zstd.h>
+                    \\
+                , wasm_target, wasm_optimize, &.{zstd_dep.path("lib")}) },
+            },
         }),
     });
     wasm.root_module.addCSourceFile(.{
@@ -180,9 +208,10 @@ pub fn build(b: *std.Build) void {
 
     b.installDirectory(.{ .source_dir = web_assets.getDirectory(), .install_dir = .prefix, .install_subdir = "web" });
 
-    const run_server = b.addSystemCommand(&.{b.getInstallPath(.bin, "bcwebmux-server")});
+    const run_server = std.Build.Step.Run.create(b, "run bcwebmux-server");
+    run_server.addFileArg(b.graph.path(.install_bin, "bcwebmux-server"));
     run_server.step.dependOn(b.getInstallStep());
-    if (b.args) |args| run_server.addArgs(args);
+    run_server.addPassthruArgs();
     const server_step = b.step("server", "Build and run the PTY web server");
     server_step.dependOn(&run_server.step);
 
@@ -195,15 +224,15 @@ pub fn build(b: *std.Build) void {
             .imports = &.{
                 .{ .name = "ghostty-vt", .module = native_ghostty.module("ghostty-vt") },
                 .{ .name = "terminal-graphics", .module = native_graphics },
-                .{ .name = "terminal-graphics-checkpoint", .module = native_graphics_checkpoint },
                 .{ .name = "wuffs", .module = wuffs },
+                .{ .name = "posix-c", .module = posix_c },
+                .{ .name = "zstd-c", .module = zstd_c },
+                .{ .name = "webp-c", .module = webp_c },
+                .{ .name = "bcwebmux-c", .module = bcwebmux_c },
             },
         }),
     });
     native_tests.root_module.link_libc = true;
-    native_tests.root_module.addIncludePath(b.path("include"));
-    native_tests.root_module.addIncludePath(zstd_dep.path("lib"));
-    native_tests.root_module.addIncludePath(libwebp.path("src"));
     native_tests.root_module.linkLibrary(target_zstd);
     native_tests.root_module.linkLibrary(target_webp);
     const run_native_tests = b.addRunArtifact(native_tests);
@@ -213,4 +242,25 @@ pub fn build(b: *std.Build) void {
     } else {
         test_step.dependOn(&native_tests.step);
     }
+}
+
+/// Translates the C declarations `header` includes into an importable module.
+fn translateC(
+    b: *std.Build,
+    name: []const u8,
+    header: []const u8,
+    target: std.Build.ResolvedTarget,
+    optimize: std.lang.Optimize,
+    include_paths: []const std.Build.LazyPath,
+) *std.Build.Module {
+    const translator: Translator = .init(b.dependency("translate_c", .{}), .{
+        .name = name,
+        .c_source_file = b.addWriteFiles().add(b.fmt("{s}.h", .{name}), header),
+        .target = target,
+        .optimize = optimize,
+        // The freestanding terminal WASM has no libc.
+        .link_libc = target.result.os.tag != .freestanding,
+    });
+    for (include_paths) |path| translator.addIncludePath(path);
+    return translator.mod;
 }

@@ -74,7 +74,7 @@ pub const Frame = struct {
     request_id: u64 = 0,
     attachment_id: u64 = 0,
     attachment_epoch: u64 = 0,
-    session_id: [session_id_length]u8 = [_]u8{0} ** session_id_length,
+    session_id: [session_id_length]u8 = @splat(0),
     payload: []const u8 = &.{},
 };
 
@@ -123,7 +123,7 @@ pub fn encodeFrame(frame: Frame, output: []u8) CodecError![]u8 {
     const total_length = header_length + frame.payload.len;
     if (output.len < total_length) return error.OutputTooSmall;
     writeU32LE(output, magic_offset, magic);
-    output[type_offset] = @intFromEnum(frame.frame_type);
+    output[type_offset] = @backingInt(frame.frame_type);
     output[flags_offset] = frame.flags;
     writeU16LE(output, header_length_offset, @intCast(header_length));
     writeU32LE(output, payload_length_offset, @intCast(frame.payload.len));
@@ -197,7 +197,7 @@ test "all frame types round trip" {
         const encoded = try encodeFrame(.{ .frame_type = frame_type, .connection_sequence = 1 }, &output);
         const decoded = try decodeFrame(encoded);
         try std.testing.expectEqual(frame_type, decoded.frame_type);
-        try std.testing.expectEqual(@intFromEnum(frame_type), @intFromEnum(decoded.frame_type));
+        try std.testing.expectEqual(@backingInt(frame_type), @backingInt(decoded.frame_type));
     }
 }
 
