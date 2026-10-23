@@ -22,7 +22,7 @@ import (
 	"time"
 
 	"bcwebmux/go/internal/native"
-	"github.com/gorilla/websocket"
+	"github.com/coder/websocket"
 )
 
 type fakeEngine struct {
@@ -314,11 +314,11 @@ func TestWebSocketPathRequiresExactOriginAndProtocol(t *testing.T) {
 		{"missing protocol", instance.Origin(), "other"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			dialer := websocket.Dialer{Subprotocols: []string{test.protocol}, HandshakeTimeout: time.Second}
-			header := http.Header{"Origin": []string{test.origin}}
-			conn, response, err := dialer.Dial(url, header)
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			conn, response, err := websocket.Dial(ctx, url, &websocket.DialOptions{Subprotocols: []string{test.protocol}, HTTPHeader: http.Header{"Origin": []string{test.origin}}})
 			if err == nil {
-				_ = conn.Close()
+				_ = conn.CloseNow()
 				t.Fatal("unsupported WebSocket handshake succeeded")
 			}
 			if response == nil || (response.StatusCode != http.StatusForbidden && response.StatusCode != http.StatusBadRequest) {

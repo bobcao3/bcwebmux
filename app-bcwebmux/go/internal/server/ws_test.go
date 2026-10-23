@@ -5,10 +5,12 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/json"
-	"errors"
+	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -16,87 +18,129 @@ import (
 	"time"
 
 	"bcwebmux/go/internal/native"
-	"github.com/gorilla/websocket"
+	"github.com/coder/websocket"
+)
+
+// Wire frame kinds the fake records; the library's MessageType covers only data.
+type testWireKind int
+
+const (
+	wireBinary testWireKind = iota + 1
+	wireText
+	wirePing
+	wirePong
+	wireClose
 )
 
 type testWireFrame struct {
-	kind int
+	kind testWireKind
 	data []byte
 }
+
+// testSocketNetwork emulates the library contract: Read answers a Ping and
+// echoes a peer Close itself, and Ping waits for its matching Pong.
 type testSocketNetwork struct {
-	input      chan testWireFrame
-	writes     chan testWireFrame
-	started    chan testWireFrame
-	parsed     chan int
-	closed     chan struct{}
-	once       sync.Once
-	gate       chan struct{}
-	ping, pong func(string) error
-	peerClose  func(int, string) error
+	input   chan testWireFrame
+	writes  chan testWireFrame
+	started chan testWireFrame
+	parsed  chan testWireKind
+	closed  chan struct{}
+	once    sync.Once
+	gate    chan struct{}
+	pings   atomic.Int64
+	mu      sync.Mutex
+	pongs   map[string]chan struct{}
 }
 
 func newTestSocketNetwork() *testSocketNetwork {
-	return &testSocketNetwork{input: make(chan testWireFrame, 32), writes: make(chan testWireFrame, 64), started: make(chan testWireFrame, 64), parsed: make(chan int, 64), closed: make(chan struct{})}
+	return &testSocketNetwork{input: make(chan testWireFrame, 32), writes: make(chan testWireFrame, 256), started: make(chan testWireFrame, 64), parsed: make(chan testWireKind, 256), closed: make(chan struct{}), pongs: map[string]chan struct{}{}}
 }
-func (w *testSocketNetwork) ReadMessage() (int, []byte, error) {
+func closePayload(code websocket.StatusCode, reason string) []byte {
+	payload := binary.BigEndian.AppendUint16(nil, uint16(code))
+	return append(payload, reason...)
+}
+func (w *testSocketNetwork) Read(context.Context) (websocket.MessageType, []byte, error) {
 	for {
 		select {
 		case <-w.closed:
-			return 0, nil, errors.New("closed")
+			return 0, nil, net.ErrClosed
 		case frame := <-w.input:
-			var err error
 			switch frame.kind {
-			case websocket.PingMessage:
-				err = w.ping(string(frame.data))
-			case websocket.PongMessage:
-				err = w.pong(string(frame.data))
-			case websocket.CloseMessage:
-				err = w.peerClose(1000, "")
-				if err == nil {
-					err = &websocket.CloseError{Code: 1000}
+			case wireBinary:
+				return websocket.MessageBinary, frame.data, nil
+			case wireText:
+				return websocket.MessageText, frame.data, nil
+			case wirePing:
+				w.writes <- testWireFrame{wirePong, frame.data}
+			case wirePong:
+				w.mu.Lock()
+				if pong := w.pongs[string(frame.data)]; pong != nil {
+					delete(w.pongs, string(frame.data))
+					close(pong)
 				}
-			default:
-				return frame.kind, frame.data, nil
+				w.mu.Unlock()
+			case wireClose:
+				w.writes <- testWireFrame{wireClose, closePayload(websocket.StatusNormalClosure, "")}
+				_ = w.CloseNow()
+				w.parsed <- frame.kind
+				return 0, nil, fmt.Errorf("received close frame: %w", websocket.CloseError{Code: websocket.StatusNormalClosure})
 			}
 			w.parsed <- frame.kind
-			if err != nil {
-				return 0, nil, err
-			}
 		}
 	}
 }
-func (w *testSocketNetwork) WriteMessage(kind int, data []byte) error {
-	frame := testWireFrame{kind, append([]byte(nil), data...)}
+func (w *testSocketNetwork) Write(_ context.Context, kind websocket.MessageType, data []byte) error {
+	frame := testWireFrame{wireBinary, append([]byte(nil), data...)}
+	if kind == websocket.MessageText {
+		frame.kind = wireText
+	}
 	w.started <- frame
 	if w.gate != nil {
 		select {
 		case <-w.gate:
 		case <-w.closed:
-			return errors.New("closed")
+			return net.ErrClosed
 		}
 	}
 	select {
 	case <-w.closed:
-		return errors.New("closed")
+		return net.ErrClosed
 	default:
 	}
 	w.writes <- frame
 	return nil
 }
-func (w *testSocketNetwork) WriteControl(kind int, data []byte, _ time.Time) error {
+func (w *testSocketNetwork) Ping(ctx context.Context) error {
+	payload := strconv.FormatInt(w.pings.Add(1), 10)
+	pong := make(chan struct{})
+	w.mu.Lock()
+	w.pongs[payload] = pong
+	w.mu.Unlock()
 	select {
 	case <-w.closed:
-		return errors.New("closed")
+		return net.ErrClosed
 	default:
 	}
-	w.writes <- testWireFrame{kind, append([]byte(nil), data...)}
-	return nil
+	w.writes <- testWireFrame{wirePing, []byte(payload)}
+	select {
+	case <-pong:
+		return nil
+	case <-w.closed:
+		return net.ErrClosed
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
-func (*testSocketNetwork) SetWriteDeadline(time.Time) error            { return nil }
-func (w *testSocketNetwork) SetPingHandler(f func(string) error)       { w.ping = f }
-func (w *testSocketNetwork) SetPongHandler(f func(string) error)       { w.pong = f }
-func (w *testSocketNetwork) SetCloseHandler(f func(int, string) error) { w.peerClose = f }
-func (w *testSocketNetwork) Close() error                              { w.once.Do(func() { close(w.closed) }); return nil }
+func (w *testSocketNetwork) Close(code websocket.StatusCode, reason string) error {
+	select {
+	case <-w.closed:
+		return net.ErrClosed
+	default:
+	}
+	w.writes <- testWireFrame{wireClose, closePayload(code, reason)}
+	return w.CloseNow()
+}
+func (w *testSocketNetwork) CloseNow() error { w.once.Do(func() { close(w.closed) }); return nil }
 
 // Every method asserts the ABI's no-overlap rule, including disposal.
 type testNativeSocket struct {
@@ -174,7 +218,7 @@ func assertSocketDisposed(t *testing.T, c *socketConn, s *testNativeSocket) {
 		t.Fatalf("queued bytes after join: in=%d out=%d", c.in.bytes, c.out.bytes)
 	}
 }
-func nextWireKind(t *testing.T, wire *testSocketNetwork, kind int) testWireFrame {
+func nextWireKind(t *testing.T, wire *testSocketNetwork, kind testWireKind) testWireFrame {
 	t.Helper()
 	for {
 		frame := awaitSocket(t, wire.writes)
@@ -191,10 +235,10 @@ func TestSocketReaderControlsIndependentOfNativeAndJoinedDisposal(t *testing.T) 
 	defer once.Do(func() { close(release) })
 	endpoint := &testNativeSocket{receive: func([]byte) error { close(entered); <-release; return nil }}
 	conn, done := launchTestSocket(t, wire, endpoint, socketProfile{})
-	wire.input <- testWireFrame{websocket.BinaryMessage, []byte("hello")}
+	wire.input <- testWireFrame{wireBinary, []byte("hello")}
 	awaitSocket(t, entered)
-	wire.input <- testWireFrame{websocket.PingMessage, []byte("peer probe")}
-	if got := string(nextWireKind(t, wire, websocket.PongMessage).data); got != "peer probe" {
+	wire.input <- testWireFrame{wirePing, []byte("peer probe")}
+	if got := string(nextWireKind(t, wire, wirePong).data); got != "peer probe" {
 		t.Fatal(got)
 	}
 	conn.closeNetwork()
@@ -224,15 +268,15 @@ func TestSocketBlockedWriterDoesNotBlockNativeInputOrReader(t *testing.T) {
 		return nil
 	}
 	conn, done := launchTestSocket(t, wire, endpoint, socketProfile{})
-	wire.input <- testWireFrame{websocket.BinaryMessage, []byte("hello")}
+	wire.input <- testWireFrame{wireBinary, []byte("hello")}
 	awaitSocket(t, received)
 	awaitSocket(t, wire.started)
-	wire.input <- testWireFrame{websocket.BinaryMessage, []byte("input")}
+	wire.input <- testWireFrame{wireBinary, []byte("input")}
 	if got := awaitSocket(t, received); got != "input" {
 		t.Fatal(got)
 	}
-	wire.input <- testWireFrame{websocket.PongMessage, []byte("12345678")}
-	if got := awaitSocket(t, wire.parsed); got != websocket.PongMessage {
+	wire.input <- testWireFrame{wirePong, []byte("12345678")}
+	if got := awaitSocket(t, wire.parsed); got != wirePong {
 		t.Fatal(got)
 	}
 	conn.closeNetwork()
@@ -249,9 +293,9 @@ func TestSocketInboundAdmissionIncludesBlockedNativeCall(t *testing.T) {
 	profile := defaultSocketProfile
 	profile.inboundBytes = 1
 	conn, done := launchTestSocket(t, wire, endpoint, profile)
-	wire.input <- testWireFrame{websocket.BinaryMessage, []byte("a")}
+	wire.input <- testWireFrame{wireBinary, []byte("a")}
 	awaitSocket(t, entered)
-	wire.input <- testWireFrame{websocket.BinaryMessage, []byte("b")}
+	wire.input <- testWireFrame{wireBinary, []byte("b")}
 	awaitSocket(t, conn.closed)
 	if conn.outcome != "inbound-overload" {
 		t.Fatal(conn.outcome)
@@ -281,9 +325,9 @@ func TestSocketTerminalFIFOCompletionWaitsOutsideNativeLocks(t *testing.T) {
 	profile := defaultSocketProfile
 	profile.outboundBytes = 1
 	conn, done := launchTestSocket(t, wire, endpoint, profile)
-	wire.input <- testWireFrame{websocket.BinaryMessage, []byte("hello")}
+	wire.input <- testWireFrame{wireBinary, []byte("hello")}
 	awaitSocket(t, wire.started)
-	wire.input <- testWireFrame{websocket.BinaryMessage, []byte("bad")}
+	wire.input <- testWireFrame{wireBinary, []byte("bad")}
 	awaitSocket(t, terminal)
 	// A occupies the full byte budget. B/E must wait, never overtake A or
 	// terminate just because the writer has no capacity at the terminal result.
@@ -293,10 +337,10 @@ func TestSocketTerminalFIFOCompletionWaitsOutsideNativeLocks(t *testing.T) {
 	var output string
 	for {
 		frame := awaitSocket(t, wire.writes)
-		if frame.kind == websocket.CloseMessage {
+		if frame.kind == wireClose {
 			break
 		}
-		if frame.kind == websocket.BinaryMessage {
+		if frame.kind == wireBinary {
 			output += string(frame.data)
 		}
 	}
@@ -330,7 +374,7 @@ func TestSocketTerminalAbortDiscardsUnsendableError(t *testing.T) {
 				profile.terminalDrain = 40 * time.Millisecond
 			}
 			conn, done := launchTestSocket(t, wire, endpoint, profile)
-			wire.input <- testWireFrame{websocket.BinaryMessage, []byte("bad")}
+			wire.input <- testWireFrame{wireBinary, []byte("bad")}
 			awaitSocket(t, wire.started)
 			switch reason {
 			case "forced-close":
@@ -342,7 +386,7 @@ func TestSocketTerminalAbortDiscardsUnsendableError(t *testing.T) {
 			}
 			for len(wire.writes) > 0 {
 				frame := <-wire.writes
-				if frame.kind == websocket.BinaryMessage || frame.kind == websocket.CloseMessage {
+				if frame.kind == wireBinary || frame.kind == wireClose {
 					t.Fatalf("sent terminal data/Close after abort: %+v", frame)
 				}
 			}
@@ -359,7 +403,7 @@ func TestSocketNativeResourceFailureDoesNotAttemptTerminalDelivery(t *testing.T)
 		return native.ErrQueueFull
 	}
 	conn, done := launchTestSocket(t, wire, endpoint, socketProfile{})
-	wire.input <- testWireFrame{websocket.BinaryMessage, []byte("hello")}
+	wire.input <- testWireFrame{wireBinary, []byte("hello")}
 	awaitSocket(t, done)
 	if conn.outcome != "native-resource-failure" || endpoint.drains.Load() != 0 {
 		t.Fatal("resource failure attempted terminal drain")
@@ -510,7 +554,7 @@ func TestSocketNormalQueueBackpressure(t *testing.T) {
 			if stalled {
 				profile.queueStall = 40 * time.Millisecond
 			}
-			c := &socketConn{ws: wire, closed: make(chan struct{}), peerClosing: make(chan struct{}), out: newSocketMailbox(1), profile: profile}
+			c := &socketConn{ws: wire, closed: make(chan struct{}), out: newSocketMailbox(1), profile: profile}
 			defer c.closeNetwork()
 			// Unbuffered progress provides a deterministic rendezvous proving
 			// the producer reached its full-queue wait, rather than racing it.
@@ -550,75 +594,54 @@ func TestSocketNormalQueueBackpressure(t *testing.T) {
 	}
 }
 
-func TestSocketPeerCloseReplyDropsQueuedData(t *testing.T) {
-	for _, blocked := range []bool{false, true} {
-		t.Run(map[bool]string{false: "reply", true: "deadline-abort"}[blocked], func(t *testing.T) {
-			wire := newTestSocketNetwork()
-			wire.gate = make(chan struct{}, 1)
-			endpoint := &testNativeSocket{}
-			endpoint.receive = func([]byte) error {
-				endpoint.queue = append(endpoint.queue, []byte("in-flight"), []byte("discard"))
-				return nil
-			}
-			profile := defaultSocketProfile
-			// The in-flight write consumes all capacity. Peer Close must also
-			// wake the native owner waiting to admit its one staged next frame.
-			profile.outboundBytes = len("in-flight")
-			if blocked {
-				profile.control = 40 * time.Millisecond
-			}
-			c, done := launchTestSocket(t, wire, endpoint, profile)
-			wire.input <- testWireFrame{websocket.BinaryMessage, []byte("hello")}
-			awaitSocket(t, wire.started)
-			wire.input <- testWireFrame{websocket.CloseMessage, nil}
-			awaitSocket(t, wire.parsed)
-			if !blocked {
-				wire.gate <- struct{}{}
-			}
-			awaitSocket(t, done)
-			if blocked {
-				if c.outcome != "peer-close-expired" {
-					t.Fatal(c.outcome)
-				}
-			} else {
-				if c.outcome != "peer-close" {
-					t.Fatal(c.outcome)
-				}
-				var data string
-				closes := 0
-				sawClose := false
-				for len(wire.writes) > 0 {
-					frame := <-wire.writes
-					if sawClose {
-						t.Fatal("write after Close")
-					}
-					if frame.kind == websocket.BinaryMessage {
-						data += string(frame.data)
-					}
-					if frame.kind == websocket.CloseMessage {
-						sawClose = true
-						closes++
-						if string(frame.data) != string(websocket.FormatCloseMessage(1000, "")) {
-							t.Fatal("Close code not echoed")
-						}
-					}
-				}
-				if closes != 1 || data != "in-flight" {
-					t.Fatalf("closes=%d data=%q", closes, data)
-				}
-			}
-			assertSocketDisposed(t, c, endpoint)
-		})
+func TestSocketPeerCloseStopsProductionAndNeverSendsDataAfterEcho(t *testing.T) {
+	wire := newTestSocketNetwork()
+	wire.gate = make(chan struct{}, 1)
+	endpoint := &testNativeSocket{}
+	endpoint.receive = func([]byte) error {
+		endpoint.queue = append(endpoint.queue, []byte("in-flight"), []byte("discard"))
+		return nil
 	}
+	profile := defaultSocketProfile
+	// The in-flight write consumes all capacity. Peer Close must also wake the
+	// native owner waiting to admit its one staged next frame.
+	profile.outboundBytes = len("in-flight")
+	c, done := launchTestSocket(t, wire, endpoint, profile)
+	wire.input <- testWireFrame{wireBinary, []byte("hello")}
+	awaitSocket(t, wire.started)
+	wire.input <- testWireFrame{wireClose, nil}
+	awaitSocket(t, done)
+	if c.outcome != "peer-close" {
+		t.Fatal(c.outcome)
+	}
+	closes, sawClose := 0, false
+	for len(wire.writes) > 0 {
+		frame := <-wire.writes
+		if sawClose && frame.kind == wireBinary {
+			t.Fatal("data after the Close echo")
+		}
+		if frame.kind == wireClose {
+			sawClose = true
+			closes++
+			if !bytes.Equal(frame.data, closePayload(websocket.StatusNormalClosure, "")) {
+				t.Fatal("Close code not echoed")
+			}
+		}
+	}
+	if closes != 1 {
+		t.Fatalf("closes=%d", closes)
+	}
+	assertSocketDisposed(t, c, endpoint)
 }
 
+// Also proves an accepted socket outlives the HTTP server's request deadlines.
+// net/http clears them at hijack today; Hijacker's contract does not promise it.
 func TestSocketPeerCloseRealWebSocketHandshake(t *testing.T) {
 	done := make(chan struct{})
 	endpoint := &testNativeSocket{}
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer close(done)
-		upgrader := websocket.Upgrader{}
-		wire, err := upgrader.Upgrade(w, r, nil)
+		wire, err := acceptWebSocket(w, r)
 		if err != nil {
 			t.Error(err)
 			return
@@ -629,19 +652,19 @@ func TestSocketPeerCloseRealWebSocketHandshake(t *testing.T) {
 			t.Errorf("outcome=%s", c.outcome)
 		}
 	}))
+	server.Config.ReadTimeout = 50 * time.Millisecond
+	server.Config.WriteTimeout = 50 * time.Millisecond
+	server.Start()
 	defer server.Close()
-	client, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(server.URL, "http"), nil)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	client, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(server.URL, "http"), &websocket.DialOptions{Subprotocols: []string{native.Protocol}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer client.Close()
-	if err := client.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(1000, "done"), time.Now().Add(time.Second)); err != nil {
-		t.Fatal(err)
-	}
-	_ = client.SetReadDeadline(time.Now().Add(time.Second))
-	_, _, err = client.ReadMessage()
-	var closeErr *websocket.CloseError
-	if !errors.As(err, &closeErr) || closeErr.Code != 1000 || closeErr.Text != "done" {
+	defer client.CloseNow()
+	time.Sleep(200 * time.Millisecond) // well past both request deadlines
+	if err := client.Close(websocket.StatusNormalClosure, "done"); err != nil {
 		t.Fatalf("expected orderly echo, not 1006: %v", err)
 	}
 	awaitSocket(t, done)
@@ -650,17 +673,46 @@ func TestSocketPeerCloseRealWebSocketHandshake(t *testing.T) {
 	}
 }
 
-func TestSocketWriterCannotExpireObsoleteProbeWindow(t *testing.T) {
-	wire := newTestSocketNetwork()
-	conn := &socketConn{ws: wire, closed: make(chan struct{}), profile: defaultSocketProfile}
-	conn.probeGeneration.Store(1)
-	// A stalled writer resumes before the supervisor can invalidate its old
-	// timing window. The writer must not become a second liveness authority.
-	if !conn.writeControl(socketControl{opcode: websocket.PingMessage, nonce: 1, payload: []byte("12345678"), created: time.Now().Add(-time.Minute)}) {
-		t.Fatal("writer retired an obsolete probe")
-	}
-	if conn.stopped() || len(wire.writes) != 0 {
-		t.Fatal("obsolete probe was sent or retired")
+func TestSocketHeartbeatUsesLibraryPing(t *testing.T) {
+	for _, answered := range []bool{true, false} {
+		t.Run(map[bool]string{true: "answered", false: "unanswered"}[answered], func(t *testing.T) {
+			wire := newTestSocketNetwork()
+			endpoint := &testNativeSocket{}
+			profile := defaultSocketProfile
+			profile.probeInterval = 10 * time.Millisecond
+			profile.response = 60 * time.Millisecond
+			conn, done := launchTestSocket(t, wire, endpoint, profile)
+			window := time.After(5 * profile.response)
+			pings := 0
+		wait:
+			for {
+				select {
+				case frame := <-wire.writes:
+					if frame.kind == wirePing {
+						pings++
+						if answered {
+							wire.input <- testWireFrame{wirePong, frame.data}
+						}
+					}
+				case <-done:
+					if answered || conn.outcome != "response-unavailable" {
+						t.Fatalf("outcome=%s pings=%d", conn.outcome, pings)
+					}
+					break wait
+				case <-window:
+					if !answered {
+						t.Fatal("unanswered heartbeat never retired")
+					}
+					if pings < 3 {
+						t.Fatalf("paced probes stopped after %d", pings)
+					}
+					break wait
+				}
+			}
+			conn.closeNetwork()
+			awaitSocket(t, done)
+			assertSocketDisposed(t, conn, endpoint)
+		})
 	}
 }
 

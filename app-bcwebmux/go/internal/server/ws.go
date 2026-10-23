@@ -7,14 +7,16 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"bcwebmux/go/internal/native"
-	"github.com/gorilla/websocket"
+	"github.com/coder/websocket"
 )
 
 const (
@@ -37,15 +39,14 @@ var defaultSocketProfile = socketProfile{
 }
 
 // Interface allows deterministic blocked-I/O tests without kernel buffer timing.
+// *websocket.Conn implements it. The library answers peer Pings, echoes a peer
+// Close after any in-flight frame, and orders control frames with data frames.
 type socketNetwork interface {
-	ReadMessage() (int, []byte, error)
-	WriteMessage(int, []byte) error
-	WriteControl(int, []byte, time.Time) error
-	SetWriteDeadline(time.Time) error
-	SetPongHandler(func(string) error)
-	SetPingHandler(func(string) error)
-	SetCloseHandler(func(int, string) error)
-	Close() error
+	Read(context.Context) (websocket.MessageType, []byte, error)
+	Write(context.Context, websocket.MessageType, []byte) error
+	Ping(context.Context) error
+	Close(websocket.StatusCode, string) error
+	CloseNow() error
 }
 
 type socketConn struct {
@@ -58,18 +59,15 @@ type socketConn struct {
 	open             func() (native.Socket, error)
 	profile          socketProfile
 	in, out          *socketMailbox
-	controls         chan socketControl
 	observations     chan probeObservation
 	ready            atomic.Bool
 	terminal         atomic.Bool
 	terminalDeadline atomic.Pointer[time.Time]
-	probeGeneration  atomic.Uint64
+	closeSent        atomic.Bool // the writer began its own Close handshake
 	inMessages       atomic.Uint64
 	inBytes          atomic.Uint64
 	outMessages      atomic.Uint64
 	outBytes         atomic.Uint64
-	peerClose        atomic.Pointer[socketControl]
-	peerClosing      chan struct{}
 
 	stopOnce sync.Once
 	closed   chan struct{}
@@ -94,25 +92,16 @@ func (s *Server) serveWebSocket(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
-	if !slices.Contains(websocket.Subprotocols(r), native.Protocol) {
+	if !slices.Contains(requestedSubprotocols(r), native.Protocol) {
 		s.logger.Warn("websocket upgrade rejected", "reason", "subprotocol", "remote", r.RemoteAddr)
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
-	upgrader := websocket.Upgrader{
-		ReadBufferSize:    32 * 1024,
-		WriteBufferSize:   32 * 1024,
-		Subprotocols:      []string{native.Protocol},
-		EnableCompression: false,
-		HandshakeTimeout:  websocketWriteWait,
-		CheckOrigin:       func(req *http.Request) bool { return s.validOrigin(req) },
-	}
-	conn, err := upgrader.Upgrade(w, r, nil)
+	conn, err := acceptWebSocket(w, r)
 	if err != nil {
 		s.logger.Warn("websocket upgrade failed", "remote", r.RemoteAddr, "error", err)
 		return
 	}
-	conn.SetReadLimit(native.MaxFrameLength)
 
 	id := s.nextConn.Add(1)
 	logger := s.logger.With("component", "websocket", "connection_id", id)
@@ -130,6 +119,34 @@ func (s *Server) serveWebSocket(w http.ResponseWriter, r *http.Request) {
 	state.run(r.Context())
 }
 
+// requestedSubprotocols lists the client's offered subprotocol tokens.
+func requestedSubprotocols(r *http.Request) []string {
+	var protocols []string
+	for _, value := range r.Header.Values("Sec-WebSocket-Protocol") {
+		for token := range strings.SplitSeq(value, ",") {
+			if token = strings.TrimSpace(token); token != "" {
+				protocols = append(protocols, token)
+			}
+		}
+	}
+	return protocols
+}
+
+// acceptWebSocket upgrades a request whose origin and subprotocol the caller
+// already authorized, so the library's own origin rule is not applied twice.
+func acceptWebSocket(w http.ResponseWriter, r *http.Request) (*websocket.Conn, error) {
+	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
+		Subprotocols:       []string{native.Protocol},
+		InsecureSkipVerify: true,
+		CompressionMode:    websocket.CompressionDisabled,
+	})
+	if err != nil {
+		return nil, err
+	}
+	conn.SetReadLimit(native.MaxFrameLength)
+	return conn, nil
+}
+
 func (s *Server) removeSocket(conn *socketConn) {
 	conn.closeNetwork()
 	// run joins the sole native owner, which alone disposes its handle.
@@ -144,28 +161,7 @@ func (c *socketConn) run(ctx context.Context) {
 	}
 	c.in = newSocketMailbox(c.profile.inboundBytes)
 	c.out = newSocketMailbox(c.profile.outboundBytes)
-	c.controls = make(chan socketControl, 32) // reserved, at most 125 bytes each
 	c.observations = make(chan probeObservation, 64)
-	c.peerClosing = make(chan struct{})
-	c.ws.SetPingHandler(func(data string) error {
-		return c.queueControl(socketControl{opcode: websocket.PongMessage, payload: []byte(data), created: time.Now()})
-	})
-	c.ws.SetPongHandler(func(data string) error {
-		if len(data) == 8 {
-			c.observe(probeObservation{nonce: binary.BigEndian.Uint64([]byte(data)), at: time.Now()})
-		}
-		return nil
-	})
-	c.ws.SetCloseHandler(func(code int, text string) error {
-		// RFC 6455 5.5.1: reply to Close, allowing only an already in-flight
-		// message to finish. The sole writer discards other application data.
-		control := &socketControl{opcode: websocket.CloseMessage, payload: websocket.FormatCloseMessage(code, text), created: time.Now()}
-		if c.peerClose.CompareAndSwap(nil, control) {
-			c.log().Info("websocket peer close received", "code", code, "reason", text)
-			close(c.peerClosing)
-		}
-		return nil
-	})
 	var users sync.WaitGroup
 	for _, work := range []func(){c.readLoop, c.writeLoop, c.nativeLoop} {
 		users.Add(1)
@@ -209,13 +205,6 @@ func (c *socketConn) run(ctx context.Context) {
 			observe(observation)
 		case <-ticker.C:
 			now := time.Now() // NOT the ticker's old scheduled timestamp
-			if peer := c.peerClose.Load(); peer != nil {
-				if !now.Before(peer.created.Add(c.profile.control)) {
-					c.retire("peer-close-expired")
-					return
-				}
-				continue
-			}
 			if c.terminal.Load() {
 				if !now.Before(*c.terminalDeadline.Load()) {
 					c.retire("terminal-drain-expired")
@@ -240,14 +229,22 @@ func (c *socketConn) run(ctx context.Context) {
 			}
 			if nonce != 0 {
 				c.log().Debug("websocket heartbeat probe scheduled", "nonce", nonce)
-				c.probeGeneration.Store(nonce)
-				payload := make([]byte, 8)
-				binary.BigEndian.PutUint64(payload, nonce)
-				if c.queueControl(socketControl{opcode: websocket.PingMessage, payload: payload, nonce: nonce, created: now}) != nil {
-					return
-				}
+				// Ping hands the frame to the library's ordered writer at once.
+				observe(probeObservation{nonce: nonce, at: now, submitted: true})
+				users.Add(1)
+				go func() { defer users.Done(); c.ping(nonce) }()
 			}
 		}
+	}
+}
+
+// ping runs one RFC probe: the library writes the Ping and matches its Pong.
+// Only the supervisor's policy turns a missing response into retirement.
+func (c *socketConn) ping(nonce uint64) {
+	ctx, cancel := context.WithTimeout(context.Background(), c.profile.response)
+	defer cancel()
+	if c.ws.Ping(ctx) == nil {
+		c.observe(probeObservation{nonce: nonce, at: time.Now()})
 	}
 }
 
@@ -386,21 +383,26 @@ func (c *socketConn) stopped() bool {
 
 func (c *socketConn) readLoop() {
 	for !c.stopped() {
-		kind, data, err := c.ws.ReadMessage()
+		kind, data, err := c.ws.Read(context.Background())
 		if err != nil {
-			if c.stopped() || c.peerClose.Load() != nil {
+			// After its own Close the writer reports the outcome, echoed or not.
+			if c.stopped() || c.closeSent.Load() {
+				return
+			}
+			var peer websocket.CloseError
+			if errors.As(err, &peer) {
+				// RFC 6455 5.5.1: the library already echoed it after any in-flight frame.
+				c.log().Info("websocket peer close received", "code", int(peer.Code), "reason", peer.Reason)
+				c.retire("peer-close")
 				return
 			}
 			c.log().Warn("websocket read failed", "error", err)
 			c.retire("read-failure")
 			return
 		}
-		if kind != websocket.BinaryMessage || len(data) < 1 || len(data) > native.MaxFrameLength {
+		if kind != websocket.MessageBinary || len(data) < 1 || len(data) > native.MaxFrameLength {
 			c.log().Warn("websocket message rejected", "opcode", kind, "bytes", len(data))
 			c.retire("websocket-protocol")
-			return
-		}
-		if c.peerClose.Load() != nil {
 			return
 		}
 		if c.terminal.Load() {
@@ -418,7 +420,7 @@ func (c *socketConn) readLoop() {
 // supervisor never acquire the engine lock. Disposal cannot race live cgo work.
 func (c *socketConn) nativeLoop() {
 	if c.native == nil {
-		if c.productionStopped() {
+		if c.stopped() {
 			return
 		}
 		var err error
@@ -436,13 +438,13 @@ func (c *socketConn) nativeLoop() {
 	}()
 	ticker := time.NewTicker(websocketTick)
 	defer ticker.Stop()
-	for !c.productionStopped() {
+	for !c.stopped() {
 		var err error
 		select {
 		case <-c.closed:
 			return
 		case packet := <-c.in.items:
-			if c.productionStopped() {
+			if c.stopped() {
 				c.in.release(packet)
 				return
 			}
@@ -454,7 +456,7 @@ func (c *socketConn) nativeLoop() {
 				}
 			} // first successful Receive validates HELLO
 		case <-ticker.C:
-			if c.productionStopped() {
+			if c.stopped() {
 				return
 			}
 			err = c.native.Tick()
@@ -462,7 +464,7 @@ func (c *socketConn) nativeLoop() {
 				continue
 			}
 		}
-		if c.productionStopped() {
+		if c.stopped() {
 			return
 		}
 		if err != nil {
@@ -488,7 +490,7 @@ func (c *socketConn) nativeLoop() {
 
 func (c *socketConn) drain(terminal bool) bool {
 	for count := 0; terminal || count < 256; count++ {
-		if c.productionStopped() {
+		if c.stopped() {
 			return false
 		}
 		message, ok, err := c.native.Drain()
@@ -515,9 +517,6 @@ func (c *socketConn) drain(terminal bool) bool {
 	return true
 }
 
-// productionStopped does not close network I/O: a peer Close still needs its reply.
-func (c *socketConn) productionStopped() bool { return c.stopped() || c.peerClose.Load() != nil }
-
 func (c *socketConn) enqueueOutput(packet socketPacket, terminal bool) bool {
 	// One staged max-frame copy; Drain has released its native lock before waiting.
 	// Progress cannot restart this frame's independent admission window.
@@ -531,7 +530,7 @@ func (c *socketConn) enqueueOutput(packet socketPacket, terminal bool) bool {
 	}
 	timer := time.NewTimer(time.Until(deadline))
 	defer timer.Stop()
-	for !c.productionStopped() {
+	for !c.stopped() {
 		if !time.Now().Before(deadline) {
 			c.retire(outcome)
 			return false
@@ -542,8 +541,6 @@ func (c *socketConn) enqueueOutput(packet socketPacket, terminal bool) bool {
 		select {
 		case <-c.closed:
 			return false
-		case <-c.peerClosing:
-			return false
 		case <-timer.C:
 			c.retire(outcome)
 			return false
@@ -553,12 +550,6 @@ func (c *socketConn) enqueueOutput(packet socketPacket, terminal bool) bool {
 	return false
 }
 
-type socketControl struct {
-	opcode  int
-	payload []byte
-	nonce   uint64
-	created time.Time
-}
 type probeObservation struct {
 	nonce     uint64
 	at        time.Time
@@ -572,52 +563,13 @@ func (c *socketConn) observe(observation probeObservation) {
 		c.retire("control-observation-overload")
 	}
 }
-func (c *socketConn) queueControl(control socketControl) error {
-	if c.stopped() {
-		return native.ErrClosed
-	}
-	select {
-	case c.controls <- control:
-		return nil
-	default:
-		c.retire("control-overload")
-		return native.ErrQueueFull
-	}
-}
 
 func (c *socketConn) writeLoop() {
 	for !c.stopped() {
-		if peer := c.peerClose.Load(); peer != nil {
-			if err := c.ws.WriteControl(websocket.CloseMessage, peer.payload, peer.created.Add(c.profile.control)); err != nil {
-				c.retire("close-write-failure")
-			} else {
-				c.retire("peer-close")
-			}
-			return
-		}
-		// RFC controls have reserved bounded capacity and no application sequence.
-		select {
-		case control := <-c.controls:
-			if !c.writeControl(control) {
-				return
-			}
-			continue
-		default:
-		}
 		select {
 		case <-c.closed:
 			return
-		case <-c.peerClosing:
-			continue
-		case control := <-c.controls:
-			if !c.writeControl(control) {
-				return
-			}
 		case packet := <-c.out.items:
-			if c.peerClose.Load() != nil {
-				c.out.release(packet)
-				continue
-			}
 			if c.stopped() {
 				c.out.release(packet)
 				return
@@ -629,66 +581,40 @@ func (c *socketConn) writeLoop() {
 					deadline = end
 				}
 			}
-			var err error
 			if !time.Now().Before(deadline) {
 				c.out.release(packet)
 				c.retire("terminal-drain-expired")
 				return
 			}
 			if packet.terminal {
-				// Gorilla itself also marks RFC protocol-error Close as
-				// ErrCloseSent before releasing its write lock. That protects
-				// the reader's mandatory protocol-error response path too.
-				err = c.ws.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseProtocolError, "native protocol terminated"), deadline)
-			} else if err = c.ws.SetWriteDeadline(deadline); err == nil {
-				err = c.ws.WriteMessage(websocket.BinaryMessage, packet.payload)
+				c.out.release(packet)
+				// The library marks the Close sent before releasing its write
+				// lock, so no data can follow it, then awaits the echo (bounded).
+				c.closeSent.Store(true)
+				if err := c.ws.Close(websocket.StatusProtocolError, "native protocol terminated"); err != nil && !c.stopped() {
+					c.log().Warn("websocket close handshake incomplete", "error", err)
+					c.retire("close-handshake-incomplete")
+					return
+				}
+				c.retire("terminal-completed")
+				return
 			}
+			ctx, cancel := context.WithDeadline(context.Background(), deadline)
+			err := c.ws.Write(ctx, websocket.MessageBinary, packet.payload)
+			cancel()
 			c.out.release(packet)
 			if err != nil {
-				c.log().Warn("websocket write failed", "error", err, "terminal", packet.terminal)
+				// A connection already closed by a peer Close, read failure or
+				// retirement is reported by whichever path closed it.
+				if c.stopped() || errors.Is(err, net.ErrClosed) {
+					return
+				}
+				c.log().Warn("websocket write failed", "error", err)
 				c.retire("write-failure")
 				return
 			}
-			if packet.terminal {
-				c.retire("terminal-completed")
-				return
-			} // never data after Close
 		}
 	}
-}
-
-func (c *socketConn) writeControl(control socketControl) bool {
-	if c.stopped() {
-		return false
-	}
-	if c.peerClose.Load() != nil {
-		return true
-	}
-	if control.nonce != 0 && (control.nonce != c.probeGeneration.Load() || c.terminal.Load()) {
-		return true
-	}
-	deadline := control.created.Add(c.profile.control)
-	if !time.Now().Before(deadline) {
-		// Only the supervisor may expire its probe: it first detects its own
-		// scheduling gap. Do not let a resumed writer fire an obsolete window.
-		if control.nonce != 0 {
-			return true
-		}
-		c.retire("local-control-stall")
-		return false
-	}
-	if control.nonce != 0 {
-		c.observe(probeObservation{nonce: control.nonce, at: time.Now(), submitted: true})
-	}
-	if c.stopped() {
-		return false
-	}
-	if err := c.ws.WriteControl(control.opcode, control.payload, deadline); err != nil {
-		c.log().Warn("websocket control write failed", "error", err, "opcode", control.opcode, "nonce", control.nonce)
-		c.retire("control-write-failure")
-		return false
-	}
-	return true
 }
 
 // Pure policy clock for deterministic deadline/scheduling-gap tests. A Pong
@@ -771,7 +697,7 @@ func (c *socketConn) retire(outcome string) {
 	c.stopOnce.Do(func() {
 		c.outcome = outcome
 		close(c.closed)
-		_ = c.ws.Close()
+		_ = c.ws.CloseNow()
 		c.log().Info("websocket retired", "outcome", outcome, "duration_ms", time.Since(c.created).Milliseconds(), "ready", c.ready.Load(), "remote", c.remote)
 	})
 }

@@ -1200,6 +1200,115 @@ test("a ready hedge replaces the incumbent without a disconnected state", async 
   assert.equal(hedge.frames(F.INPUT).length, 1);
 });
 
+async function slowRoundTrip(h, socket, rtt) {
+  await h.clock.advance(PROFILE.probeIntervalMs);
+  await pong(h, rtt, socket);
+  for (const candidate of h.sockets.slice(1))
+    if (candidate.readyState !== Socket.CLOSED) candidate.closed();
+}
+
+test("hedging waits for the path's own RTT tail, bounded by the profile", async (t) => {
+  const h = harness(t),
+    socket = await healthy(h);
+  for (let i = 0; i < 8; i++) await slowRoundTrip(h, socket, 900);
+  assert.equal(h.sockets.length, 1, "ordinary 900 ms responses on this path never hedge");
+  await h.clock.advance(PROFILE.probeIntervalMs);
+  await h.clock.advance(2 * 900 - 1);
+  assert.equal(h.sockets.length, 1);
+  assert.equal(h.transport.state.status, "ready");
+  await h.clock.advance(1);
+  assert.equal(h.sockets.length, 2, "late beyond twice the p95 starts the hedge");
+  await pong(h, 0, socket);
+  h.sockets[1].closed();
+  for (let i = 0; i < 8; i++) await slowRoundTrip(h, socket, 9000);
+  const before = h.sockets.length;
+  await h.clock.advance(PROFILE.probeIntervalMs);
+  await h.clock.advance(PROFILE.hedgeCeilingMs - 1);
+  assert.equal(h.sockets.length, before);
+  await h.clock.advance(1);
+  assert.equal(h.sockets.length, before + 1, "a dead path is still hedged by the ceiling");
+});
+
+test("a misordered hedge range degrades to the floor instead of failing", async (t) => {
+  const h = harness(t, { profile: { hedgeDelayMs: 3000, hedgeCeilingMs: 1000 } }),
+    socket = await healthy(h);
+  await h.clock.advance(PROFILE.probeIntervalMs + 3000 - 1);
+  assert.equal(h.sockets.length, 1);
+  await h.clock.advance(1);
+  assert.equal(h.sockets.length, 2);
+  assert.equal(socket.closeCalls, 0);
+  assert.equal(h.errors.length, 0);
+});
+
+async function racingHedge(h) {
+  const incumbent = await healthy(h);
+  await h.clock.advance(PROFILE.probeIntervalMs);
+  const probe = incumbent.last(F.PING);
+  await h.clock.advance(PROFILE.hedgeDelayMs);
+  const hedge = h.sockets[1];
+  await h.clock.advance(7000);
+  hedge.open(); // a slow path: TCP/TLS completes, WELCOME still outstanding
+  await h.clock.advance(PROFILE.responseMs - PROFILE.hedgeDelayMs - 7000 + 1000);
+  assert.equal(incumbent.closeCalls, 0, "a racing hedge defers the response window");
+  assert.equal(h.transport.state.connected, true);
+  return { incumbent, hedge, probe };
+}
+
+test("while a hedge races, a late incumbent PONG keeps the incumbent", async (t) => {
+  const h = harness(t),
+    { incumbent, hedge, probe } = await racingHedge(h);
+  incumbent.frame(F.PONG, probe.payload, { requestId: probe.requestId });
+  assert.equal(hedge.closeCalls, 1);
+  assert.equal(incumbent.closeCalls, 0);
+  assert.equal(h.transport.state.status, "ready");
+  assert.equal(h.transport.state.generation, 1);
+});
+
+test("while a hedge races, its WELCOME takes over from the silent incumbent", async (t) => {
+  const h = harness(t),
+    { incumbent, hedge } = await racingHedge(h);
+  await welcome(h, hedge, 0);
+  assert.equal(incumbent.closeCalls, 1);
+  assert.equal(h.transport.state.connected, true);
+  assert.equal(h.transport.state.generation, 2);
+});
+
+test("when the racing hedge itself dies, the expired incumbent retires", async (t) => {
+  const h = harness(t),
+    { incumbent, hedge } = await racingHedge(h);
+  hedge.emit("error");
+  await h.clock.advance(100);
+  assert.equal(incumbent.closeCalls, 1);
+  assert.equal(h.transport.state.lastOutcome.kind, "response-unavailable");
+  assert.equal(h.errors.length, 0);
+});
+
+test("resume after a long suspension races a replacement for a socket the OS destroyed", async (t) => {
+  const h = harness(t),
+    incumbent = await healthy(h);
+  h.document.hidden = true;
+  h.document.emit("visibilitychange");
+  await h.clock.advance(PROFILE.schedulingGapMs - 1);
+  h.document.hidden = false;
+  h.document.emit("visibilitychange");
+  assert.equal(h.sockets.length, 1, "a short pause trusts the incumbent's fresh probe");
+  await pong(h, 40, incumbent);
+  h.document.hidden = true;
+  h.document.emit("visibilitychange");
+  await h.clock.advance(30000);
+  h.document.hidden = false;
+  h.document.emit("visibilitychange");
+  const hedge = h.sockets[1];
+  assert.ok(hedge, "a long pause starts the replacement immediately");
+  incumbent.closed(); // the destroyed socket reports closure only after resume
+  assert.equal(h.sockets.length, 2, "no backoff admission while the replacement races");
+  await welcome(h, hedge, 40);
+  assert.equal(h.transport.state.connected, true);
+  assert.equal(h.transport.state.generation, 2);
+  assert.equal(h.sockets.length, 2);
+  assert.equal(h.errors.length, 0);
+});
+
 test("continuous one-way application traffic and unmatched PONG do not renew response budget", async (t) => {
   const h = harness(t),
     socket = await healthy(h),
@@ -1446,14 +1555,19 @@ test("unannounced scheduling gap and visible freeze grant fresh observation, not
   assert.notEqual(fresh.requestId, old.requestId);
   h.window.emit("online");
   assert.equal(socket.last(F.PING).requestId, fresh.requestId);
+  const resumeHedge = h.sockets[1];
+  assert.ok(resumeHedge, "a long gap races one replacement against the fresh probe");
   await h.clock.advance(0);
-  await pong(h);
+  await pong(h, 40, socket);
+  assert.equal(resumeHedge.closeCalls, 1, "the incumbent answered first");
+  assert.equal(h.transport.state.generation, 1);
   h.document.emit("freeze");
   await h.clock.advance(30000);
   assert.equal(socket.closeCalls, 0);
   h.document.emit("resume");
-  await pong(h, 500);
+  await pong(h, 500, socket);
   assert.equal(h.transport.state.wsRttLatestMs, 500);
+  assert.equal(socket.closeCalls, 0);
   assert.equal(h.errors.length, 0);
 });
 
@@ -1491,6 +1605,26 @@ test("resume retires a socket that stopped being open and starts recovery immedi
   await h.clock.advance(PROFILE.retryFloorMs);
   assert.equal(h.sockets.length, 2);
   assert.equal(h.transport.state.status, "connecting");
+});
+
+test("resume signals during a replacement handshake do not abort it", async (t) => {
+  const h = harness(t),
+    first = await healthy(h);
+  h.document.hidden = true;
+  h.document.emit("visibilitychange");
+  first.closed(); // the OS destroys a frozen app's sockets
+  h.document.hidden = false;
+  h.document.emit("visibilitychange");
+  await h.clock.advance(PROFILE.retryFloorMs);
+  const second = h.sockets[1];
+  assert.equal(second.readyState, Socket.CONNECTING);
+  h.window.emit("online");
+  h.document.emit("visibilitychange");
+  assert.equal(second.closeCalls, 0);
+  assert.equal(h.transport.state.status, "connecting");
+  await welcome(h, second);
+  assert.equal(h.transport.state.connected, true);
+  assert.equal(h.sockets.length, 2);
 });
 
 test("bounded receive queue is released on retirement while restore remains pending", async (t) => {

@@ -55,6 +55,7 @@ const MAX_APPLICATION_FRAMES = 65536;
 const MAX_SEND_QUEUE_BYTES = 256 * 1024;
 const CONTROL_RESERVE = 64 * 1024;
 // Availability/resource policy, never derived from successful RTT samples.
+// Only the hedge trigger adapts, and only within [hedgeDelayMs, hedgeCeilingMs].
 export const CONNECTION_PROFILE = Object.freeze({
   connectMs: 10000,
   helloMs: 10000,
@@ -62,6 +63,7 @@ export const CONNECTION_PROFILE = Object.freeze({
   responseMs: 15000,
   probeIntervalMs: 1000,
   hedgeDelayMs: 1000,
+  hedgeCeilingMs: 4000,
   schedulingGapMs: 5000,
   retryFloorMs: 500,
   retryCeilingMs: 10000,
@@ -257,6 +259,7 @@ export class SessionTransport {
       lastTick: now,
       timer: 0,
       suspended: this.#frozen || !!this.#document?.hidden,
+      suspendedAt: now,
       helloRequestId: 0n,
       sendSequence: 0n,
       serverSequence: 0n,
@@ -316,6 +319,7 @@ export class SessionTransport {
       lastTick: now,
       timer: 0,
       suspended: false,
+      suspendedAt: now,
       helloRequestId: 0n,
       sendSequence: 0n,
       serverSequence: 0n,
@@ -1385,7 +1389,13 @@ export class SessionTransport {
     const nonce = this.#nextRequestId();
     const payload = new Uint8Array(8);
     writeUint64LE(payload, 0, nonce);
-    attempt.probe = { nonce, created: this.#clock.now(), submitted: null, suspect: false };
+    attempt.probe = {
+      nonce,
+      created: this.#clock.now(),
+      submitted: null,
+      suspect: false,
+      hedgeAfter: this.#hedgeAfter(),
+    };
     this.#send(FrameType.PING, payload, null, nonce);
   }
 
@@ -1407,7 +1417,7 @@ export class SessionTransport {
     }
     const now = this.#clock.now(),
       elapsed = now - pending.submitted;
-    if (pending.suspect || elapsed >= this.#profile.hedgeDelayMs) this.#state.latePongs++;
+    if (pending.suspect || elapsed >= pending.hedgeAfter) this.#state.latePongs++;
     this.#sampleRtt(elapsed);
     this.#state.lastRoundTripAt = now;
     attempt.probe = null;
@@ -1422,6 +1432,14 @@ export class SessionTransport {
 
   #sampleRtt(sample) {
     updateRtt(this.#state, Math.max(1, sample));
+  }
+
+  // A probe is late only beyond this path's own recent tail, so jittery links
+  // (cellular p95 near a second) do not hedge on every ordinary slow response.
+  // Total by construction: the floor wins even if a profile orders the bounds wrongly.
+  #hedgeAfter() {
+    const tail = 2 * (this.#state.wsRttP95Ms ?? 0);
+    return Math.max(this.#profile.hedgeDelayMs, Math.min(this.#profile.hedgeCeilingMs, tail));
   }
 
   #markHealthy() {
@@ -1441,19 +1459,22 @@ export class SessionTransport {
   #wake() {
     if (this.#disposed || this.#fatal) return;
     if (!this.#attempt) return this.#admit();
-    this.#observeExecution(this.#attempt);
-    if (!this.#document?.hidden && !this.#frozen && this.#attempt.socket.readyState !== 1) {
-      this.#retire(
+    // A handshake still CONNECTING belongs to its connect window; resume signals
+    // (visibility, online) arrive in bursts on mobile and must not abort it.
+    if (!this.#document?.hidden && !this.#frozen && this.#attempt.socket.readyState > 1) {
+      return this.#retire(
         this.#attempt,
         new Error("session socket unavailable after resume"),
         "socket-unavailable",
       );
     }
+    this.#observeExecution(this.#attempt);
   }
 
   #suspend(attempt) {
     if (!this.#current(attempt) || attempt.suspended) return;
     attempt.suspended = true;
+    attempt.suspendedAt = this.#clock.now();
     this.#state.suspended = true;
     attempt.helloSuspended = true;
     this.#state.suspensionCount++;
@@ -1474,6 +1495,7 @@ export class SessionTransport {
     if (this.#document?.hidden || this.#frozen) this.#suspend(attempt);
     const gap = now - attempt.lastTick > this.#profile.schedulingGapMs;
     if (!this.#document?.hidden && !this.#frozen && (attempt.suspended || gap)) {
+      const away = now - (attempt.suspended ? attempt.suspendedAt : attempt.lastTick);
       if (gap && !attempt.suspended) this.#state.suspensionCount++;
       attempt.suspended = false;
       this.#state.suspended = false;
@@ -1485,6 +1507,12 @@ export class SessionTransport {
       if (attempt.phase === "ready") {
         this.#setStatus("checking", true);
         this.#ping();
+        // Mobile systems destroy a frozen app's TCP sockets, so liveness is
+        // unknown after a long pause: race a replacement against the fresh probe.
+        if (away >= this.#profile.schedulingGapMs && attempt.socket.readyState === 1) {
+          this.#hedgeAt = 0;
+          this.#startHedge(attempt);
+        }
       }
     }
     // Only supervision ticks or invalidation renew lastTick, not ordinary traffic.
@@ -1551,13 +1579,15 @@ export class SessionTransport {
       }
       if (pending?.submitted !== null && pending?.submitted !== undefined) {
         const elapsed = now - pending.submitted;
-        if (elapsed >= this.#profile.responseMs)
+        // While a hedge races, only liveness decides: a matching PONG keeps the
+        // incumbent, a hedge WELCOME replaces it. Missing responses retire nothing.
+        if (elapsed >= this.#profile.responseMs && !this.#hedge)
           return this.#retire(
             attempt,
             new Error("session PONG response unavailable"),
             "response-unavailable",
           );
-        if (elapsed >= this.#profile.hedgeDelayMs) {
+        if (elapsed >= pending.hedgeAfter) {
           if (!pending.suspect) {
             pending.suspect = true;
             this.#setStatus("suspect", true);

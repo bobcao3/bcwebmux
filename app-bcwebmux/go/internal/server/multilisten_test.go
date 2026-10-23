@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"bcwebmux/go/internal/native"
-	"github.com/gorilla/websocket"
+	"github.com/coder/websocket"
 	"github.com/quic-go/quic-go/http3"
 )
 
@@ -163,16 +163,17 @@ func TestMultipleOriginsWebSocket(t *testing.T) {
 	s, _ := startTestServer(t, Config{Listen: []string{"127.0.0.1", "127.0.0.2"}, Origins: []string{"https://one.example", "https://two.example"}})
 	for _, addr := range s.Addrs() {
 		for _, origin := range []string{"https://one.example", "https://two.example", "https://evil.example", ""} {
-			dialer := websocket.Dialer{Subprotocols: []string{native.Protocol}, HandshakeTimeout: time.Second}
-			conn, response, err := dialer.Dial("ws://"+addr.String()+"/ws", http.Header{"Origin": []string{origin}})
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			conn, response, err := websocket.Dial(ctx, "ws://"+addr.String()+"/ws", &websocket.DialOptions{Subprotocols: []string{native.Protocol}, HTTPHeader: http.Header{"Origin": []string{origin}}})
+			cancel()
 			if strings.Contains(origin, "one.") || strings.Contains(origin, "two.") {
 				if err != nil {
 					t.Fatal(err)
 				}
-				conn.Close()
+				conn.CloseNow()
 			} else {
 				if err == nil {
-					conn.Close()
+					conn.CloseNow()
 					t.Fatal("bad origin accepted")
 				}
 				if response == nil || response.StatusCode != http.StatusForbidden {

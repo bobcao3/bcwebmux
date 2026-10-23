@@ -76,9 +76,11 @@ control-queue, response and terminal-drain windows; a scheduling-gap tolerance;
 and retry backoff. All intervals/windows/tolerances are finite and positive;
 backoff has a finite positive floor and ceiling. These are independent
 availability/resource budgets, not multiples of the latest successful RTT or the
-eight-RTT benchmark. Concrete values and the measured supported load/delay
-envelope must be recorded with implementation validation; this document fixes
-their semantics, not benchmark-selected numerical tuning.
+eight-RTT benchmark. The hedge trigger is the one RTT-adaptive value, and it
+only moves within the profile's hedge floor and ceiling (see Hedged roaming).
+Concrete values and the measured supported load/delay envelope must be recorded
+with implementation validation; this document fixes their semantics, not
+benchmark-selected numerical tuning.
 
 ### Eligibility and renewal
 
@@ -96,9 +98,10 @@ suppress probing. The liveness probe has two phases:
    restart this window.
 2. **Awaiting response:** from successful handoff until a fully validated
    matching PONG. Expiry of the response window retires once as
-   `response-unavailable`. Browser `send()` success is only local acceptance,
-   not physical transmission; this window necessarily includes browser
-   buffering, TCP and peer processing. Observed pressure accompanies the
+   `response-unavailable`, except while a hedge is racing: then only liveness
+   ends the race (Hedged roaming). Browser `send()` success is only local
+   acceptance, not physical transmission; this window necessarily includes
+   browser buffering, TCP and peer processing. Observed pressure accompanies the
    outcome; it does not justify calling the network dead.
 
 A latency objective can enter `suspect` earlier, without detaching records or
@@ -123,7 +126,11 @@ execute a backlog of retirements. On actual resume, invalidate the old probe and
 grant one fresh submission/response opportunity (or a fresh window for the
 current negotiation phase). Suspended/old probes do not seed RTT estimates.
 Repeated `online` or visibility hints while already active do not keep extending
-the window. A valid fatal outcome or actual socket closure is still honored;
+the window. A ready connection resuming after at least the scheduling-gap
+tolerance also races a hedge against that fresh probe at once: mobile systems
+destroy a frozen app's TCP sockets, so the incumbent's liveness is unknown. A
+handshake still connecting is never aborted by resume hints; it keeps its own
+window. A valid fatal outcome or actual socket closure is still honored;
 memory/admission limits never pause. Recovery timing assumes execution resumes
 and a fresh observation window can run without another invalidating scheduling
 gap.
@@ -277,11 +284,21 @@ every canceled application effect.
 
 ## Hedged roaming
 
-One second after a submitted heartbeat remains unanswered, start one speculative
-replacement without retiring the incumbent. A candidate is HELLO-only before
-promotion: no ATTACH, input, or shared core/record mutation. The active
-connection remains authoritative and can recover, canceling the candidate.
+A submitted heartbeat is late once it exceeds twice the recent p95 heartbeat
+RTT, clamped to the profile's hedge floor (1 s) and ceiling (4 s), so a jittery
+path does not hedge on its ordinary slow responses while a dead one is still
+hedged within the ceiling. A late heartbeat enters `suspect` and starts one
+speculative replacement without retiring the incumbent. A candidate is
+HELLO-only before promotion: no ATTACH, input, or shared core/record mutation.
 WELCOME proves negotiation, not terminal usability.
+
+Only liveness resolves a race. The incumbent's matching PONG cancels the
+candidate; the candidate's WELCOME promotes it. While a candidate races, the
+incumbent's response window retires nothing. Actual socket closure or I/O
+failure is still honored immediately on either side. A candidate that misses its
+own connection or HELLO window is replaced by a fresh one after hedge backoff;
+only when no candidate is racing does an expired response window retire the
+incumbent.
 
 Promotion is an explicit ownership cutover. Stop old input/application commits
 and snapshot committed cursors before sending replacement ATTACH. Native
