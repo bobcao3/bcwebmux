@@ -217,17 +217,11 @@ async function run() {
   const partitionB = renderer.glyphPartitions.get(coreB);
   if (
     !partitionB ||
-    (partitionA.baseSlot + partitionA.slotCapacity > partitionB.baseSlot &&
-      partitionB.baseSlot + partitionB.slotCapacity > partitionA.baseSlot)
-  ) {
-    throw new Error("core glyph partitions overlap");
-  }
-  if (
-    renderer.glyphPartitions.reservedSlots !==
-    partitionA.slotCapacity + partitionB.slotCapacity
-  ) {
-    throw new Error("shared atlas required slot count mismatch");
-  }
+    partitionB.baseSlot !== partitionA.baseSlot ||
+    renderer.glyphPartitions.activeTerminal !== coreB ||
+    renderer.glyphPartitions.reservedSlots !== partitionB.slotCapacity
+  )
+    throw new Error("active core does not own the shared glyph atlas");
   const colorB = averageCell(imageB, terminal, 0, 0);
 
   const hiddenFrames = coreA.state.frames;
@@ -379,8 +373,15 @@ async function run() {
     colorA,
     colorB,
     partitions: {
-      coreA: { base: partitionA.baseSlot, capacity: partitionA.slotCapacity },
-      coreB: { base: partitionB.baseSlot, capacity: partitionB.slotCapacity },
+      coreA: {
+        base: renderer.glyphPartitions.get(coreA).baseSlot,
+        capacity: renderer.glyphPartitions.get(coreA).slotCapacity,
+      },
+      coreB: {
+        base: renderer.glyphPartitions.get(coreB).baseSlot,
+        capacity: renderer.glyphPartitions.get(coreB).slotCapacity,
+      },
+      active: renderer.glyphPartitions.activeTerminal === coreA ? "coreA" : "coreB",
       temporary: { base: temporaryPartition.baseSlot, capacity: temporaryPartition.slotCapacity },
       replacement: {
         base: replacementPartition.baseSlot,
@@ -390,6 +391,8 @@ async function run() {
     atlas: {
       requiredSlots: renderer.glyphPartitions.reservedSlots,
       capacity: renderer.atlas.capacity,
+      logicalCapacity: renderer.atlas.logicalCapacity,
+      nextSlot: renderer.atlas.nextSlot,
       cacheHits: terminal.state.cacheHits,
       tileWidth: renderer.atlas.tileWidth,
       tileHeight: renderer.atlas.tileHeight,
@@ -473,9 +476,18 @@ async function run() {
     }
     if (!bounded) throw new Error("oversized glyph atlas readback was not bounded");
   }
+  const debugGeometry = {
+    columns: 1,
+    rows: 1,
+    width: 3,
+    initialRows: 1,
+    textureSlots: 1,
+    rowsPerPage: 1,
+    maxLayers: 1,
+  };
   const debugAtlas = debugBackend.gl
-    ? new WebGlGlyphAtlas(debugBackend.gl, null, { columns: 1, rows: 1 }, 3, 2, 1)
-    : new GlyphAtlas(debugBackend.device, null, { columns: 1, rows: 1 }, 3, 2, 1);
+    ? new WebGlGlyphAtlas(debugBackend.gl, null, debugGeometry, 3, 2, 1)
+    : new GlyphAtlas(debugBackend.device, null, debugGeometry, 3, 2, 1);
   const pattern = new Uint8Array([0, 17, 255, 240, 50, 1]);
   try {
     if (debugBackend.gl) debugAtlas.uploadBitmap(0, 1, pattern, 0, 3);

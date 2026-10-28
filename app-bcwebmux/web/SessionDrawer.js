@@ -2,6 +2,8 @@
 // Copyright (c) 2026 Cheng Cao
 
 import { programStatusLabel, sessionStatus } from "./SessionStatus.js";
+import { moveSession, reconcileLayout } from "./SessionLayout.js";
+import { SessionLayoutSync } from "./SessionLayoutSync.js";
 import { html, nothing, render } from "./lib/lit-html/lit-html.js";
 import { repeat } from "./lib/lit-html/directives/repeat.js";
 
@@ -92,6 +94,12 @@ export class SessionDrawer {
   #focusBeforeOpen = null;
   #confirm = null;
   #longPress = null;
+  #layout = [];
+  #visibleLayout = [];
+  #layoutKey = null;
+  #layoutApi = null;
+  #layoutSync = null;
+  #layoutSessions = "";
   #suppressedClick = null;
   #contextSessionId = null;
   #listenerController = new AbortController();
@@ -105,6 +113,7 @@ export class SessionDrawer {
       ? controllerOrOptions
       : { controller: controllerOrOptions, refs };
     this.#controller = options.controller;
+    this.#layoutApi = options.layoutApi ?? null;
     this.#onError = typeof options.onError === "function" ? options.onError : null;
     const source =
       options.elements ??
@@ -152,8 +161,12 @@ export class SessionDrawer {
     this.#add(this.#refs.backdrop, "click", () => this.close());
     this.#add(this.#refs.tabs, "pointerdown", (event) => this.#startLongPress(event));
     this.#add(this.#refs.tabs, "pointermove", (event) => this.#moveLongPress(event));
-    this.#add(this.#refs.tabs, "pointerup", () => this.#cancelLongPress());
+    this.#add(this.#refs.tabs, "pointerup", (event) => this.#finishDrag(event));
     this.#add(this.#refs.tabs, "pointercancel", () => this.#cancelLongPress());
+    this.#add(doc, "pointerup", (event) => this.#finishDrag(event));
+    this.#add(doc, "pointercancel", (event) => {
+      if (this.#longPress?.pointerId === event.pointerId) this.#cancelLongPress();
+    });
     this.#add(this.#refs.tabs, "contextmenu", (event) => this.#openPointerContextMenu(event));
     this.#add(this.#refs.tabs, "scroll", () => this.#closeContextMenu());
     this.#add(this.#refs.tabs, "keydown", (event) => this.#tabKey(event));
@@ -212,6 +225,12 @@ export class SessionDrawer {
       this.#closeDialog(this.#refs.confirmDialog);
     });
     this.#add(globalThis, "keydown", (event) => {
+      if (event.key === "Escape" && this.#longPress) {
+        event.preventDefault();
+        this.#cancelLongPress();
+        this.#closeContextMenu();
+        return;
+      }
       if (event.key === "Escape" && !this.#refs.contextMenu.hidden) {
         event.preventDefault();
         this.#closeContextMenu(true);
@@ -237,6 +256,19 @@ export class SessionDrawer {
       if (typeof subscribe === "function")
         this.#subscriptions.push(
           subscribe.call(this.#controller, () => {
+            const scope = this.#controller.storageScope;
+            if (this.#layoutApi && scope?.serverInstance && scope?.principal) {
+              const key = `bcwebmux.session-layout:${STORAGE_VERSION}:${encodeURIComponent(String(scope.serverInstance))}:${encodeURIComponent(String(scope.principal))}`;
+              if (key !== this.#layoutKey) this.setStorageScope(scope);
+            }
+            const sessions = (this.#controller.sessions ?? [])
+              .map((item) => String(item.id))
+              .sort()
+              .join("|");
+            if (sessions !== this.#layoutSessions) {
+              this.#layoutSessions = sessions;
+              void this.#layoutSync?.refresh();
+            }
             if (name === "onActiveChange" && this.#narrow && this.#open) {
               this.#apply(false, false);
               this.#restoreFocus();
@@ -259,11 +291,38 @@ export class SessionDrawer {
     const server = typeof scope === "object" ? (scope?.serverInstance ?? scope?.server) : scope;
     const user = typeof scope === "object" ? scope?.principal : principal;
     if (!server || !user) {
+      this.#layoutSync?.dispose();
+      this.#layoutSync = null;
       this.#storageKey = null;
+      this.#layoutKey = null;
+      this.#layout = [];
       this.#preference = null;
       return this;
     }
     this.#storageKey = `bcwebmux.drawer:${STORAGE_VERSION}:${encodeURIComponent(String(server))}:${encodeURIComponent(String(user))}`;
+    const layoutKey = `bcwebmux.session-layout:${STORAGE_VERSION}:${encodeURIComponent(String(server))}:${encodeURIComponent(String(user))}`;
+    if (this.#layoutKey !== layoutKey) {
+      this.#layoutSync?.dispose();
+      this.#layoutSync = null;
+      this.#layoutKey = layoutKey;
+      this.#layout = [];
+      try {
+        this.#layout = JSON.parse(this.#storage?.getItem(layoutKey) || "[]");
+      } catch {
+        this.#layout = [];
+      }
+      if (this.#layoutApi) {
+        this.#layoutSync = new SessionLayoutSync(this.#layoutApi, {
+          seed: this.#layout,
+          onChange: (layout) => {
+            this.#layout = layout;
+            this.render();
+          },
+          onError: (error) => this.#report(error),
+        });
+        this.#layoutSync.start();
+      }
+    }
     this.#preference = null;
     if (this.#storage) {
       try {
@@ -304,7 +363,22 @@ export class SessionDrawer {
       : undefined;
     const activeId =
       this.#controller.activeSessionId == null ? "" : String(this.#controller.activeSessionId);
-    const sessions = this.#controller.sessions ?? [];
+    const available = this.#controller.sessions ?? [];
+    const previousLayout = JSON.stringify(this.#layout);
+    this.#visibleLayout = reconcileLayout(
+      this.#layout,
+      available.map((item) => String(item.id)),
+    );
+    if (available.length && !this.#layoutSync) this.#layout = this.#visibleLayout;
+    if (this.#layoutKey && previousLayout !== JSON.stringify(this.#layout)) this.#saveLayout();
+    const byId = new Map(available.map((item) => [String(item.id), item]));
+    const sessions = this.#visibleLayout.flatMap((entry) =>
+      (Array.isArray(entry) ? entry : [entry]).map((id, index) => ({
+        ...byId.get(id),
+        groupStart: Array.isArray(entry) && index === 0,
+        grouped: Array.isArray(entry),
+      })),
+    );
     const focusId =
       focusedControl === "session-tab" &&
       sessions.some((metadata) => String(metadata.id) === focusedRowId)
@@ -368,6 +442,7 @@ export class SessionDrawer {
           const rowClass = [
             "session-row",
             active ? "is-active" : "",
+            status?.paused ? "is-paused" : "",
             metadata.unread ? "is-unread" : "",
             metadata.unreadBell ? "is-unread-bell" : "",
           ]
@@ -381,56 +456,60 @@ export class SessionDrawer {
               ? `${label} · unread activity`
               : label;
           const lifecycleLabel = `${action === "terminate" ? "Terminate" : "Remove"} ${label}`;
-          return html`<div
-            class=${rowClass}
-            data-session-id=${id}
-            data-state=${String(metadata.state || "unknown")}
-            data-program-status=${status?.state ?? nothing}
-            data-progress=${progress ?? nothing}
-          >
-            <button
-              type="button"
-              class="session-tab"
-              role="tab"
+          return html`${metadata.groupStart ? html`<div class="session-group-label" aria-hidden="true">[ GROUP ]</div>` : nothing}
+            <div
+              class=${rowClass}
               data-session-id=${id}
-              id=${tabId}
-              .tabIndex=${id === focusId ? 0 : -1}
-              aria-selected=${String(active)}
-              aria-label=${tabLabel}
-              aria-haspopup="menu"
-              aria-controls=${workspaceId || nothing}
-              aria-describedby=${detailText ? `${tabId}-detail` : nothing}
-            ></button>
-            <div class="session-copy">
-              <span class="session-name">${label}</span
-              ><span
-                class="session-detail"
-                id=${`${tabId}-detail`}
-                title=${detailText}
-                ?hidden=${!detailText}
-                >${detailText}</span
-              >
-            </div>
-            <button
-              type="button"
-              class="session-lifecycle"
-              aria-label=${lifecycleLabel}
-              title=${lifecycleLabel}
-              .disabled=${metadata.state === "creating" || metadata.state === "terminating"}
+              ?data-grouped=${metadata.grouped}
+              data-state=${String(metadata.state || "unknown")}
+              data-program-status=${status?.state ?? nothing}
+              data-progress=${progress ?? nothing}
             >
-              <span class="session-lifecycle-icon" aria-hidden="true"
-                >${action === "terminate" ? "■" : "×"}</span
-              ><svg class="session-bell-icon" viewBox="0 0 24 24" aria-hidden="true">
-                <path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4" />
-              </svg>
-            </button>
-          </div>`;
+              <button
+                type="button"
+                class="session-tab"
+                role="tab"
+                data-session-id=${id}
+                id=${tabId}
+                .tabIndex=${id === focusId ? 0 : -1}
+                aria-selected=${String(active)}
+                aria-label=${metadata.grouped ? `${tabLabel} · grouped` : tabLabel}
+                aria-description="Hold and drag to reorder or group. Alt+Shift+Up or Down moves; Alt+Shift+G groups; Alt+Shift+U ungroups."
+                title="Hold and drag to reorder or group. Alt+Shift+Up/Down moves; Alt+Shift+G groups; Alt+Shift+U ungroups."
+                aria-haspopup="menu"
+                aria-controls=${workspaceId || nothing}
+                aria-describedby=${detailText ? `${tabId}-detail` : nothing}
+              ></button>
+              <div class="session-copy">
+                <span class="session-name">${label}</span
+                ><span
+                  class="session-detail"
+                  id=${`${tabId}-detail`}
+                  title=${detailText}
+                  ?hidden=${!detailText}
+                  >${detailText}</span
+                >
+              </div>
+              <button
+                type="button"
+                class="session-lifecycle"
+                aria-label=${lifecycleLabel}
+                title=${lifecycleLabel}
+                .disabled=${metadata.state === "creating" || metadata.state === "terminating"}
+              >
+                <span class="session-lifecycle-icon" aria-hidden="true"
+                  >${action === "terminate" ? "■" : "×"}</span
+                ><svg class="session-bell-icon" viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4" />
+                </svg>
+              </button>
+            </div>`;
         },
       )}`,
       tabs,
     );
     this.#tabs.clear();
-    for (const row of tabs.children) {
+    for (const row of tabs.querySelectorAll(".session-row")) {
       if (row.dataset?.sessionId == null) continue;
       const tab = row.querySelector(".session-tab");
       if (tab) this.#tabs.set(row.dataset.sessionId, tab);
@@ -605,6 +684,27 @@ export class SessionDrawer {
     if (!currentTab || !this.#refs.tabs.contains(currentTab)) return;
     const current = tabs.indexOf(currentTab);
     if (current < 0) return;
+    if (
+      event.altKey &&
+      event.shiftKey &&
+      ["ArrowUp", "ArrowDown", "g", "G", "u", "U"].includes(event.key)
+    ) {
+      event.preventDefault();
+      const id = currentTab.dataset.sessionId;
+      const group = this.#visibleLayout.find((entry) => Array.isArray(entry) && entry.includes(id));
+      if (event.key.toLowerCase() === "u" && group) {
+        const target = group.find((member) => member !== id);
+        this.#commitMove(id, target, "outside-after");
+      } else if (event.key.toLowerCase() === "g" && current > 0) {
+        this.#commitMove(id, tabs[current - 1].dataset.sessionId, "group");
+      } else if (event.key === "ArrowUp" && current > 0) {
+        this.#commitMove(id, tabs[current - 1].dataset.sessionId, "before");
+      } else if (event.key === "ArrowDown" && current < tabs.length - 1) {
+        this.#commitMove(id, tabs[current + 1].dataset.sessionId, "after");
+      }
+      this.#tabs.get(id)?.focus();
+      return;
+    }
     if (event.key === "ContextMenu" || (event.key === "F10" && event.shiftKey)) {
       event.preventDefault();
       const rect = currentTab.getBoundingClientRect();
@@ -628,7 +728,7 @@ export class SessionDrawer {
 
   #startLongPress(event) {
     this.#cancelLongPress();
-    if (event.pointerType === "mouse" || !event.isPrimary || event.button !== 0) return;
+    if (!event.isPrimary || event.button !== 0) return;
     const row = event.target.closest(".session-row");
     if (!row || !this.#refs.tabs.contains(row) || event.target.closest(".session-lifecycle"))
       return;
@@ -638,13 +738,28 @@ export class SessionDrawer {
       id,
       x: event.clientX,
       y: event.clientY,
+      pointerType: event.pointerType,
+      row,
+      capture: event.target,
+      lastY: event.clientY,
+      scrolling: false,
+      ready: false,
+      dragging: false,
+      target: null,
+      scrollTimer: null,
+      currentX: event.clientX,
+      currentY: event.clientY,
       timeout: null,
     };
+    try {
+      press.capture.setPointerCapture(event.pointerId);
+    } catch {}
     press.timeout = globalThis.setTimeout(() => {
       if (this.#longPress !== press) return;
-      this.#longPress = null;
+      press.ready = true;
       this.#suppressedClick = { id, until: performance.now() + 1000 };
-      this.#showContextMenu(id, press.x, press.y);
+      row.classList.add("is-drag-ready");
+      if (press.pointerType !== "mouse") this.#showContextMenu(id, press.x, press.y);
     }, LONG_PRESS_MS);
     this.#longPress = press;
   }
@@ -652,23 +767,113 @@ export class SessionDrawer {
   #moveLongPress(event) {
     const press = this.#longPress;
     if (!press || press.pointerId !== event.pointerId) return;
-    if (
+    const moved =
       Math.abs(event.clientX - press.x) > LONG_PRESS_MOVE_PX ||
-      Math.abs(event.clientY - press.y) > LONG_PRESS_MOVE_PX
-    )
-      this.#cancelLongPress();
+      Math.abs(event.clientY - press.y) > LONG_PRESS_MOVE_PX;
+    if (!press.ready && (moved || press.scrolling)) {
+      if (press.pointerType === "mouse") return this.#cancelLongPress();
+      globalThis.clearTimeout(press.timeout);
+      press.scrolling = true;
+      this.#refs.tabs.parentElement.scrollTop += press.lastY - event.clientY;
+      press.lastY = event.clientY;
+      this.#suppressedClick = { id: press.id, until: performance.now() + 1000 };
+      return;
+    }
+    if (!press.ready || (!press.dragging && !moved)) return;
+    event.preventDefault();
+    press.dragging = true;
+    press.currentX = event.clientX;
+    press.currentY = event.clientY;
+    this.#closeContextMenu();
+    press.row.classList.add("is-dragging");
+    if (!press.scrollTimer) {
+      press.scrollTimer = globalThis.setInterval(() => {
+        const list = this.#refs.tabs.parentElement;
+        const rect = list.getBoundingClientRect();
+        if (press.currentY < rect.top + 32) list.scrollTop -= 12;
+        else if (press.currentY > rect.bottom - 32) list.scrollTop += 12;
+        this.#updateDropTarget(press);
+      }, 50);
+    }
+    this.#updateDropTarget(press);
+  }
+
+  #updateDropTarget(press) {
+    this.#clearDropTarget();
+    const row = this.#refs.tabs.ownerDocument
+      .elementFromPoint(press.currentX, press.currentY)
+      ?.closest(".session-row");
+    press.target = null;
+    if (!row || !this.#refs.tabs.contains(row) || row === press.row) return;
+    const rect = row.getBoundingClientRect();
+    const fraction = (press.currentY - rect.top) / rect.height;
+    const position = fraction < 0.25 ? "before" : fraction > 0.75 ? "after" : "group";
+    row.dataset.dropPosition = position;
+    press.target = { id: row.dataset.sessionId, position };
   }
 
   #cancelLongPress() {
     if (!this.#longPress) return;
     globalThis.clearTimeout(this.#longPress.timeout);
+    globalThis.clearInterval(this.#longPress.scrollTimer);
+    this.#longPress.row.classList.remove("is-drag-ready", "is-dragging");
+    try {
+      this.#longPress.capture.releasePointerCapture(this.#longPress.pointerId);
+    } catch {}
+    this.#clearDropTarget();
     this.#longPress = null;
+  }
+
+  #clearDropTarget() {
+    for (const row of this.#refs.tabs.querySelectorAll("[data-drop-position]"))
+      delete row.dataset.dropPosition;
+  }
+
+  #finishDrag(event) {
+    const press = this.#longPress;
+    if (!press || press.pointerId !== event.pointerId) return;
+    const target = press.dragging && press.target;
+    if (press.ready) this.#suppressedClick = { id: press.id, until: performance.now() + 1000 };
+    this.#cancelLongPress();
+    if (target) this.#commitMove(press.id, target.id, target.position);
+  }
+
+  #commitMove(id, target, position) {
+    if (this.#layoutSync) {
+      const sync = this.#layoutSync;
+      sync
+        .move(id, target, position)
+        .then(() => {
+          if (sync === this.#layoutSync && !this.#disposed)
+            this.#announce(position === "group" ? "Sessions grouped" : "Session moved");
+        })
+        .catch((error) => {
+          if (sync === this.#layoutSync && !this.#disposed) this.#report(error);
+        });
+      return;
+    }
+    this.#layout = moveSession(this.#layout, id, target, position);
+    this.#saveLayout();
+    this.render();
+    this.#announce(position === "group" ? "Sessions grouped" : "Session moved");
+  }
+
+  #saveLayout() {
+    if (this.#layoutSync) return;
+    if (this.#storage && this.#layoutKey) {
+      try {
+        this.#storage.setItem(this.#layoutKey, JSON.stringify(this.#layout));
+      } catch {
+        this.#storageDenied = true;
+      }
+    }
   }
 
   #openPointerContextMenu(event) {
     const row = event.target.closest(".session-row");
     if (!row || !this.#refs.tabs.contains(row)) return;
     event.preventDefault();
+    if (this.#longPress?.dragging || (this.#longPress && event.pointerType !== "mouse")) return;
     this.#cancelLongPress();
     const id = String(row.dataset.sessionId);
     if (event.pointerType !== "mouse")
@@ -899,6 +1104,7 @@ export class SessionDrawer {
   dispose() {
     if (this.#disposed) return;
     this.#disposed = true;
+    this.#layoutSync?.dispose();
     this.#cancelLongPress();
     this.#closeContextMenu();
     this.#renderQueued = false;

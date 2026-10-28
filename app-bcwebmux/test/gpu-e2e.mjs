@@ -7,6 +7,7 @@ import os from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { Cdp, freePort, terminateProcess, waitFor } from "./test-support.mjs";
+import { startDaemon } from "./test-daemon.mjs";
 
 const [serverPath, webRoot] = process.argv.slice(2);
 assert.ok(serverPath && webRoot, "usage: gpu-e2e.mjs SERVER WEB_ROOT");
@@ -17,28 +18,9 @@ const requestedBackend = process.env.RENDER_BACKEND === "webgl2" ? "webgl2" : "w
 const backendQuery = `&backend=${requestedBackend}`;
 const pageQuery = `?gpu-test=1${rendererQuery}${backendQuery}`;
 const profile = await mkdtemp(path.join(os.tmpdir(), "bcwebmux-gpu-e2e-"));
-const server = spawn(
-  serverPath,
-  [
-    "--config",
-    "/dev/null",
-    "--auth=false",
-    "--web-root",
-    webRoot,
-    "--listen",
-    `127.0.0.1:${serverPort}`,
-  ],
-  {
-    stdio: ["ignore", "pipe", "pipe"],
-  },
-);
+let server;
+let daemon;
 let serverLog = "";
-server.stdout.on("data", (data) => {
-  serverLog += data;
-});
-server.stderr.on("data", (data) => {
-  serverLog += data;
-});
 let chromium;
 let bundledServer;
 let pageCdp;
@@ -70,6 +52,22 @@ const glyphAtlasBase64 = Buffer.from(glyphAtlasPayload).toString("base64");
 const glyphAtlasCommand = `printf '\\033[2J\\033[H'; printf '%s' '${glyphAtlasBase64}' | base64 -d; printf '\\033[0m'`;
 
 try {
+  const session = await startDaemon(serverPath, profile);
+  daemon = session.child;
+  server = spawn(
+    serverPath,
+    [
+      "--config", "/dev/null", "--auth=false", "--session-socket", session.socket,
+      "--web-root", webRoot, "--listen", `127.0.0.1:${serverPort}`,
+    ],
+    { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, XDG_STATE_HOME: profile } },
+  );
+  server.stdout.on("data", (data) => {
+    serverLog += data;
+  });
+  server.stderr.on("data", (data) => {
+    serverLog += data;
+  });
   await waitFor(
     async () => {
       const response = await fetch(`http://127.0.0.1:${serverPort}/`).catch(() => null);
@@ -118,9 +116,13 @@ try {
   let bundledLog = "";
   bundledServer = spawn(
     serverPath,
-    ["--config", "/dev/null", "--auth=false", "--listen", `127.0.0.1:${bundledPort}`],
+    [
+      "--config", "/dev/null", "--auth=false", "--session-socket", session.socket,
+      "--listen", `127.0.0.1:${bundledPort}`,
+    ],
     {
       stdio: ["ignore", "pipe", "pipe"],
+      env: { ...process.env, XDG_STATE_HOME: path.join(profile, "bundled-state") },
     },
   );
   bundledServer.stdout.on("data", (data) => {
@@ -1404,5 +1406,6 @@ try {
   await terminateProcess(bundledServer);
   await terminateProcess(chromium);
   await terminateProcess(server);
+  await terminateProcess(daemon);
   await rm(profile, { recursive: true, force: true });
 }

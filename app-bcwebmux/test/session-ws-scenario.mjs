@@ -3,6 +3,7 @@
 
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { startSessionDaemon } from "./test-daemon.mjs";
 import { fileURLToPath } from "node:url";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -33,6 +34,7 @@ export async function runSessionWebSocketScenario(serverPath, deps) {
   const fixtureDir = await mkdtemp(join(tmpdir(), "bcwebmux-image-retention-"));
   const base = `http://127.0.0.1:${port}`;
   const wsUrl = `ws://127.0.0.1:${port}/ws`;
+  const daemon = await startSessionDaemon(serverPath, { args: ["--max-sessions", "2", "--webp-quality", "0"] });
   const server = spawn(
     serverPath,
     [
@@ -43,13 +45,12 @@ export async function runSessionWebSocketScenario(serverPath, deps) {
       `127.0.0.1:${port}`,
       "--origin",
       base,
-      "--max-sessions",
-      "2",
-      "--webp-quality",
-      "0",
+      "--session-socket",
+      daemon.socket,
     ],
     {
       stdio: ["ignore", "pipe", "pipe"],
+      env: daemon.env,
     },
   );
   let logs = "";
@@ -82,11 +83,11 @@ export async function runSessionWebSocketScenario(serverPath, deps) {
     assert.equal(session.state, "running");
     assert.match(session.generation, /^[0-9a-f-]{36}$/);
     await waitFor(
-      async () => (await workerPids(server.pid)).length > 0,
+      async () => (await workerPids(daemon.pid)).length > 0,
       3000,
       "session worker did not start",
     );
-    workerPid = (await workerPids(server.pid))[0];
+    workerPid = (await workerPids(daemon.pid))[0];
 
     const a = await new RawClient(wsUrl, base, "A").connect();
     clients.push(a);
@@ -455,6 +456,7 @@ with open(${JSON.stringify(done)}, 'w') as completed:
     }
     for (const client of clients.reverse()) await client.close();
     await stopServer(server);
+    await daemon.dispose();
     await rm(fixtureDir, { recursive: true, force: true });
     if (workerPid)
       await waitFor(

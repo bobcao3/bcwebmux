@@ -11,6 +11,7 @@
 
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { webTestDaemon } from "./test-daemon.mjs";
 import { createHmac } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import os from "node:os";
@@ -34,6 +35,7 @@ const outputDir = path.resolve(
 const account = "bob@bcwebmux";
 
 const directory = await mkdtemp(path.join(os.tmpdir(), "bcwebmux-totp-"));
+const authEnv = { ...process.env, XDG_STATE_HOME: path.join(directory, "state") };
 const authFile = path.join(directory, "auth.json");
 const profile = path.join(directory, "profile");
 const port = await freePort();
@@ -43,6 +45,7 @@ const debugPort = await freePort();
 const origin = `http://127.0.0.1:${port}`;
 let enrolling;
 let serving;
+let daemon;
 let chromium;
 let browser;
 let page;
@@ -158,7 +161,7 @@ async function enrolTOTP() {
       "--no-qr",
       "--rotate",
     ],
-    { stdio: ["pipe", "pipe", "pipe"] },
+    { stdio: ["pipe", "pipe", "pipe"], env: authEnv },
   );
   captureLogs(enrolling, "totp");
   const exited = new Promise((resolve) => enrolling.once("exit", (code) => resolve(code)));
@@ -187,6 +190,8 @@ try {
     "enrollment must create the session key and user handle",
   );
 
+  daemon = webTestDaemon(serverPath, directory, "/bin/sh");
+  await daemon.start();
   serving = spawn(
     serverPath,
     [
@@ -200,10 +205,10 @@ try {
       origin,
       "--web-root",
       webRoot,
-      "--shell",
-      "/bin/sh",
+      "--session-socket",
+      daemon.socket,
     ],
-    { stdio: ["ignore", "pipe", "pipe"], detached: true },
+    { stdio: ["ignore", "pipe", "pipe"], detached: true, env: daemon.env },
   );
   serving.detachedGroup = true;
   captureLogs(serving, "server");
@@ -386,8 +391,18 @@ try {
   // 6. The authenticator app can be removed from the host, which reopens the app.
   const removed = spawn(
     serverPath,
-    ["auth", "remove", "--totp", "--config", "/dev/null", "--auth-file", authFile],
-    { stdio: ["ignore", "pipe", "pipe"] },
+    [
+      "auth",
+      "remove",
+      "--totp",
+      "--config",
+      "/dev/null",
+      "--listen",
+      `127.0.0.1:${port}`,
+      "--auth-file",
+      authFile,
+    ],
+    { stdio: ["ignore", "pipe", "pipe"], env: authEnv },
   );
   captureLogs(removed, "remove");
   assert.equal(await new Promise((resolve) => removed.once("exit", resolve)), 0);
@@ -430,6 +445,7 @@ try {
     terminateProcess(enrolling),
     terminateProcess(serving),
   ]);
+  await daemon?.stop();
   if (!process.env.BCWEBMUX_KEEP_AUTH_STATE) await rm(directory, { recursive: true, force: true });
   if (process.exitCode) console.error(log.slice(-8192));
 }

@@ -8,6 +8,7 @@ import os from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { Cdp, freePort, terminateProcess, waitFor as poll, delay } from "./test-support.mjs";
+import { startDaemon } from "./test-daemon.mjs";
 const waitFor = (check, timeout, message) => poll(check, timeout, message, 25);
 
 const [serverPath, webRoot] = process.argv.slice(2);
@@ -15,33 +16,37 @@ assert.ok(serverPath && webRoot, "usage: mouse-selection-e2e.mjs SERVER WEB_ROOT
 const serverPort = await freePort();
 const debugPort = await freePort();
 const profile = await mkdtemp(path.join(os.tmpdir(), "bcwebmux-mouse-selection-"));
-const server = spawn(
-  serverPath,
-  [
-    "--config",
-    "/dev/null",
-    "--auth=false",
-    "--web-root",
-    webRoot,
-    "--listen",
-    `127.0.0.1:${serverPort}`,
-  ],
-  {
-    stdio: ["ignore", "pipe", "pipe"],
-  },
-);
+let server;
+let daemon;
 let serverLog = "";
-server.stdout.on("data", (data) => {
-  serverLog += data;
-});
-server.stderr.on("data", (data) => {
-  serverLog += data;
-});
 let chromium;
 let pageCdp;
 let browserCdp;
 
 try {
+  const session = await startDaemon(serverPath, profile);
+  daemon = session.child;
+  server = spawn(
+    serverPath,
+    [
+      "--config",
+      "/dev/null",
+      "--auth=false",
+      "--session-socket",
+      session.socket,
+      "--web-root",
+      webRoot,
+      "--listen",
+      `127.0.0.1:${serverPort}`,
+    ],
+    { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, XDG_STATE_HOME: profile } },
+  );
+  server.stdout.on("data", (data) => {
+    serverLog += data;
+  });
+  server.stderr.on("data", (data) => {
+    serverLog += data;
+  });
   await waitFor(
     async () => {
       const response = await fetch(`http://127.0.0.1:${serverPort}/`).catch(() => null);
@@ -1063,8 +1068,10 @@ try {
   );
   const tailColors = await Promise.all([0, 1, 2, 3].map((column) => sampleCell(column, 0)));
   assertGray(tailColors[0], "wide-tail leading adjacent cell");
-  assertDark(tailColors[1], "wide-tail glyph lead");
-  assertDark(tailColors[2], "wide-tail glyph tail");
+  assert.equal(await evaluate("window.bcwebmux.selectionText()"), "中");
+  const darkFractions = await selectionBackgroundFractions([1, 2], 0);
+  assert.ok(darkFractions[0] > 0.4, `wide-tail glyph lead background: ${darkFractions[0]}`);
+  assert.ok(darkFractions[1] > 0.4, `wide-tail glyph tail background: ${darkFractions[1]}`);
   assertGray(tailColors[3], "wide-tail trailing adjacent cell");
 
   const invisibleScreen =
@@ -1540,6 +1547,27 @@ try {
     return response.result.value;
   }
 
+  async function selectionBackgroundFractions(columns, row) {
+    return evaluate(`(async () => {
+      await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      const image = await window.bcwebmux.readPixels();
+      const canvas = document.querySelector("#screen");
+      const style = getComputedStyle(document.querySelector("#terminal"));
+      const cw = parseFloat(style.getPropertyValue("--cell-width")) * image.width / canvas.clientWidth;
+      const ch = parseFloat(style.getPropertyValue("--cell-height")) * image.height / canvas.clientHeight;
+      return ${JSON.stringify(columns)}.map(column => {
+        let dark = 0, count = 0;
+        for (let y = Math.floor(${row} * ch); y < Math.floor((${row} + 1) * ch); y++)
+          for (let x = Math.floor(column * cw); x < Math.floor((column + 1) * cw); x++) {
+            const i = (y * image.width + x) * 4;
+            if (image.data[i] < 60 && image.data[i + 1] < 60 && image.data[i + 2] < 60) dark++;
+            count++;
+          }
+        return dark / count;
+      });
+    })()`);
+  }
+
   async function sampleCell(column, row) {
     return evaluate(`(async () => {
       await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
@@ -1581,6 +1609,7 @@ try {
   browserCdp?.close();
   await terminateProcess(chromium);
   await terminateProcess(server);
+  await terminateProcess(daemon);
   await rm(profile, { recursive: true, force: true });
 }
 

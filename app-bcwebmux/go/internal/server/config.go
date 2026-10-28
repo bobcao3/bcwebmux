@@ -36,6 +36,8 @@ type Config struct {
 	Host          string
 	Port          int
 	WebRoot       string
+	SessionSocket string
+	DaemonOptions []string
 	Shell         string
 	Term          string
 	KittyGraphics bool
@@ -53,6 +55,7 @@ type Config struct {
 	// the browser resolves file:// links through.
 	FileServiceURL    string
 	FileServicePrefix string
+	MetadataFile      string
 	// AuthEnabled keeps the browser surface behind a FIDO2 login whenever
 	// credentials are enrolled. AuthFile holds those credentials; whether a
 	// factor is enrolled, not this flag, decides if a login is required.
@@ -82,12 +85,14 @@ func parseConfig(args []string, validateListeners bool) (Config, bool, error) {
 	flags := flag.NewFlagSet("bcwebmux-server", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	flags.StringVar(&cfg.WebRoot, "web-root", "", "asset directory")
+	flags.StringVar(&cfg.SessionSocket, "session-socket", "", "session daemon Unix socket")
 	flags.StringVar(&cfg.Shell, "shell", "", "shell")
 	flags.StringVar(&cfg.Term, "term", cfg.Term, "TERM for session shells")
 	flags.BoolVar(&cfg.KittyGraphics, "kitty-graphics", cfg.KittyGraphics, "advertise Kitty graphics to session shells")
 	flags.IntVar(&cfg.WebPQuality, "webp-quality", cfg.WebPQuality, "optionally re-encode Kitty images as WebP, lossy at this quality (1-100); 0 disables optional transcoding while resolution clamping remains active")
 	flags.BoolVar(&cfg.AuthEnabled, "auth", cfg.AuthEnabled, "require a FIDO2 security key login once credentials are enrolled")
 	flags.StringVar(&cfg.AuthFile, "auth-file", "", "FIDO2 authentication state file")
+	flags.StringVar(&cfg.MetadataFile, "metadata-file", "", "session metadata state file")
 	flags.DurationVar(&cfg.AuthSessionTTL, "auth-session-ttl", 0, "browser login session lifetime (default 168h)")
 	flags.DurationVar(&cfg.AuthSessionMaxAge, "auth-session-max-age", 0, "absolute browser login lifetime across renewals (default 720h)")
 	var origins, listens []string
@@ -138,8 +143,14 @@ func parseConfig(args []string, validateListeners bool) (Config, bool, error) {
 	}
 	flags.Visit(func(f *flag.Flag) {
 		switch f.Name {
+		case "shell", "term", "kitty-graphics", "webp-quality", "max-sessions", "worker":
+			cfg.DaemonOptions = append(cfg.DaemonOptions, f.Name)
+		}
+		switch f.Name {
 		case "web-root":
 			cfg.WebRoot = cli.WebRoot
+		case "session-socket":
+			cfg.SessionSocket = cli.SessionSocket
 		case "shell":
 			cfg.Shell = cli.Shell
 		case "term":
@@ -152,6 +163,8 @@ func parseConfig(args []string, validateListeners bool) (Config, bool, error) {
 			cfg.AuthEnabled = cli.AuthEnabled
 		case "auth-file":
 			cfg.AuthFile = cli.AuthFile
+		case "metadata-file":
+			cfg.MetadataFile = cli.MetadataFile
 		case "auth-session-ttl":
 			cfg.AuthSessionTTL = cli.AuthSessionTTL
 		case "auth-session-max-age":
@@ -244,6 +257,15 @@ func parseConfig(args []string, validateListeners bool) (Config, bool, error) {
 	}
 	if cfg.AuthFile == "" {
 		cfg.AuthFile = defaultAuthFile()
+	}
+	if cfg.SessionSocket == "" {
+		cfg.SessionSocket = filepath.Join("/tmp", fmt.Sprintf("bcwebmux-%d", os.Geteuid()), "session.sock")
+	}
+	if cfg.MetadataFile == "" {
+		cfg.MetadataFile = defaultMetadataFile()
+		if cfg.MetadataFile == "" {
+			return Config{}, false, errors.New("cannot determine session metadata state directory")
+		}
 	}
 	return cfg, false, nil
 }
@@ -450,9 +472,7 @@ func Usage(program string) string {
 		"                               or CIDR:PORT; repeatable, one shared port\n"+
 		"  --config FILE                TOML config file (default: XDG/HOME discovery)\n"+
 		"  --web-root DIR               web assets directory\n"+
-		"  --shell SHELL                shell for new sessions\n"+
-		"  --term TERM                  TERM for new sessions (default: xterm-ghostty)\n"+
-		"  --max-sessions N             maximum live sessions (default: 16)\n"+
+		"  --session-socket FILE        session daemon Unix socket\n"+
 		"  --tls-cert FILE              TLS certificate\n"+
 		"  --tls-key FILE               TLS key\n"+
 		"  --http3                      serve HTTPS over HTTP/3 too (requires TLS)\n"+
@@ -460,17 +480,14 @@ func Usage(program string) string {
 		"                               (default: true)\n"+
 		"  --auth-file FILE             authentication state file\n"+
 		"                               (default: $XDG_STATE_HOME/bcwebmux/auth.json)\n"+
+		"  --metadata-file FILE         session metadata state file\n"+
+		"                               (default: $XDG_STATE_HOME/bcwebmux/metadata.json)\n"+
 		"  --auth-session-ttl DURATION  browser login lifetime (default: 168h)\n"+
 		"  --auth-session-max-age DURATION\n"+
 		"                               absolute login lifetime across renewals\n"+
 		"                               (default: 720h)\n"+
-		"  --kitty-graphics[=false]     advertise Kitty graphics to session shells\n"+
-		"                               (default: true)\n"+
-		"  --webp-quality N             re-encode Kitty images as WebP, lossy at\n"+
-		"                               quality N (1-100), to save bandwidth; 0 disables\n"+
-		"                               optional transcoding (resolution clamping remains\n"+
-		"                               active; default: 90)\n"+
-		"  --worker FILE                PTY worker executable\n"+
+		"  Session options such as --shell and --max-sessions belong to\n"+
+		"  bcwebmux-sessiond, not the web frontend.\n"+
 		"  --file-service-url URL        local file service for file:// links, with\n"+
 		"                               {host} and {path} tokens\n"+
 		"  --file-service-prefix PATH    local path prefix that service serves\n"+
@@ -498,4 +515,16 @@ func defaultAuthFile() string {
 		return ""
 	}
 	return filepath.Join(base, "bcwebmux", "auth.json")
+}
+
+func defaultMetadataFile() string {
+	base := os.Getenv("XDG_STATE_HOME")
+	if !filepath.IsAbs(base) {
+		if home, err := os.UserHomeDir(); err == nil && filepath.IsAbs(home) {
+			base = filepath.Join(home, ".local", "state")
+		} else {
+			return ""
+		}
+	}
+	return filepath.Join(base, "bcwebmux", "metadata.json")
 }

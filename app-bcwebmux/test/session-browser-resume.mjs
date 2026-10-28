@@ -6,6 +6,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
+import { startSessionDaemon } from "./test-daemon.mjs";
 import { deflateSync } from "node:zlib";
 import sharp from "sharp";
 import { Cdp, freePort, localTls, terminateProcess, waitFor } from "./test-support.mjs";
@@ -22,14 +23,15 @@ const tls = await localTls();
 const profile = await mkdtemp(path.join(os.tmpdir(), "bcwebmux-session-browser-"));
 const shell = path.join(profile, "shell");
 await writeFile(shell, "#!/bin/sh\nexec /bin/bash --noprofile --norc -i\n", { mode: 0o700 });
+const daemon = await startSessionDaemon(serverPath, { args: ["--shell", shell, ...qualityArgs], env: { ...process.env, HOME: profile } });
 let server = spawn(
   serverPath,
   [
     "--config",
     "/dev/null",
     "--auth=false",
-    "--shell",
-    shell,
+    "--session-socket",
+    daemon.socket,
     "--tls-cert",
     tls.cert,
     "--tls-key",
@@ -40,11 +42,10 @@ let server = spawn(
     `127.0.0.1:${serverPort}`,
     "--origin",
     base,
-    ...qualityArgs,
   ],
   {
     stdio: ["ignore", "pipe", "pipe"],
-    env: { ...process.env, HOME: profile, GODEBUG: "http2server=0" },
+    env: { ...daemon.env, GODEBUG: "http2server=0" },
   },
 );
 let serverLog = "";
@@ -607,14 +608,16 @@ emit(b"\x1b[13;40HFALLBACK-QUERY-OK\r\n")
   assert.equal(restored.state.replyBytes, 0);
   const oldInstance = (await (await fetch(`${base}/api/server`)).json()).serverInstance;
   await terminateProcess(server);
+  await daemon.stop();
+  await daemon.start();
   server = spawn(
     serverPath,
     [
       "--config",
       "/dev/null",
       "--auth=false",
-      "--shell",
-      shell,
+      "--session-socket",
+      daemon.socket,
       "--tls-cert",
       tls.cert,
       "--tls-key",
@@ -625,11 +628,10 @@ emit(b"\x1b[13;40HFALLBACK-QUERY-OK\r\n")
       `127.0.0.1:${serverPort}`,
       "--origin",
       base,
-      ...qualityArgs,
     ],
     {
       stdio: ["ignore", "pipe", "pipe"],
-      env: { ...process.env, HOME: profile, GODEBUG: "http2server=0" },
+      env: { ...daemon.env, GODEBUG: "http2server=0" },
     },
   );
   server.stdout.on("data", (data) => {
@@ -682,6 +684,7 @@ emit(b"\x1b[13;40HFALLBACK-QUERY-OK\r\n")
   browser?.close();
   await terminateProcess(chromium);
   await terminateProcess(server);
+  await daemon.dispose();
   await tls.dispose();
   await rm(profile, { recursive: true, force: true });
 }

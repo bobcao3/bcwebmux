@@ -57,7 +57,7 @@ func TestMultipleListenersRequestsAndShutdown(t *testing.T) {
 						t.Fatal(response.Status)
 					}
 					for _, origin := range cfg.Origins {
-						req, _ := http.NewRequest(http.MethodPost, scheme+"://"+addr.String()+"/api/sessions", strings.NewReader("{}"))
+						req, _ := http.NewRequest(http.MethodPost, scheme+"://"+addr.String()+"/api/example", strings.NewReader("{}"))
 						req.Header.Set("Origin", origin)
 						req.Header.Set("Content-Type", "application/json")
 						response, err = client.Do(req)

@@ -1,7 +1,7 @@
 # bcwebmux application
 
 A browser terminal with persistent PTY sessions, multiple clients, and GPU
-rendering. The Go HTTP(S)/WebSocket frontend uses a native Zig session core;
+rendering. The Go HTTP(S)/WebSocket frontend connects to a Zig session daemon;
 server and browser run the same pinned libghostty terminal. Clients reconnect
 from snapshots.
 
@@ -15,6 +15,31 @@ Before exposing the terminal remotely or reaching it from a phone, configure
 trusted HTTPS and enroll a factor below, or use an authenticated TLS proxy. An
 origin allowlist is **not authentication**. Phones use the browser install menu;
 plain LAN HTTP is insufficient and the app needs a live server.
+
+## Session daemon
+
+Start `bcwebmux-sessiond` before `bcwebmux-server` and supervise them as
+separate processes. Restarting the web server disconnects browsers but leaves
+the daemon's sessions and shells running. Browsers can reconnect and restore
+retained output. Stopping the daemon ends its sessions. Existing sessions from
+the old single-process server cannot be transferred to the daemon.
+
+Both programs default to `/tmp/bcwebmux-UID/session.sock`, where `UID` is the
+effective user ID. The daemon creates the directory with owner-only access.
+For a different path, create a trusted directory owned by the same user and
+pass `--socket PATH` to the daemon and `--session-socket PATH` to the web
+server. The socket is private to that user; access to it permits control of
+sessions. Keep its parent and ancestors protected from replacement.
+
+Session options move to the daemon: `--shell`, `--worker`, `--term`,
+`--max-sessions`, `--kitty-graphics true|false`, and `--webp-quality`. Remove
+them from the web server's TOML or CLI. The web server stores drawer layout in
+`$XDG_STATE_HOME/bcwebmux/metadata.json` and session names alongside it in
+`metadata.json.names`. When `XDG_STATE_HOME` is unset, the directory is
+`~/.local/state/bcwebmux`. Use `--metadata-file` to select another layout path;
+the names file uses that path with `.names` appended.
+The daemon keeps an in-memory copy of each name for session notifications;
+the web server's names file is authoritative.
 
 ## Authentication
 
@@ -49,7 +74,7 @@ tls-cert = "/path/to/fullchain.pem"; tls-key = "/path/to/key.pem"
 origins must then be `https`. `http3 = true` adds HTTP/3 on the same port and
 needs TLS plus UDP access. Report progress with OSC 7501 or OSC 9;4 codes; the
 server keeps reports for reconnecting clients. Kitty images reach browsers
-re-encoded as WebP; `webp-quality` tunes optional bandwidth transcoding while
+re-encoded as WebP; the daemon's `--webp-quality` tunes optional transcoding while
 resolution clamping remains active
 ([Kitty graphics](../docs/kitty-graphics.md#webp-transcoding)).
 
@@ -61,9 +86,8 @@ Run from `app-bcwebmux/`:
 zig build -Doptimize=small
 zig build test && zig build gotest
 node test/session-controller-contract.mjs
-node test/session-ui-e2e.mjs ./zig-out/bin/bcwebmux-server ./zig-out/web
-...and the other `test/*-e2e.mjs` with the same arguments.
-Color emoji coverage saves screenshots without goldens: `node test/color-emoji-e2e.mjs ./zig-out/bin/bcwebmux-server ./zig-out/web` (honors `RENDER_BACKEND=webgpu|webgl2`).
+node test/session-daemon-restart.mjs ./zig-out/bin/bcwebmux-sessiond ./zig-out/bin/bcwebmux-server ./zig-out/web
+node test/session-layout-sync-e2e.mjs ./zig-out/bin/bcwebmux-server ./zig-out/web
 ```
 
 Browser tests need Chromium, a physical Vulkan GPU, and Noto CJK fonts; without

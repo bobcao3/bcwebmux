@@ -3,6 +3,7 @@
 
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { startSessionDaemon } from "./test-daemon.mjs";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -19,7 +20,7 @@ const debugPort = await freePort();
 const base = `http://127.0.0.1:${port}`;
 const profile = await mkdtemp(path.join(os.tmpdir(), "bcwebmux-multiclient-"));
 const pages = [];
-let server, chromium, browser;
+let server, daemon, chromium, browser;
 let logs = "";
 
 async function evaluate(page, expression) {
@@ -116,6 +117,7 @@ async function checkpoint(page, marker) {
 }
 
 try {
+  daemon = await startSessionDaemon(serverPath, { args: ["--shell", "/bin/sh"] });
   server = spawn(
     path.resolve(serverPath),
     [
@@ -126,12 +128,12 @@ try {
       `127.0.0.1:${port}`,
       "--origin",
       base,
-      "--shell",
-      "/bin/sh",
+      "--session-socket",
+      daemon.socket,
       "--web-root",
       path.resolve(webRoot),
     ],
-    { stdio: ["ignore", "pipe", "pipe"], detached: true },
+    { stdio: ["ignore", "pipe", "pipe"], detached: true, env: daemon.env },
   );
   server.detachedGroup = true;
   for (const stream of [server.stdout, server.stderr])
@@ -203,6 +205,26 @@ try {
   // Control: a second client with enough capacity can restore the same checkpoint.
   const sameSize = await openClient(1300, 850);
   await healthy(sameSize, b.id, "LARGE-B-TAIL");
+  await evaluate(desktop, `window.bcwebmux.renameSession(${JSON.stringify(b.id)}, 'Shared Ω')`);
+  await waitFor(
+    () =>
+      evaluate(
+        sameSize,
+        `window.bcwebmux.sessions.find(session => session.id === ${JSON.stringify(b.id)})?.name === 'Shared Ω'`,
+      ),
+    5000,
+    "rename did not reach the other client",
+  );
+  await evaluate(sameSize, `window.bcwebmux.renameSession(${JSON.stringify(b.id)}, '')`);
+  await waitFor(
+    () =>
+      evaluate(
+        desktop,
+        `window.bcwebmux.sessions.find(session => session.id === ${JSON.stringify(b.id)})?.name === ''`,
+      ),
+    5000,
+    "cleared name did not reach the other client",
+  );
   const small = await openClient(390, 740);
   assert.notEqual(
     await evaluate(small, "window.bcwebmux.clientInstanceId"),
@@ -280,5 +302,6 @@ try {
   browser?.disconnect();
   await terminateProcess(chromium);
   await terminateProcess(server);
+  await daemon?.dispose();
   await rm(profile, { recursive: true, force: true });
 }

@@ -49,29 +49,13 @@ func main() {
 		fmt.Print(server.Usage(name))
 		return
 	}
-	if cfg.Worker == "" {
-		executable, err := os.Executable()
-		if err != nil {
-			executable = os.Args[0]
-		}
-		cfg.Worker = filepath.Join(filepath.Dir(executable), "bcwebmux-worker")
+	if len(cfg.DaemonOptions) != 0 {
+		fmt.Fprintf(os.Stderr, "%s: session options %v must be configured on bcwebmux-sessiond, not the web frontend\n", name, cfg.DaemonOptions)
+		os.Exit(2)
 	}
-	expectedOrigin := cfg.Origin
-	if expectedOrigin == "" && cfg.Port != 0 &&
-		server.HostIsLoopback(cfg.Host) {
-		expectedOrigin = server.OriginFor(cfg.Host, cfg.Port, cfg.TLSCert != "")
-	}
-	engine, err := native.OpenEngine(native.EngineConfig{
-		Shell:                cfg.Shell,
-		Term:                 cfg.Term,
-		DisableKittyGraphics: !cfg.KittyGraphics,
-		WebPQuality:          uint8(cfg.WebPQuality),
-		Worker:               cfg.Worker,
-		MaxSessions:          cfg.MaxSessions,
-		ExpectedOrigin:       expectedOrigin,
-	})
+	engine, err := native.OpenRemoteEngine(cfg.SessionSocket)
 	if err != nil {
-		logger.Error("native engine initialization failed", "error", err)
+		logger.Error("session daemon connection failed", "socket", cfg.SessionSocket, "error", err)
 		os.Exit(1)
 	}
 	cfg.Engine = engine

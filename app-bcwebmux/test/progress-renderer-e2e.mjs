@@ -3,6 +3,7 @@
 
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { webTestDaemon } from "./test-daemon.mjs";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -22,6 +23,7 @@ async function run(backend) {
   const debugPort = await freePort();
   const base = `http://127.0.0.1:${port}`;
   let server;
+  let daemon;
   let chromium;
   let page;
   let log = "";
@@ -54,14 +56,16 @@ async function run(backend) {
       "#!/bin/sh\nstty -echo\nexport ENV=/dev/null BASH_ENV=/dev/null PS1=''\nprintf '\\033[?25l\\033]0;Progress shaders\\007'\nexec /bin/sh -i\n",
       { mode: 0o700 },
     );
+    daemon = webTestDaemon(serverPath, profile, shell);
+    await daemon.start();
     server = spawn(
       serverPath,
       [
         "--config",
         "/dev/null",
         "--auth=false",
-        "--shell",
-        shell,
+        "--session-socket",
+        daemon.socket,
         "--web-root",
         webRoot,
         "--listen",
@@ -69,7 +73,7 @@ async function run(backend) {
         "--origin",
         base,
       ],
-      { stdio: ["ignore", "pipe", "pipe"], detached: true },
+      { stdio: ["ignore", "pipe", "pipe"], detached: true, env: daemon.env },
     );
     server.detachedGroup = true;
     server.stdout.on("data", (chunk) => {
@@ -346,6 +350,7 @@ async function run(backend) {
     page?.close();
     await terminateProcess(chromium);
     await terminateProcess(server);
+    await daemon?.stop();
     await rm(profile, { recursive: true, force: true });
   }
 }

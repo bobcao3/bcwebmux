@@ -44,6 +44,7 @@ func loadConfig(cfg *Config, explicit string) error {
 			Host              *string  `toml:"host"`
 			Listen            []string `toml:"listen"`
 			WebRoot           *string  `toml:"web-root"`
+			SessionSocket     *string  `toml:"session-socket"`
 			Shell             *string  `toml:"shell"`
 			Term              *string  `toml:"term"`
 			KittyGraphics     *bool    `toml:"kitty-graphics"`
@@ -57,6 +58,7 @@ func loadConfig(cfg *Config, explicit string) error {
 			Worker            *string  `toml:"worker"`
 			Auth              *bool    `toml:"auth"`
 			AuthFile          *string  `toml:"auth-file"`
+			MetadataFile      *string  `toml:"metadata-file"`
 			AuthSessionTTL    *string  `toml:"auth-session-ttl"`
 			AuthSessionMaxAge *string  `toml:"auth-session-max-age"`
 			FileServiceURL    *string  `toml:"file-service-url"`
@@ -89,16 +91,26 @@ func loadConfig(cfg *Config, explicit string) error {
 		if file.WebRoot != nil {
 			cfg.WebRoot = *file.WebRoot
 		}
+		if file.SessionSocket != nil {
+			if *file.SessionSocket == "" {
+				return fmt.Errorf("config %s: session-socket must not be empty", path)
+			}
+			cfg.SessionSocket = *file.SessionSocket
+		}
 		if file.Shell != nil {
+			cfg.DaemonOptions = append(cfg.DaemonOptions, "shell")
 			cfg.Shell = *file.Shell
 		}
 		if file.Term != nil {
+			cfg.DaemonOptions = append(cfg.DaemonOptions, "term")
 			cfg.Term = *file.Term
 		}
 		if file.KittyGraphics != nil {
+			cfg.DaemonOptions = append(cfg.DaemonOptions, "kitty-graphics")
 			cfg.KittyGraphics = *file.KittyGraphics
 		}
 		if file.WebPQuality != nil {
+			cfg.DaemonOptions = append(cfg.DaemonOptions, "webp-quality")
 			cfg.WebPQuality = *file.WebPQuality
 		}
 		if file.Origin != nil {
@@ -106,6 +118,7 @@ func loadConfig(cfg *Config, explicit string) error {
 		}
 		cfg.Origins = file.Origins
 		if file.MaxSessions != nil {
+			cfg.DaemonOptions = append(cfg.DaemonOptions, "max-sessions")
 			cfg.MaxSessions = *file.MaxSessions
 		}
 		if file.TLSCert != nil {
@@ -118,6 +131,7 @@ func loadConfig(cfg *Config, explicit string) error {
 			cfg.HTTP3 = *file.HTTP3
 		}
 		if file.Worker != nil {
+			cfg.DaemonOptions = append(cfg.DaemonOptions, "worker")
 			cfg.Worker = *file.Worker
 		}
 		if file.Auth != nil {
@@ -128,6 +142,12 @@ func loadConfig(cfg *Config, explicit string) error {
 				return fmt.Errorf("config %s: auth-file must not be empty", path)
 			}
 			cfg.AuthFile = *file.AuthFile
+		}
+		if file.MetadataFile != nil {
+			if *file.MetadataFile == "" {
+				return fmt.Errorf("config %s: metadata-file must not be empty", path)
+			}
+			cfg.MetadataFile = *file.MetadataFile
 		}
 		if file.AuthSessionTTL != nil {
 			ttl, err := time.ParseDuration(*file.AuthSessionTTL)

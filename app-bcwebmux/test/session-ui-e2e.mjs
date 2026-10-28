@@ -8,6 +8,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { VideoGoldens } from "./video-goldens.mjs";
+import { webTestDaemon } from "./test-daemon.mjs";
 import { compareScreenshot } from "./visual-compare.mjs";
 import { Cdp, freePort, terminateProcess, waitFor, delay } from "./test-support.mjs";
 
@@ -23,6 +24,7 @@ const base = `http://127.0.0.1:${serverPort}`;
 const profile = await mkdtemp(path.join(os.tmpdir(), "bcwebmux-session-ui-"));
 const fixtureShell = path.join(profile, "fixture-shell");
 let server;
+let daemon;
 let serverError;
 let serverLog = "";
 let chromium;
@@ -48,14 +50,16 @@ try {
     "#!/bin/sh\nexport ENV=/dev/null BASH_ENV=/dev/null PS1='$ '\nprintf '\\033]0;Progress demo\\007'\nexec /bin/sh -i\n",
     { mode: 0o700 },
   );
+  daemon = webTestDaemon(serverPath, profile, fixtureShell);
+  await daemon.start();
   server = spawn(
     serverPath,
     [
       "--config",
       "/dev/null",
       "--auth=false",
-      "--shell",
-      fixtureShell,
+      "--session-socket",
+      daemon.socket,
       "--web-root",
       webRoot,
       "--listen",
@@ -63,7 +67,11 @@ try {
       "--origin",
       base,
     ],
-    { stdio: ["ignore", "pipe", "pipe"], detached: true },
+    {
+      stdio: ["ignore", "pipe", "pipe"],
+      detached: true,
+      env: daemon.env,
+    },
   );
   server.detachedGroup = true;
   server.stdout.on("data", (data) => {
@@ -502,6 +510,10 @@ try {
     JSON.stringify({ openMetadata, closedMetadata, reopenedMetadata }),
   );
 
+  await dragSession(firstId, secondId, 0.5);
+  await waitDrawerLayout({ ids: [secondId, firstId], groups: 1 });
+  assert.deepEqual(await drawerLayout(), { ids: [secondId, firstId], groups: 1 });
+
   await evaluate("document.querySelector('#session-toggle').click()");
   await waitBrowser(
     "!window.bcwebmux.drawerState.open",
@@ -524,6 +536,11 @@ try {
   await evaluate("document.querySelector('#session-toggle').click()");
   await waitBrowser("window.bcwebmux.drawerState.open", 1000, "restored wide drawer did not open");
   assert.equal((await evaluate("window.bcwebmux.sessions")).length, 2);
+  await waitDrawerLayout({ ids: [secondId, firstId], groups: 1 });
+  assert.deepEqual(await drawerLayout(), { ids: [secondId, firstId], groups: 1 });
+  await dragSession(firstId, secondId, 0.1);
+  await waitDrawerLayout({ ids: [firstId, secondId], groups: 0 });
+  assert.deepEqual(await drawerLayout(), { ids: [firstId, secondId], groups: 0 });
   await waitBrowser(
     `document.querySelector('.session-row[data-session-id="${firstId}"] .session-detail')?.textContent.includes('approval required')`,
     5000,
@@ -533,6 +550,10 @@ try {
     `window.bcwebmux.sessions.find(session => session.id === ${JSON.stringify(firstId)})?.progressReport?.progress === 73`,
     5000,
     "reloaded browser did not hydrate inactive OSC 9;4 progress",
+  );
+  await page.call("Input.dispatchMouseEvent", { type: "mouseMoved", x: 500, y: 350 });
+  await evaluate(
+    "document.querySelector('.session-row.is-active .session-tab').focus({ focusVisible: true })",
   );
   await verifyProgressPresentation(firstId, 40);
 
@@ -621,7 +642,15 @@ try {
     5000,
     "exited cards must retain the lifecycle label alongside the completed program status",
   );
-  await evaluate("document.querySelector('.session-row.is-active .session-tab').focus()");
+  await evaluate(
+    "document.querySelector('.session-row.is-active .session-tab').focus({ focusVisible: true })",
+  );
+  assert.equal(
+    await evaluate(
+      "document.querySelector('.session-row.is-active .session-tab').matches(':focus-visible')",
+    ),
+    true,
+  );
   await stillGolden("session-exited-card", ".session-row.is-active");
   await stillGolden("session-exited-bar", "#terminal-chrome");
   await evaluate(
@@ -853,7 +882,6 @@ async function verifyStatusAnimation(id, state, group) {
   const motion = await evaluate(`(() => {
     const row = document.querySelector('.session-row[data-session-id="${id}"]');
     const animations = row.getAnimations();
-    window.__statusMotionRow = row;
     if (animations.length !== 1) return { count: animations.length };
     const animation = animations[0];
     const running = animation.playState === 'running';
@@ -888,7 +916,7 @@ async function verifyStatusAnimation(id, state, group) {
       `window.bcwebmux.write(${JSON.stringify(`printf '\\033]7501;state=${state}:${field}=${value}\\007'\n`)})`,
     );
     await waitBrowser(
-      `document.querySelector('.session-row[data-session-id="${id}"]') !== window.__statusMotionRow && window.bcwebmux.sessions.find(session => session.id === ${JSON.stringify(id)})?.programStatus?.${field} === ${JSON.stringify(value)}`,
+      `window.bcwebmux.sessions.find(session => session.id === ${JSON.stringify(id)})?.programStatus?.${field} === ${JSON.stringify(value)} && document.querySelector('.session-row[data-session-id="${id}"] .session-detail').textContent.includes(${JSON.stringify(state === "working" ? "50%" : "answer required")})`,
       5000,
       "status update did not refresh the card",
     );
@@ -1183,6 +1211,53 @@ async function evaluate(expression) {
   return response.result.value;
 }
 
+async function drawerLayout() {
+  return evaluate(
+    `({ ids: [...document.querySelectorAll('#session-tabs .session-row')].map(row => row.dataset.sessionId), groups: document.querySelectorAll('.session-group-label').length })`,
+  );
+}
+
+async function waitDrawerLayout(expected) {
+  await waitFor(
+    async () => JSON.stringify(await drawerLayout()) === JSON.stringify(expected),
+    5000,
+    "session layout did not update",
+  );
+}
+
+async function dragSession(source, target, fraction) {
+  const points = await evaluate(`(() => {
+    const source = document.querySelector(${JSON.stringify(`.session-row[data-session-id="${source}"] .session-tab`)}).getBoundingClientRect();
+    const target = document.querySelector(${JSON.stringify(`.session-row[data-session-id="${target}"]`)}).getBoundingClientRect();
+    return { x: source.left + source.width / 2, y: source.top + source.height / 2, targetX: target.left + target.width / 2, targetY: target.top + target.height * ${fraction} };
+  })()`);
+  await page.call("Input.dispatchMouseEvent", { type: "mouseMoved", x: points.x, y: points.y });
+  await page.call("Input.dispatchMouseEvent", {
+    type: "mousePressed",
+    x: points.x,
+    y: points.y,
+    button: "left",
+    buttons: 1,
+    clickCount: 1,
+  });
+  await delay(650);
+  await page.call("Input.dispatchMouseEvent", {
+    type: "mouseMoved",
+    x: points.targetX,
+    y: points.targetY,
+    button: "left",
+    buttons: 1,
+  });
+  await page.call("Input.dispatchMouseEvent", {
+    type: "mouseReleased",
+    x: points.targetX,
+    y: points.targetY,
+    button: "left",
+    buttons: 0,
+    clickCount: 1,
+  });
+}
+
 async function waitBrowser(expression, timeout, message) {
   return waitFor(
     async () => Boolean(await evaluate(expression).catch(() => false)),
@@ -1228,6 +1303,7 @@ async function cleanup() {
       await videoGoldens.dispose();
       await terminateProcess(chromium);
       await terminateProcess(server);
+      await daemon?.stop();
       await rm(profile, { recursive: true, force: true });
     })();
   }

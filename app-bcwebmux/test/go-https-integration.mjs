@@ -12,12 +12,14 @@ import net from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import tls from "node:tls";
-import { delay, freePort } from "./test-support.mjs";
+import { delay, freePort, terminateProcess } from "./test-support.mjs";
+import { startDaemon } from "./test-daemon.mjs";
 
 const executable = process.argv[2];
 assert.ok(executable, "usage: node test/go-https-integration.mjs SERVER");
 const directory = await mkdtemp(join(tmpdir(), "bcwebmux-https-"));
 let server;
+let daemon;
 let client;
 let socket;
 let exited;
@@ -48,10 +50,16 @@ try {
   );
   const port = await freePort();
   const origin = `https://127.0.0.1:${port}`;
+  const daemonInstance = await startDaemon(executable, directory);
+  daemon = daemonInstance.child;
   server = spawn(
     resolve(executable),
     [
+      "--config",
+      "/dev/null",
       "--auth=false",
+      "--session-socket",
+      daemonInstance.socket,
       "--listen",
       `127.0.0.1:${port}`,
       "--origin",
@@ -61,7 +69,7 @@ try {
       "--tls-key",
       key,
     ],
-    { stdio: ["ignore", "pipe", "pipe"] },
+    { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, XDG_STATE_HOME: directory } },
   );
   server.stdout.on("data", (chunk) => {
     logs += chunk;
@@ -168,7 +176,7 @@ try {
   ]);
   assert.equal(result.code, 0, `unclean shutdown ${JSON.stringify(result)}\n${logs}`);
   console.log(
-    "Go HTTPS integration passed: TLS, HTTP/2, embedded assets, origin checks, cgo session lifecycle, WSS, shutdown",
+    "Go HTTPS integration passed: TLS, HTTP/2, embedded assets, origin checks, daemon session lifecycle, WSS, shutdown",
   );
 
   function request(method, path, headers = {}, body = "") {
@@ -199,6 +207,7 @@ try {
     server.kill("SIGKILL");
     await exited;
   }
+  await terminateProcess(daemon);
   await rm(directory, { recursive: true, force: true });
 }
 

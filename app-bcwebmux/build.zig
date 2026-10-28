@@ -69,6 +69,8 @@ pub fn build(b: *std.Build) void {
         \\#include <stdlib.h>
         \\#include <sys/ioctl.h>
         \\#include <sys/socket.h>
+        \\#include <sys/stat.h>
+        \\#include <sys/file.h>
         \\#include <sys/wait.h>
         \\#include <unistd.h>
         \\
@@ -120,6 +122,30 @@ pub fn build(b: *std.Build) void {
     bcwebmux_worker.root_module.link_libc = true;
     bcwebmux_worker.root_module.linkLibrary(target_webp);
     bcwebmux_worker.root_module.linkSystemLibrary("util", .{});
+    const sessiond = b.addExecutable(.{
+        .name = "bcwebmux-sessiond",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/session_daemon.zig"),
+            .target = target,
+            .optimize = server_optimize,
+            .imports = &.{
+                .{ .name = "ghostty-vt", .module = native_ghostty.module("ghostty-vt") },
+                .{ .name = "terminal-graphics", .module = native_graphics },
+                .{ .name = "wuffs", .module = wuffs },
+                .{ .name = "posix-c", .module = posix_c },
+                .{ .name = "zstd-c", .module = zstd_c },
+                .{ .name = "webp-c", .module = webp_c },
+                .{ .name = "bcwebmux-c", .module = bcwebmux_c },
+            },
+        }),
+    });
+    sessiond.root_module.link_libc = true;
+    sessiond.root_module.linkLibrary(target_zstd);
+    sessiond.root_module.linkLibrary(target_webp);
+    b.installArtifact(sessiond);
+    const sessiond_step = b.step("sessiond", "Build the session daemon and worker");
+    sessiond_step.dependOn(&b.addInstallArtifact(sessiond, .{}).step);
+    sessiond_step.dependOn(&b.addInstallArtifact(bcwebmux_worker, .{}).step);
     const wasm = b.addExecutable(.{
         .name = "terminal",
         .root_module = b.createModule(.{

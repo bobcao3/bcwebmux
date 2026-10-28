@@ -129,3 +129,21 @@ func TestListenRangeResolution(t *testing.T) {
 		t.Fatalf("unmatched: %v", err)
 	}
 }
+
+func TestSessionSocketConfigPrecedence(t *testing.T) {
+	home, _ := configHome(t)
+	file := filepath.Join(home, "config.toml")
+	putConfig(t, file, "listen = ['127.0.0.1:8080']\nsession-socket = '/run/user/1000/from-config.sock'\nshell = '/bin/sh'\n")
+	parsed, _, err := ParseConfig([]string{"--config", file})
+	if err != nil || parsed.SessionSocket != "/run/user/1000/from-config.sock" || !reflect.DeepEqual(parsed.DaemonOptions, []string{"shell"}) {
+		t.Fatalf("config: %+v, %v", parsed, err)
+	}
+	parsed, _, err = ParseConfig([]string{"--config", file, "--session-socket", "/run/user/1000/from-cli.sock"})
+	if err != nil || parsed.SessionSocket != "/run/user/1000/from-cli.sock" {
+		t.Fatalf("CLI override: %+v, %v", parsed, err)
+	}
+	putConfig(t, file, "listen = ['127.0.0.1:8080']\nsession-socket = ''\n")
+	if _, _, err := ParseConfig([]string{"--config", file}); err == nil {
+		t.Fatal("empty socket path accepted")
+	}
+}

@@ -13,6 +13,7 @@ import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
+import { webTestDaemon } from "./test-daemon.mjs";
 import os from "node:os";
 import path from "node:path";
 import { Cdp, freePort, terminateProcess, waitFor } from "./test-support.mjs";
@@ -27,6 +28,7 @@ const reportBody = "served report\n";
 const shareDir = await mkdtemp(path.join(os.tmpdir(), "bcwebmux-share-"));
 const profile = await mkdtemp(path.join(os.tmpdir(), "bcwebmux-file-service-"));
 let server;
+let daemon;
 let serverError;
 let serverLog = "";
 let chromium;
@@ -74,6 +76,8 @@ try {
   const serverServiceURL = `http://{host}:${filePort}{path}?v`;
   const reportUri = `file://${shareDir}/${reportPath}`;
 
+  daemon = webTestDaemon(serverPath, profile, "/bin/sh");
+  await daemon.start();
   server = spawn(
     serverPath,
     [
@@ -86,14 +90,14 @@ try {
       `127.0.0.1:${serverPort}`,
       "--origin",
       base,
-      "--shell",
-      "/bin/sh",
+      "--session-socket",
+      daemon.socket,
       "--file-service-url",
       serverServiceURL,
       "--file-service-prefix",
       "/",
     ],
-    { stdio: ["ignore", "pipe", "pipe"], detached: true },
+    { stdio: ["ignore", "pipe", "pipe"], detached: true, env: daemon.env },
   );
   server.detachedGroup = true;
   server.stdout.on("data", (data) => {
@@ -472,6 +476,7 @@ async function cleanup() {
       } catch {}
       await terminateProcess(chromium);
       await terminateProcess(server);
+      await daemon?.stop();
       await new Promise((resolve) => fileServer?.close(resolve) ?? resolve());
       await rm(profile, { recursive: true, force: true });
       await rm(shareDir, { recursive: true, force: true });

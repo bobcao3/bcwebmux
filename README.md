@@ -10,10 +10,12 @@ rendering, and a reusable terminal frontend.
 # From the repository root
 npm install
 cd app-bcwebmux && zig build -Doptimize=small
+./zig-out/bin/bcwebmux-sessiond &
 ./zig-out/bin/bcwebmux-server --origin http://localhost:8080
 ```
 
-Open http://localhost:8080. Needs Linux, Zig 0.17.0, Node/npm,
+The session daemon must stay running when the web server restarts. Open
+http://localhost:8080. Needs Linux, Zig 0.17.0, Node/npm,
 network. Factorless servers are open to the network:
 enroll before exposing ([application guide](app-bcwebmux/README.md)).
 

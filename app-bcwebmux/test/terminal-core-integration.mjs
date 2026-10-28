@@ -40,33 +40,52 @@ for (const name of ["terminal-core-csi.snapshot", "terminal-core-utf8.snapshot"]
 const serverPort = await freePort();
 const debugPort = await freePort();
 const profile = await mkdtemp(path.join(os.tmpdir(), "bcwebmux-terminal-core-integration-"));
-const server = spawn(
-  serverPath,
-  [
-    "--config",
-    "/dev/null",
-    "--auth=false",
-    "--web-root",
-    webRoot,
-    "--listen",
-    `127.0.0.1:${serverPort}`,
-  ],
-  {
-    stdio: ["ignore", "pipe", "pipe"],
-  },
-);
+let server;
+let daemon;
 let serverLog = "";
-server.stdout.on("data", (data) => {
-  serverLog += data;
-});
-server.stderr.on("data", (data) => {
-  serverLog += data;
-});
 let chromium;
 let pageCdp;
 let browserCdp;
 
 try {
+  const socket = path.join(profile, "session.sock");
+  daemon = spawn(
+    path.join(path.dirname(path.resolve(serverPath)), "bcwebmux-sessiond"),
+    ["--socket", socket],
+    { stdio: ["ignore", "pipe", "pipe"], detached: true },
+  );
+  daemon.detachedGroup = true;
+  for (const stream of [daemon.stdout, daemon.stderr])
+    stream.on("data", (data) => {
+      serverLog += data;
+    });
+  await waitFor(
+    async () => (await stat(socket).catch(() => null))?.isSocket(),
+    10000,
+    "session daemon did not start",
+  );
+  server = spawn(
+    serverPath,
+    [
+      "--config",
+      "/dev/null",
+      "--auth=false",
+      "--web-root",
+      webRoot,
+      "--listen",
+      `127.0.0.1:${serverPort}`,
+      "--session-socket",
+      socket,
+    ],
+    {
+      stdio: ["ignore", "pipe", "pipe"],
+      env: { ...process.env, XDG_STATE_HOME: profile },
+    },
+  );
+  for (const stream of [server.stdout, server.stderr])
+    stream.on("data", (data) => {
+      serverLog += data;
+    });
   await waitFor(
     async () => {
       const response = await fetch(
@@ -147,7 +166,7 @@ try {
       serverLog += `\nscreenshot: ${pathName}`;
     }
     throw new Error(
-      `${response.exceptionDetails.exception?.description || "terminal core integration failed"}\n${serverLog}`,
+      `${response.exceptionDetails.exception?.description || "terminal core integration failed"}\n${serverLog}\nChromium:\n${chromiumLog}`,
     );
   }
   const result = response.result.value;
@@ -162,10 +181,12 @@ try {
   assert.equal(result.coreCount, 2);
   const coreA = result.partitions.coreA;
   const coreB = result.partitions.coreB;
-  assert.ok(coreA.base + coreA.capacity <= coreB.base || coreB.base + coreB.capacity <= coreA.base);
+  assert.equal(coreA.base, coreB.base);
+  assert.ok(result.partitions.active === "coreA" || result.partitions.active === "coreB");
   assert.equal(result.partitions.temporary.base, result.partitions.replacement.base);
-  assert.equal(result.atlas.requiredSlots, coreA.capacity + coreB.capacity);
-  assert.ok(result.atlas.capacity >= result.atlas.requiredSlots);
+  assert.equal(result.atlas.requiredSlots, result.partitions[result.partitions.active].capacity);
+  assert.ok(result.atlas.logicalCapacity >= result.atlas.requiredSlots);
+  assert.ok(result.atlas.capacity >= result.atlas.nextSlot);
   assert.ok(result.atlas.cacheHits > 0);
   assert.ok(result.coreSwitches >= 14);
   assert.ok(result.gpuFrames >= result.coreSwitches);
@@ -197,5 +218,6 @@ try {
   browserCdp?.close();
   await terminateProcess(chromium);
   await terminateProcess(server);
+  await terminateProcess(daemon);
   await rm(profile, { recursive: true, force: true });
 }

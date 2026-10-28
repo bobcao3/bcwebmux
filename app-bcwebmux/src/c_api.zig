@@ -19,14 +19,14 @@ const CHttpResponse = c.bcwebmux_http_response;
 const CSocketOptions = c.bcwebmux_socket_options;
 const CMessage = c.bcwebmux_message;
 
-const Engine = struct {
+pub const Engine = struct {
     threaded: std.Io.Threaded,
     io: std.Io,
     registry: Registry,
     expected_origin: []u8,
     socket_count: usize = 0,
 };
-const Socket = struct {
+pub const Socket = struct {
     engine: *Engine,
     queue: SessionSocket.MessageQueue,
     session: SessionSocket,
@@ -63,7 +63,7 @@ fn terminateSocket(socket: *Socket) void {
     socket.closed = true;
 }
 
-export fn bcwebmux_engine_open(config: ?*const CEngineConfig, out: ?*?*Engine) CStatus {
+pub export fn bcwebmux_engine_open(config: ?*const CEngineConfig, out: ?*?*Engine) CStatus {
     const output = out orelse return c.BCWMUX_INVALID_ARGUMENT;
     output.* = null;
     output.* = initEngine(config orelse return 1) catch |err| return mapError(err);
@@ -106,7 +106,7 @@ fn initEngine(config: *const CEngineConfig) !*Engine {
     return engine;
 }
 
-export fn bcwebmux_engine_close(engine: ?*Engine) CStatus {
+pub export fn bcwebmux_engine_close(engine: ?*Engine) CStatus {
     const value = engine orelse return c.BCWMUX_INVALID_ARGUMENT;
     if (value.socket_count != 0) return c.BCWMUX_BUSY;
     value.registry.deinit();
@@ -116,7 +116,7 @@ export fn bcwebmux_engine_close(engine: ?*Engine) CStatus {
     return c.BCWMUX_OK;
 }
 
-export fn bcwebmux_http_request(engine: ?*Engine, request: ?*const CHttpRequest, response: ?*CHttpResponse) CStatus {
+pub export fn bcwebmux_http_request(engine: ?*Engine, request: ?*const CHttpRequest, response: ?*CHttpResponse) CStatus {
     const output = response orelse return c.BCWMUX_INVALID_ARGUMENT;
     output.* = std.mem.zeroes(CHttpResponse);
     const value = engine orelse return c.BCWMUX_INVALID_ARGUMENT;
@@ -145,7 +145,7 @@ export fn bcwebmux_http_request(engine: ?*Engine, request: ?*const CHttpRequest,
     return c.BCWMUX_OK;
 }
 
-export fn bcwebmux_http_response_free(response: ?*CHttpResponse) void {
+pub export fn bcwebmux_http_response_free(response: ?*CHttpResponse) void {
     const value = response orelse return;
     if (value.body_len != 0) allocator.free(value.body[0..value.body_len]);
     if (value.content_type_len != 0) allocator.free(@as([*]u8, @ptrCast(value.content_type))[0..value.content_type_len]);
@@ -153,7 +153,7 @@ export fn bcwebmux_http_response_free(response: ?*CHttpResponse) void {
     value.* = std.mem.zeroes(CHttpResponse);
 }
 
-export fn bcwebmux_socket_open(engine: ?*Engine, options: ?*const CSocketOptions, out: ?*?*Socket) CStatus {
+pub export fn bcwebmux_socket_open(engine: ?*Engine, options: ?*const CSocketOptions, out: ?*?*Socket) CStatus {
     if (out == null) return c.BCWMUX_INVALID_ARGUMENT;
     out.?.* = null;
     const value = engine orelse return c.BCWMUX_INVALID_ARGUMENT;
@@ -174,7 +174,7 @@ export fn bcwebmux_socket_open(engine: ?*Engine, options: ?*const CSocketOptions
     return c.BCWMUX_OK;
 }
 
-export fn bcwebmux_socket_receive_binary(socket: ?*Socket, data: ?[*]const u8, length: usize) CStatus {
+pub export fn bcwebmux_socket_receive_binary(socket: ?*Socket, data: ?[*]const u8, length: usize) CStatus {
     const value = socket orelse return c.BCWMUX_INVALID_ARGUMENT;
     if (value.closed) return c.BCWMUX_CLOSED;
     if (length != 0 and data == null) return c.BCWMUX_INVALID_ARGUMENT;
@@ -185,7 +185,7 @@ export fn bcwebmux_socket_receive_binary(socket: ?*Socket, data: ?[*]const u8, l
     return c.BCWMUX_OK;
 }
 
-export fn bcwebmux_socket_set_transport_managed(socket: ?*Socket, managed: u8) CStatus {
+pub export fn bcwebmux_socket_set_transport_managed(socket: ?*Socket, managed: u8) CStatus {
     const value = socket orelse return c.BCWMUX_INVALID_ARGUMENT;
     if (value.closed) return c.BCWMUX_CLOSED;
     if (managed > 1 or value.session.negotiated) return c.BCWMUX_INVALID_ARGUMENT;
@@ -193,7 +193,7 @@ export fn bcwebmux_socket_set_transport_managed(socket: ?*Socket, managed: u8) C
     return c.BCWMUX_OK;
 }
 
-export fn bcwebmux_socket_tick(socket: ?*Socket) CStatus {
+pub export fn bcwebmux_socket_tick(socket: ?*Socket) CStatus {
     const value = socket orelse return c.BCWMUX_INVALID_ARGUMENT;
     if (value.closed) return c.BCWMUX_CLOSED;
     value.session.tick() catch |err| {
@@ -205,7 +205,7 @@ export fn bcwebmux_socket_tick(socket: ?*Socket) CStatus {
     return c.BCWMUX_OK;
 }
 
-export fn bcwebmux_socket_drain(socket: ?*Socket, output: ?*CMessage) CStatus {
+pub export fn bcwebmux_socket_drain(socket: ?*Socket, output: ?*CMessage) CStatus {
     const message = output orelse return c.BCWMUX_INVALID_ARGUMENT;
     message.* = std.mem.zeroes(CMessage);
     const value = socket orelse return c.BCWMUX_INVALID_ARGUMENT;
@@ -218,7 +218,7 @@ export fn bcwebmux_socket_drain(socket: ?*Socket, output: ?*CMessage) CStatus {
     return c.BCWMUX_WOULD_BLOCK;
 }
 
-export fn bcwebmux_socket_close(socket: ?*Socket) CStatus {
+pub export fn bcwebmux_socket_close(socket: ?*Socket) CStatus {
     const value = socket orelse return c.BCWMUX_INVALID_ARGUMENT;
     terminateSocket(value);
     value.engine.socket_count -= 1;
@@ -227,7 +227,7 @@ export fn bcwebmux_socket_close(socket: ?*Socket) CStatus {
     return c.BCWMUX_OK;
 }
 
-export fn bcwebmux_message_free(message: ?*CMessage) void {
+pub export fn bcwebmux_message_free(message: ?*CMessage) void {
     const value = message orelse return;
     if (value.len != 0) allocator.free(value.data[0..value.len]);
     value.* = std.mem.zeroes(CMessage);

@@ -4,6 +4,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { freePort, localTls, terminateProcess, waitFor as poll } from "./test-support.mjs";
+import { startSessionDaemon } from "./test-daemon.mjs";
 const waitFor = (check, timeout, message) => poll(check, timeout, message, 25);
 
 const serverPath = process.argv[2];
@@ -11,6 +12,7 @@ if (!serverPath) throw new Error("usage: node test/session-api-integration.mjs S
 
 const port = await freePort();
 const tls = await localTls();
+const daemon = await startSessionDaemon(serverPath, { args: ["--max-sessions", "2"] });
 const base = `https://127.0.0.1:${port}`;
 const server = spawn(
   serverPath,
@@ -26,11 +28,12 @@ const server = spawn(
     `127.0.0.1:${port}`,
     "--origin",
     base,
-    "--max-sessions",
-    "2",
+    "--session-socket",
+    daemon.socket,
   ],
   {
     stdio: ["ignore", "pipe", "pipe"],
+    env: daemon.env,
   },
 );
 let logs = "";
@@ -131,6 +134,16 @@ try {
   });
   assert.equal(renameResponse.status, 200);
   assert.equal((await renameResponse.json()).name, "Renamed");
+  for (const [index, name] of ["x".repeat(81), "é".repeat(41), "bad\u0007name"].entries()) {
+    const invalid = await fetch(`${base}/api/sessions/${first.id}`, {
+      method: "PATCH",
+      headers: mutationHeaders(`invalid-name-${index}`, true),
+      body: JSON.stringify({ name }),
+    });
+    assert.equal(invalid.status, 422, `invalid name ${index}`);
+  }
+  const afterInvalid = await (await fetch(`${base}/api/sessions/${first.id}`)).json();
+  assert.equal(afterInvalid.name, "Renamed");
 
   const responses = await Promise.all([
     createSession("create-second", { profile: "shell", name: "Second" }),
@@ -174,6 +187,11 @@ try {
   assert.equal(deleted.status, 204);
   assertSecurity(deleted, false);
   assert.equal((await fetch(`${base}/api/sessions/${first.id}`)).status, 404);
+  assert.equal((await createSession("create-first", createBody)).status, 404);
+  assert.equal(
+    (await createSession("create-first", { profile: "shell", name: "Different" })).status,
+    409,
+  );
 
   const replacementResponse = await createSession("create-replacement", {
     profile: "shell",
@@ -203,6 +221,7 @@ try {
   assert.equal(oversized.status, 413);
 } finally {
   await terminateProcess(server);
+  await daemon.dispose();
   await tls.dispose();
 }
 
@@ -232,6 +251,7 @@ function createSession(key, body, origin = base) {
 async function verifyNaturalExit() {
   const port = await freePort();
   const tls = await localTls();
+  const daemon = await startSessionDaemon(serverPath, { args: ["--shell", "/bin/true"] });
   const localBase = `https://127.0.0.1:${port}`;
   const secondServer = spawn(
     serverPath,
@@ -247,11 +267,12 @@ async function verifyNaturalExit() {
       `127.0.0.1:${port}`,
       "--origin",
       localBase,
-      "--shell",
-      "/bin/true",
+      "--session-socket",
+      daemon.socket,
     ],
     {
       stdio: ["ignore", "pipe", "pipe"],
+      env: daemon.env,
     },
   );
 
@@ -305,6 +326,7 @@ async function verifyNaturalExit() {
     assert.equal(deleteResponse.status, 204);
   } finally {
     await terminateProcess(secondServer);
+    await daemon.dispose();
     await tls.dispose();
   }
 }

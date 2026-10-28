@@ -14,6 +14,7 @@
 
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { webTestDaemon } from "./test-daemon.mjs";
 import { createHmac } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import os from "node:os";
@@ -38,6 +39,7 @@ const outputDir = path.resolve(
 );
 
 const directory = await mkdtemp(path.join(os.tmpdir(), "bcwebmux-auth-e2e-"));
+const authEnv = { ...process.env, XDG_STATE_HOME: path.join(directory, "state") };
 const profile = path.join(directory, "profile");
 const authFile = path.join(directory, "auth.json");
 const port = await freePort();
@@ -47,6 +49,7 @@ const listen = ["--listen", `127.0.0.1:${port}`, "--listen", `[::1]:${port}`];
 const account = "bob@bcwebmux";
 let enrolling;
 let serving;
+let daemon;
 let chromium;
 let page;
 let browser;
@@ -169,7 +172,7 @@ async function enrolTOTP() {
       "--no-qr",
       "--rotate",
     ],
-    { stdio: ["pipe", "pipe", "pipe"] },
+    { stdio: ["pipe", "pipe", "pipe"], env: authEnv },
   );
   captureLogs(enrolling, "totp");
   const exited = new Promise((resolve) => enrolling.once("exit", (code) => resolve(code)));
@@ -296,6 +299,8 @@ try {
   await browser.call("Browser.grantPermissions", { origin, permissions: ["notifications"] });
 
   // 3. The application server on the same state file.
+  daemon = webTestDaemon(serverPath, directory, "/bin/sh");
+  await daemon.start();
   serving = spawn(
     serverPath,
     [
@@ -308,10 +313,10 @@ try {
       origin,
       "--web-root",
       webRoot,
-      "--shell",
-      "/bin/sh",
+      "--session-socket",
+      daemon.socket,
     ],
-    { stdio: ["ignore", "pipe", "pipe"], detached: true },
+    { stdio: ["ignore", "pipe", "pipe"], detached: true, env: daemon.env },
   );
   serving.detachedGroup = true;
   captureLogs(serving, "server");
@@ -583,6 +588,7 @@ try {
     terminateProcess(enrolling),
     terminateProcess(serving),
   ]);
+  await daemon?.stop();
   if (!process.env.BCWEBMUX_KEEP_AUTH_STATE) await rm(directory, { recursive: true, force: true });
   if (process.exitCode) console.error(log.slice(-8192));
 }

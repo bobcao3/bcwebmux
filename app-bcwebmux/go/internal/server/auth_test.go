@@ -732,6 +732,8 @@ func TestAuthCodeBootstrapThenBrowserKeyEnrollment(t *testing.T) {
 	}
 	for _, request := range []struct{ method, path string }{
 		{http.MethodGet, "/api/server"},
+		{http.MethodGet, "/api/session-layout"},
+		{http.MethodPost, "/api/session-layout"},
 		{http.MethodGet, "/api/paste-files?type=image/png"},
 		{http.MethodPost, "/api/paste-files?name=bcwebmux-paste-0123456789abcdef0123456789abcdef.png"},
 	} {

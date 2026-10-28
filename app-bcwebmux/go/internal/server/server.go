@@ -26,6 +26,8 @@ import (
 
 type Server struct {
 	engine     native.Engine
+	layout     *sessionLayout
+	names      *sessionNames
 	assets     *assetServer
 	listeners  []net.Listener
 	udps       []net.PacketConn
@@ -154,6 +156,19 @@ func New(cfg Config) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
+	layout, err := newSessionLayout(cfg.MetadataFile)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if !success {
+			layout.unlock()
+		}
+	}()
+	names, err := newSessionNames(cfg.MetadataFile)
+	if err != nil {
+		return nil, fmt.Errorf("load session names: %w", err)
+	}
 
 	httpServer := &http.Server{
 		Handler:           nil, // filled below after Server exists
@@ -164,7 +179,7 @@ func New(cfg Config) (*Server, error) {
 		MaxHeaderBytes:    MaxHeaderBytes,
 	}
 	result := &Server{
-		engine: cfg.Engine, assets: assets, listener: listener,
+		engine: cfg.Engine, layout: layout, names: names, assets: assets, listener: listener,
 		http: httpServer, origin: origin, tls: tlsEnabled,
 		listeners: listeners, udps: udps, origins: make(map[string]bool),
 		logger:      cfg.Logger,
@@ -377,6 +392,7 @@ func (s *Server) Shutdown(ctx context.Context) error {
 				_ = udp.Close()
 			}
 			s.requests.Wait()
+			s.layout.unlock()
 			s.shutdownErr = s.engine.Close()
 			close(s.shutdownDone)
 		}()
@@ -426,6 +442,10 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.serveClientConfig(w, r)
 		return
 	}
+	if r.URL.Path == "/api/session-layout" {
+		s.serveSessionLayout(w, r)
+		return
+	}
 	if r.URL.Path == "/api/paste-files" {
 		s.servePasteFile(w, r)
 		return
@@ -465,10 +485,17 @@ func (s *Server) serveREST(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	response, err := s.engine.REST(native.RESTRequest{
+	request := native.RESTRequest{
 		Method: r.Method, Target: r.URL.RequestURI(), Origin: r.Header.Get("Origin"),
 		ContentType: r.Header.Get("Content-Type"), IdempotencyKey: r.Header.Get("Idempotency-Key"), Body: body,
-	})
+	}
+	var response native.RESTResponse
+	var err error
+	if r.URL.Path == "/api/sessions" || strings.HasPrefix(r.URL.Path, "/api/sessions/") {
+		response, err = s.sessionNamesREST(request, r.URL.Path)
+	} else {
+		response, err = s.engine.REST(request)
+	}
 	if err != nil {
 		s.logger.Error("native REST request failed", "error", err, "method", r.Method, "path", r.URL.Path)
 		writeJSONError(w, http.StatusInternalServerError, "internal", "session operation failed")

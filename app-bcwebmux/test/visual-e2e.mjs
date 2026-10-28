@@ -7,6 +7,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
+import { webTestDaemon } from "./test-daemon.mjs";
 import { Cdp, freePort, localTls, terminateProcess, waitFor } from "./test-support.mjs";
 import { compareScreenshot } from "./visual-compare.mjs";
 
@@ -76,7 +77,7 @@ async function run(backend, device) {
   const profile = await mkdtemp(path.join(os.tmpdir(), "bcwebmux-visual-"));
   const port = await freePort();
   const debugPort = await freePort();
-  let server, chromium, page, browser;
+  let server, daemon, chromium, page, browser;
   const tls = await localTls();
   let log = "";
   let processError;
@@ -103,6 +104,8 @@ async function run(backend, device) {
         rm(path.join(outputDir, `${prefix}-failure.${extension}`), { force: true }),
       ),
     );
+    daemon = webTestDaemon(serverPath, profile, "/bin/sh");
+    await daemon.start();
     server = spawn(
       serverPath,
       [
@@ -115,8 +118,8 @@ async function run(backend, device) {
         tls.key,
         "--origin",
         `https://127.0.0.1:${port}`,
-        "--shell",
-        "/bin/sh",
+        "--session-socket",
+        daemon.socket,
         "--web-root",
         webRoot,
         "--listen",
@@ -124,7 +127,7 @@ async function run(backend, device) {
       ],
       {
         stdio: ["ignore", "pipe", "pipe"],
-        env: { ...process.env, GODEBUG: "http2server=0" },
+        env: { ...daemon.env, GODEBUG: "http2server=0" },
         detached: true,
       },
     );
@@ -458,6 +461,7 @@ async function run(backend, device) {
     await browser?.close();
     await terminateProcess(chromium);
     await terminateProcess(server);
+    await daemon?.stop();
     await rm(profile, { recursive: true, force: true });
     await tls.dispose();
   }

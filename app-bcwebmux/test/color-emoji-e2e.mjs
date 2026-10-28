@@ -14,6 +14,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
 import { Cdp, freePort, terminateProcess, waitFor } from "./test-support.mjs";
+import { startDaemon } from "./test-daemon.mjs";
 
 const [serverPath, webRoot] = process.argv.slice(2);
 assert.ok(serverPath && webRoot, "usage: color-emoji-e2e.mjs SERVER WEB_ROOT");
@@ -34,23 +35,28 @@ async function run(backend) {
   const debugPort = await freePort();
   const pageQuery = `?gpu-test=1&backend=${backend}`;
   let server;
+  let daemon;
   let chromium;
   let pageCdp;
   let browserCdp;
   let serverLog = "";
   try {
+    const session = await startDaemon(serverPath, profile);
+    daemon = session.child;
     server = spawn(
       serverPath,
       [
         "--config",
         "/dev/null",
         "--auth=false",
+        "--session-socket",
+        session.socket,
         "--web-root",
         webRoot,
         "--listen",
         `127.0.0.1:${serverPort}`,
       ],
-      { stdio: ["ignore", "pipe", "pipe"] },
+      { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, XDG_STATE_HOME: profile } },
     );
     server.stdout.on("data", (chunk) => {
       serverLog += chunk;
@@ -303,6 +309,7 @@ async function run(backend) {
     } catch {}
     await terminateProcess(chromium).catch(() => {});
     await terminateProcess(server).catch(() => {});
+    await terminateProcess(daemon).catch(() => {});
     await rm(profile, { recursive: true, force: true });
   }
 }

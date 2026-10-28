@@ -603,6 +603,7 @@ const sessionController = new SessionController({
 let activeAttachment = null;
 const drawer = new SessionDrawer({
   controller: sessionController,
+  layoutApi: sessionApi,
   onError: (error) => showClientError(error, "session error"),
   elements: {
     drawer: document.querySelector("#session-drawer"),

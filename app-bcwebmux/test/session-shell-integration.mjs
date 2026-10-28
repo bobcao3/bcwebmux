@@ -5,6 +5,7 @@ import { mkdtemp, mkdir, chmod, writeFile, readFile, readlink, rm } from "node:f
 import { tmpdir, userInfo } from "node:os";
 import { join, resolve } from "node:path";
 import { freePort, terminateProcess, waitFor } from "./test-support.mjs";
+import { startSessionDaemon } from "./test-daemon.mjs";
 
 if (!process.argv[2]) throw new Error("usage: node test/session-shell-integration.mjs SERVER");
 const serverPath = resolve(process.argv[2]);
@@ -51,6 +52,15 @@ try {
     const env = { ...process.env };
     if (value === undefined) delete env.HOME;
     else env.HOME = value;
+    const daemon = await startSessionDaemon(serverPath, {
+      cwd: outside,
+      env,
+      args: [
+        "--shell",
+        shell,
+        ...(name === "explicit" ? ["--term", "screen-256color", "--kitty-graphics", "false"] : []),
+      ],
+    });
     const server = spawn(
       serverPath,
       [
@@ -61,13 +71,12 @@ try {
         `127.0.0.1:${port}`,
         "--origin",
         base,
-        "--shell",
-        shell,
-        ...(name === "explicit" ? ["--term", "screen-256color", "--kitty-graphics=false"] : []),
+        "--session-socket",
+        daemon.socket,
       ],
       {
         cwd: outside,
-        env,
+        env: daemon.env,
         stdio: ["ignore", "pipe", "pipe"],
       },
     );
@@ -142,6 +151,7 @@ try {
       }
     } finally {
       await terminateProcess(server);
+      await daemon.dispose();
     }
   }
   console.log("session shell integration: passed");

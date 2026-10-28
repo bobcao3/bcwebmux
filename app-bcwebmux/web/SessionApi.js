@@ -56,6 +56,15 @@ export class SessionApi {
   list() {
     return this.#request("GET", "/api/sessions");
   }
+  layout(after, signal) {
+    const query = after
+      ? `?after=${encodeURIComponent(after.revision)}&epoch=${encodeURIComponent(after.epoch)}`
+      : "";
+    return this.#request("GET", `/api/session-layout${query}`, { signal });
+  }
+  updateLayout(body, signal) {
+    return this.#request("POST", "/api/session-layout", { body, signal });
+  }
   get(id) {
     return this.#request("GET", `/api/sessions/${encodeURIComponent(id)}`);
   }
@@ -98,6 +107,7 @@ export class SessionApi {
         credentials: "same-origin",
         mode: "same-origin",
         cache: "no-store",
+        signal: options.signal,
       });
     } catch (error) {
       throw new SessionApiError(error?.message || "session API request failed", { details: error });
