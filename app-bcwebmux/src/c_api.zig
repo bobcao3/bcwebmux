@@ -50,7 +50,7 @@ fn mapError(err: anyerror) CStatus {
         error.MessageTooLarge, error.FrameTooLarge, error.BodyTooLarge, error.InputTooLarge => c.BCWMUX_TOO_LARGE,
         error.SessionNotFound, error.NotApi => c.BCWMUX_NOT_FOUND,
         error.InvalidArgument, error.InvalidIdempotencyKey, error.InvalidLimits, error.SessionLimitTooLarge => c.BCWMUX_INVALID_ARGUMENT,
-        error.InvalidFrame, error.HelloRequired, error.InvalidClientFrame, error.ProtocolError, error.InvalidHello, error.InvalidConnectionSequence, error.InvalidAck, error.InvalidClaim, error.InvalidCredit, error.InvalidDetach, error.InvalidInput, error.InvalidPing, error.InvalidPong, error.InvalidResize, error.IncompatibleTerminalAbi, error.UnexpectedWebSocketMessage, error.BatchLimitTooSmall => c.BCWMUX_PROTOCOL_ERROR,
+        error.InvalidFrame, error.HelloRequired, error.InvalidClientFrame, error.ProtocolError, error.InvalidHello, error.InvalidAck, error.InvalidClaim, error.InvalidCredit, error.InvalidDetach, error.InvalidInput, error.InvalidPing, error.InvalidPong, error.InvalidResize, error.IncompatibleTerminalAbi, error.UnexpectedWebSocketMessage, error.BatchLimitTooSmall => c.BCWMUX_PROTOCOL_ERROR,
         error.NotReady => c.BCWMUX_NOT_READY,
         else => c.BCWMUX_INTERNAL,
     };
@@ -329,11 +329,11 @@ test "transport managed heartbeat is observational and standalone policy remains
     managed.?.session.last_ping_ms -= manifest.heartbeat_interval_ms + 1;
     try std.testing.expectEqual(@as(CStatus, c.BCWMUX_OK), bcwebmux_socket_tick(managed));
     try std.testing.expectEqual(@as(CStatus, c.BCWMUX_WOULD_BLOCK), bcwebmux_socket_drain(managed, &message));
-    var wire: [protocol.header_length + 8]u8 = undefined;
-    const pong = try protocol.encodeFrame(.{ .frame_type = .pong, .connection_sequence = 1, .payload = &pong_payload }, &wire);
+    var wire: [protocol.headerLengthForType(.pong) + 8]u8 = undefined;
+    const pong = try protocol.encodeFrame(.{ .frame_type = .pong, .payload = &pong_payload }, &wire);
     try std.testing.expectEqual(@as(CStatus, c.BCWMUX_OK), bcwebmux_socket_receive_binary(managed, pong.ptr, pong.len));
     // Duplicate/old responses remain structurally valid and are not fatal.
-    const old_pong = try protocol.encodeFrame(.{ .frame_type = .pong, .connection_sequence = 2, .payload = &pong_payload }, &wire);
+    const old_pong = try protocol.encodeFrame(.{ .frame_type = .pong, .payload = &pong_payload }, &wire);
     try std.testing.expectEqual(@as(CStatus, c.BCWMUX_OK), bcwebmux_socket_receive_binary(managed, old_pong.ptr, old_pong.len));
 
     var standalone: ?*Socket = null;

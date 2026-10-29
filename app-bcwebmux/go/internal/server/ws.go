@@ -276,28 +276,57 @@ func (c *socketConn) logFrame(direction string, data []byte) {
 		c.outMessages.Add(1)
 		c.outBytes.Add(uint64(len(data)))
 	}
-	if len(data) < 64 || binary.LittleEndian.Uint32(data[0:4]) != 0x53574342 {
+	if len(data) < 2 || data[0] < 1 || data[0] > 24 {
 		c.log().Debug("websocket application frame", "direction", direction, "bytes", len(data), "valid_header", false)
 		return
 	}
-	frameType := data[4]
+	frameType := data[0]
+	if frameType != 20 && frameType != 21 && !c.log().Enabled(context.Background(), slog.LevelDebug) {
+		return
+	}
+	headerLength := 2
+	attachmentOffset, requestOffset, sessionOffset := 0, 0, 0
+	switch frameType {
+	case 1, 2, 4, 23, 24:
+	default:
+		attachmentOffset = headerLength
+		headerLength += 16
+	}
+	switch frameType {
+	case 1, 2, 3, 5, 6, 7, 12, 16, 17, 18, 19, 20, 21:
+		requestOffset = headerLength
+		headerLength += 8
+	}
+	if frameType == 5 {
+		sessionOffset = headerLength
+		headerLength += 16
+	}
+	if len(data) < headerLength {
+		c.log().Debug("websocket application frame", "direction", direction, "bytes", len(data), "valid_header", false)
+		return
+	}
 	args := []any{
 		"direction", direction, "frame_type", frameTypeName(frameType), "bytes", len(data),
-		"sequence", binary.LittleEndian.Uint64(data[16:24]),
-		"request_id", binary.LittleEndian.Uint64(data[24:32]),
-		"attachment_id", binary.LittleEndian.Uint64(data[32:40]),
-		"attachment_epoch", binary.LittleEndian.Uint64(data[40:48]),
 	}
-	if session := data[48:64]; !allZero(session) {
-		args = append(args, "session_id", hex.EncodeToString(session))
+	if attachmentOffset != 0 {
+		id := slices.Clone(data[attachmentOffset : attachmentOffset+16])
+		slices.Reverse(id)
+		args = append(args, "attachment_id", hex.EncodeToString(id))
 	}
-	if (frameType == 20 || frameType == 21) && len(data) >= 88 {
-		geometry := data[80:88]
+	if requestOffset != 0 {
+		args = append(args, "request_id", binary.LittleEndian.Uint64(data[requestOffset:]))
+	}
+	if sessionOffset != 0 {
+		args = append(args, "session_id", hex.EncodeToString(data[sessionOffset:headerLength]))
+	}
+	if (frameType == 20 || frameType == 21) && len(data) >= headerLength+24 {
+		payload := data[headerLength:]
+		geometry := payload[16:24]
 		stage := "queued"
 		if frameType == 20 {
 			stage = "requested"
 		} else {
-			args = append(args, "operation_id", binary.LittleEndian.Uint64(data[72:80]))
+			args = append(args, "operation_id", binary.LittleEndian.Uint64(payload[8:16]))
 		}
 		args = append(args,
 			"cols", binary.LittleEndian.Uint16(geometry[0:2]),
@@ -309,15 +338,6 @@ func (c *socketConn) logFrame(direction string, data []byte) {
 		return
 	}
 	c.log().Debug("websocket application frame", args...)
-}
-
-func allZero(data []byte) bool {
-	for _, value := range data {
-		if value != 0 {
-			return false
-		}
-	}
-	return true
 }
 
 // Byte accounting includes the in-flight consumer, plus a bounded count so tiny

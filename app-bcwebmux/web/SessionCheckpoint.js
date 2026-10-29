@@ -73,7 +73,7 @@ function cancellationSignals(record) {
 export async function ensureShadow(terminal, records, record, onData) {
   if (!terminal || record.previousCore) return true;
   const key = record.attachmentId.toString();
-  const epoch = record.epoch;
+  const accepted = record.accepted;
   const attempt = record.attempt;
   const transaction = record.transaction;
   const originalCore = record.core;
@@ -91,7 +91,7 @@ export async function ensureShadow(terminal, records, record, onData) {
     record.transaction !== transaction ||
     records.get(key) !== record ||
     record.attachmentId.toString() !== key ||
-    record.epoch !== epoch ||
+    record.accepted !== accepted ||
     record.core !== originalCore
   ) {
     shadow.dispose();
@@ -186,7 +186,7 @@ export async function finishCheckpoint(record, frame) {
   ) {
     throw new Error("incomplete checkpoint");
   }
-  const epoch = record.epoch;
+  const accepted = record.accepted;
   const attempt = record.attempt;
   const transaction = record.transaction;
   const checkpoint = record.checkpoint;
@@ -208,7 +208,7 @@ export async function finishCheckpoint(record, frame) {
     attempt?.retired ||
     record.attempt !== attempt ||
     record.transaction !== transaction ||
-    record.epoch !== epoch ||
+    record.accepted !== accepted ||
     record.checkpoint !== checkpoint
   )
     return null;

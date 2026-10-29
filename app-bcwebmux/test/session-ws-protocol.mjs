@@ -15,6 +15,7 @@ import {
   waitFor as poll,
   delay as wait,
 } from "./test-support.mjs";
+import { readId, writeId } from "./protocol-fixtures.mjs";
 const waitFor = (check, timeout, message) => poll(check, timeout, message, 25);
 const execFileAsync = promisify(execFile),
   {
@@ -23,8 +24,9 @@ const execFileAsync = promisify(execFile),
     COMPRESSED_FLAG,
     ZERO_SESSION_ID,
     FrameType,
-    encodeFrame,
-    decodeFrame,
+    encodeClientFrame,
+    decodeServerFrame,
+    headerLength,
     readUint16LE,
     readUint32LE,
     readUint64LE,
@@ -83,7 +85,7 @@ function uuidBytes(text) {
   return Uint8Array.from(hex.match(/../g), (pair) => Number.parseInt(pair, 16));
 }
 function attachmentText(id) {
-  return id.toString(16).padStart(16, "0");
+  return id.toString(16).padStart(32, "0");
 }
 function geometry(bytes, offset = 0) {
   return {
@@ -100,8 +102,6 @@ class RawClient {
     this.name = name;
     this.clientId = randomBytes(16);
     this.socket = null;
-    this.sendSequence = 0n;
-    this.serverSequence = 0n;
     this.requestId = 1n;
     this.queue = [];
     this.waiters = [];
@@ -122,14 +122,8 @@ class RawClient {
             event.data instanceof ArrayBuffer
               ? new Uint8Array(event.data)
               : new Uint8Array(event.data),
-          frame = decodeFrame(bytes);
+          frame = decodeServerFrame(bytes);
         frame.frameLength = bytes.byteLength;
-        assert.equal(
-          frame.connectionSequence,
-          this.serverSequence + 1n,
-          `${this.name} server sequence`,
-        );
-        this.serverSequence = frame.connectionSequence;
         if (frame.type === FrameType.PING) {
           assert.equal(frame.payload.byteLength, 8);
           this.send(FrameType.PONG, frame.payload, null, frame.requestId);
@@ -202,15 +196,13 @@ class RawClient {
     this.requestId += 1n;
     return value;
   }
-  send(type, payload, attachment, requestId = 0n, epoch = attachment?.epoch ?? 0n) {
+  send(type, payload, attachment, requestId = 0n) {
     assert.equal(this.socket?.readyState, WebSocket.OPEN, `${this.name} socket open`);
-    const frame = encodeFrame({
+    const frame = encodeClientFrame({
       type,
       payload,
-      connectionSequence: ++this.sendSequence,
       requestId,
       attachmentId: attachment?.id ?? 0n,
-      attachmentEpoch: epoch,
       sessionId: attachment?.sessionId ?? ZERO_SESSION_ID,
     });
     this.socket.send(frame);
@@ -253,7 +245,6 @@ class RawClient {
   attachmentFor(frame) {
     const attachment = this.attachments.get(frame.attachmentId.toString());
     assert.ok(attachment, `${this.name} unknown attachment ${frame.attachmentId}`);
-    assert.ok(sameBytes(frame.sessionId, attachment.sessionId), `${this.name} attachment session`);
     return attachment;
   }
   resetOutputStream(attachment) {
@@ -276,12 +267,10 @@ class RawClient {
     }
     const attachment = this.attachmentFor(frame);
     if (frame.type === FrameType.ATTACH_BEGIN) {
-      assert.equal(frame.payload.byteLength, 80);
+      assert.equal(frame.payload.byteLength, 88);
       assert.equal(frame.payload[18], 0);
       assert.equal(frame.payload[19], 0);
       assert.ok(frame.payload.subarray(36, 48).every((value) => value === 0));
-      assert.notEqual(frame.attachmentEpoch, 0n);
-      attachment.epoch = frame.attachmentEpoch;
       attachment.generation = frame.payload.slice(0, 16);
       attachment.mode = frame.payload[16];
       attachment.state = frame.payload[17];
@@ -290,7 +279,7 @@ class RawClient {
       attachment.highEventSeq = readUint64LE(frame.payload, 48);
       attachment.highOutputOffset = readUint64LE(frame.payload, 56);
       attachment.leaseEpoch = readUint64LE(frame.payload, 64);
-      attachment.controllerId = readUint64LE(frame.payload, 72);
+      attachment.controllerId = readId(frame.payload, 72);
       if (attachment.mode === 0) {
         attachment.eventSeq = 0n;
         attachment.outputOffset = 0n;
@@ -324,7 +313,7 @@ class RawClient {
       attachment.checkpoint.set(raw, offset);
       attachment.checkpointOffset += rawLength;
       attachment.checkpointChunks += 1;
-      this.credit(attachment, rawLength + 80);
+      this.credit(attachment, rawLength + headerLength(FrameType.CHECKPOINT_CHUNK) + 16);
       return;
     }
     if (frame.type === FrameType.CHECKPOINT_END) {
@@ -385,7 +374,7 @@ class RawClient {
       assert.equal(raw.byteLength, rawLength);
       attachment.events.push(event);
       attachment.eventSeq = eventSeq;
-      this.ack(attachment, rawLength + 128);
+      this.ack(attachment, kind === 0 ? rawLength + headerLength(FrameType.EVENT_BATCH) + 32 : 128);
       return;
     }
     if (frame.type === FrameType.LIVE_BARRIER) {
@@ -404,11 +393,16 @@ class RawClient {
       this.ack(attachment, attachment.barrierCredit);
       return;
     }
-    if (frame.type === FrameType.LEASE_CHANGED || frame.type === FrameType.CANONICAL_RESIZE) {
+    if (frame.type === FrameType.LEASE_CHANGED) {
+      assert.equal(frame.payload.byteLength, 32);
+      attachment.leaseEpoch = readUint64LE(frame.payload, 0);
+      attachment.controllerId = readId(frame.payload, 8);
+      attachment.geometry = geometry(frame.payload, 24);
+      return;
+    }
+    if (frame.type === FrameType.CANONICAL_RESIZE) {
       assert.equal(frame.payload.byteLength, 24);
       attachment.leaseEpoch = readUint64LE(frame.payload, 0);
-      if (frame.type === FrameType.LEASE_CHANGED)
-        attachment.controllerId = readUint64LE(frame.payload, 8);
       attachment.geometry = geometry(frame.payload, 16);
       return;
     }
@@ -446,12 +440,12 @@ class RawClient {
     id,
     initialCredit = INITIAL_CREDIT,
     barrierCredit = INITIAL_CREDIT,
+    previousAttachmentId = 0n,
   ) {
     const attachment = {
-      id: id ?? BigInt(this.attachments.size + 1),
+      id: id ?? BigInt(`0x${randomBytes(16).toString("hex")}`),
       sessionId: uuidBytes(session.id),
       generation: uuidBytes(generation),
-      epoch: 0n,
       eventSeq: BigInt(eventSeq),
       outputOffset: BigInt(outputOffset),
       outputParts: [],
@@ -467,13 +461,14 @@ class RawClient {
       exited: false,
     };
     this.attachments.set(attachment.id.toString(), attachment);
-    const payload = new Uint8Array(40);
+    const payload = new Uint8Array(56);
     payload.set(attachment.generation, 0);
     writeUint64LE(payload, 16, attachment.eventSeq);
     writeUint64LE(payload, 24, attachment.outputOffset);
     writeUint32LE(payload, 32, initialCredit);
+    writeId(payload, 40, previousAttachmentId);
     const requestId = this.nextRequest();
-    this.send(FrameType.ATTACH, payload, attachment, requestId, 0n);
+    this.send(FrameType.ATTACH, payload, attachment, requestId);
     await this.until(
       (frame) => frame.type === FrameType.LIVE_BARRIER && frame.requestId === requestId,
       `${this.name} attach barrier`,
@@ -483,10 +478,9 @@ class RawClient {
   }
   async attachExpectError(session, generation, eventSeq, outputOffset, id, initialCredit) {
     const attachment = {
-      id: id ?? BigInt(this.attachments.size + 1),
+      id: id ?? BigInt(`0x${randomBytes(16).toString("hex")}`),
       sessionId: uuidBytes(session.id),
       generation: uuidBytes(generation),
-      epoch: 0n,
       eventSeq: BigInt(eventSeq),
       outputOffset: BigInt(outputOffset),
       outputParts: [],
@@ -500,13 +494,13 @@ class RawClient {
       barrierCredit: 0,
     };
     this.attachments.set(attachment.id.toString(), attachment);
-    const payload = new Uint8Array(40);
+    const payload = new Uint8Array(56);
     payload.set(attachment.generation, 0);
     writeUint64LE(payload, 16, attachment.eventSeq);
     writeUint64LE(payload, 24, attachment.outputOffset);
     writeUint32LE(payload, 32, initialCredit);
     const requestId = this.nextRequest();
-    this.send(FrameType.ATTACH, payload, attachment, requestId, 0n);
+    this.send(FrameType.ATTACH, payload, attachment, requestId);
     return this.until(
       (frame) => frame.type === FrameType.ERROR && frame.requestId === requestId,
       `${this.name} attach error`,
@@ -615,7 +609,7 @@ class RawClient {
     writeUint64LE(payload, 0, requestId);
     this.send(FrameType.PING, payload, null, requestId);
     const frame = await this.until(
-      (value) => value.type === FrameType.PONG && value.requestId === requestId,
+      (value) => value.type === FrameType.PONG && sameBytes(value.payload, payload),
       `${this.name} heartbeat PONG`,
     );
     assert.ok(sameBytes(frame.payload, payload));
@@ -630,7 +624,7 @@ class RawClient {
     return decoder.decode(this.outputSince(attachment, offset));
   }
   async detach(attachment) {
-    if (attachment.epoch && this.socket?.readyState === WebSocket.OPEN)
+    if (attachment.live && this.socket?.readyState === WebSocket.OPEN)
       this.send(FrameType.DETACH, new Uint8Array(0), attachment);
     await this.close();
   }

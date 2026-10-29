@@ -11,12 +11,13 @@ import {
 } from "./SessionCheckpoint.js";
 import {
   ABI_DIGEST,
-  acceptAttachmentEpoch,
+  acceptAttachment,
   bytesUuid,
   createEmitter,
   equalBytes,
   handleInputStatus,
   markRecordDetached,
+  randomUint128,
   randomUint64,
   rememberStaleAttachment,
   readGeometry,
@@ -31,16 +32,19 @@ import {
 import {
   COMPRESSED_FLAG,
   FrameType,
+  headerLength,
   MAX_FRAME_LENGTH,
+  MAX_PAYLOAD_LENGTH,
   SUBPROTOCOL,
-  ZERO_SESSION_ID,
-  decodeFrame,
-  encodeFrame,
+  decodeServerFrame,
+  encodeClientFrame,
   readUint16LE,
   readUint32LE,
   readUint64LE,
+  readUint128LE,
   writeUint32LE,
   writeUint64LE,
+  writeUint128LE,
 } from "./protocol.js";
 
 const INITIAL_CREDIT = 32 * 1024 * 1024;
@@ -87,7 +91,6 @@ export class SessionTransport {
   get #socket() {
     return this.#attempt?.socket ?? null;
   }
-  #resumeAttachments = false;
   #terminal = null;
   #terminalDisposables = [];
   #records = new Map();
@@ -178,10 +181,6 @@ export class SessionTransport {
     this.#document?.addEventListener?.("resume", this.#resumeListener);
   }
 
-  configureServer(info) {
-    this.#resumeAttachments = info?.capabilities?.attachmentResume === true;
-  }
-
   activate(terminal) {
     if (!terminal) throw new TypeError("SessionTransport.activate requires a terminal");
     if (this.#terminal === terminal) return;
@@ -261,8 +260,6 @@ export class SessionTransport {
       suspended: this.#frozen || !!this.#document?.hidden,
       suspendedAt: now,
       helloRequestId: 0n,
-      sendSequence: 0n,
-      serverSequence: 0n,
       probe: null,
       nextProbeAt: Infinity,
       controls: [],
@@ -321,8 +318,6 @@ export class SessionTransport {
       suspended: false,
       suspendedAt: now,
       helloRequestId: 0n,
-      sendSequence: 0n,
-      serverSequence: 0n,
       probe: null,
       nextProbeAt: Infinity,
       controls: [],
@@ -366,14 +361,11 @@ export class SessionTransport {
       writeUint32LE(payload, 48, INITIAL_CREDIT);
       writeUint32LE(payload, 52, MAX_FRAME_LENGTH);
       hedge.helloRequestId = this.#nextRequestId();
-      const frame = encodeFrame({
+      const frame = encodeClientFrame({
         type: FrameType.HELLO,
         payload,
         requestId: hedge.helloRequestId,
         attachmentId: 0n,
-        attachmentEpoch: 0n,
-        sessionId: ZERO_SESSION_ID,
-        connectionSequence: ++hedge.sendSequence,
       });
       try {
         socket.send(frame);
@@ -386,10 +378,7 @@ export class SessionTransport {
       if (this.#hedge !== hedge || hedge.retired || hedge.phase !== "negotiating") return;
       try {
         const bytes = new Uint8Array(event.data);
-        const frame = decodeFrame(bytes);
-        if (frame.connectionSequence !== hedge.serverSequence + 1n)
-          throw new Error("server connection sequence gap");
-        hedge.serverSequence = frame.connectionSequence;
+        const frame = decodeServerFrame(bytes);
         this.#state.rxWireBytes += bytes.byteLength;
         this.#validateWelcome(hedge, frame);
         this.#promoteHedge(hedge, frame);
@@ -528,9 +517,10 @@ export class SessionTransport {
       metadata,
       sessionId: uuidBytes(metadata.id),
       generation: uuidBytes(metadata.generation),
-      attachmentId: randomUint64(),
+      attachmentId: randomUint128(),
+      previousAttachmentId: 0n,
       attachRequestId: 0n,
-      epoch: 0n,
+      accepted: false,
       eventSeq: BigInt(options.eventSeq ?? 0),
       outputOffset: BigInt(options.outputOffset ?? 0),
       core,
@@ -569,7 +559,7 @@ export class SessionTransport {
     if (options.signal) {
       const abort = () => {
         if (!record.active || !record.reject) return;
-        if (record.epoch)
+        if (record.accepted)
           this.#send(FrameType.DETACH, new Uint8Array(0), record, this.#nextRequestId());
         this.#removeRecord(record, options.signal.reason);
       };
@@ -607,7 +597,7 @@ export class SessionTransport {
 
   detach(record) {
     if (!record) return;
-    if (record.epoch)
+    if (record.accepted)
       this.#send(FrameType.DETACH, new Uint8Array(0), record, this.#nextRequestId());
     this.#removeRecord(record, new Error("attachment detached"));
   }
@@ -678,10 +668,10 @@ export class SessionTransport {
     const records = [...this.#records.values()];
     this.#records.clear();
     for (const record of records) {
-      // Explicit attachment-resume capability is required because older servers
-      // identify the controller by attachment ID but do not fence cross-connection ID reuse.
-      if (!this.#resumeAttachments) record.attachmentId = randomUint64();
-      record.epoch = 0n;
+      rememberStaleAttachment(this.#staleAttachmentIds, record);
+      record.previousAttachmentId = record.attachmentId;
+      record.attachmentId = randomUint128();
+      record.accepted = false;
       record.bindingLive = false;
       record.state = "attaching";
       record.attempt = attempt;
@@ -697,20 +687,13 @@ export class SessionTransport {
     if (!this.#current(attempt)) return;
     const bytes = new Uint8Array(event.data);
     this.#state.rxWireBytes += bytes.byteLength;
-    const frame = decodeFrame(bytes);
-    if (frame.connectionSequence !== attempt.serverSequence + 1n)
-      throw new Error("server connection sequence gap");
-    attempt.serverSequence = frame.connectionSequence;
+    const frame = decodeServerFrame(bytes);
     this.#state.lastReceiveAt = this.#clock.now();
     // Connection controls and fully validated terminal evidence cannot wait for
     // core creation/digest. No application cursors or ACKs are advanced here.
     if (frame.type === FrameType.ERROR && isConnectionFrame(frame)) {
       const error = this.#validateError(null, frame);
-      if (
-        frame.requestId !== 0n &&
-        frame.requestId !== attempt.helloRequestId &&
-        frame.requestId !== attempt.probe?.nonce
-      )
+      if (frame.requestId !== 0n && frame.requestId !== attempt.helloRequestId)
         throw new Error("invalid connection ERROR context");
       if (error.fatal) return this.#fail(error, attempt.socket);
     }
@@ -722,14 +705,14 @@ export class SessionTransport {
     if (attempt.phase !== "ready" && frame.type !== FrameType.ERROR)
       throw new Error("WELCOME required before session frames");
     if (frame.type === FrameType.PONG) {
-      if (!isConnectionFrame(frame) || frame.requestId === 0n || frame.payload.byteLength !== 8)
+      if (!isConnectionFrame(frame) || frame.payload.byteLength !== 8)
         throw new Error("invalid PONG");
       this.#pong(frame);
       this.#state.lastReceiveAt = this.#clock.now();
       return;
     }
     if (frame.type === FrameType.PING) {
-      if (!isConnectionFrame(frame) || frame.requestId !== 0n || frame.payload.byteLength !== 8)
+      if (!isConnectionFrame(frame) || frame.payload.byteLength !== 8)
         throw new Error("invalid PING");
       this.#state.lastReceiveAt = this.#clock.now();
       this.#send(FrameType.PONG, frame.payload, null);
@@ -804,17 +787,15 @@ export class SessionTransport {
       const canceled = this.#attempt.canceledAttaches.get(frame.attachmentId.toString());
       if (canceled && frame.type === FrameType.ATTACH_BEGIN) {
         if (
-          !equalBytes(frame.sessionId, canceled.sessionId) ||
           frame.requestId !== canceled.attachRequestId ||
-          frame.attachmentEpoch === 0n ||
-          frame.payload.byteLength !== 80 ||
+          frame.payload.byteLength !== 88 ||
           frame.payload[16] > 2 ||
           frame.payload[18] !== 0 ||
           frame.payload[19] !== 0 ||
           frame.payload.subarray(36, 48).some((byte) => byte !== 0)
         )
           throw new Error("invalid canceled ATTACH_BEGIN");
-        canceled.epoch = frame.attachmentEpoch;
+        canceled.accepted = true;
         this.#send(FrameType.DETACH, new Uint8Array(0), canceled, this.#nextRequestId());
         this.#attempt?.canceledAttaches.delete(frame.attachmentId.toString());
       } else if (canceled && frame.type === FrameType.ERROR)
@@ -845,7 +826,7 @@ export class SessionTransport {
       case FrameType.EXITED:
         return this.#exited(record, frame);
       case FrameType.SESSION_CHANGED:
-        if (!isConnectionFrame(frame) || frame.requestId !== 0n || frame.payload.byteLength !== 8)
+        if (!isConnectionFrame(frame) || frame.payload.byteLength !== 8)
           throw new Error("invalid SESSION_CHANGED");
         this.#sessionChangedEmitter.emit(readUint64LE(frame.payload, 0));
         return;
@@ -893,8 +874,7 @@ export class SessionTransport {
   async #attachBegin(record, frame, socket) {
     this.#requireRecord(record, frame);
     if (
-      frame.payload.byteLength !== 80 ||
-      frame.attachmentEpoch === 0n ||
+      frame.payload.byteLength !== 88 ||
       record.attachRequestId === 0n ||
       frame.requestId !== record.attachRequestId ||
       frame.payload[18] !== 0 ||
@@ -902,7 +882,7 @@ export class SessionTransport {
       frame.payload.subarray(36, 48).some((byte) => byte !== 0)
     )
       throw new Error("invalid ATTACH_BEGIN");
-    acceptAttachmentEpoch(record, frame);
+    acceptAttachment(record);
     record.outputStreamCore = null;
     const previousGeneration = record.generation;
     record.generation = frame.payload.slice(0, 16);
@@ -912,7 +892,7 @@ export class SessionTransport {
     record.metadata.geometry = geometry;
     const replayGeometry = readGeometry(frame.payload, 28);
     record.leaseEpoch = readUint64LE(frame.payload, 64);
-    const controller = readUint64LE(frame.payload, 72);
+    const controller = readUint128LE(frame.payload, 72);
     record.controller = controller === record.attachmentId;
     record.state = mode === 1 ? "restoring" : "catching-up";
     const replayMutatesCore =
@@ -949,7 +929,7 @@ export class SessionTransport {
     } else if (mode !== 1) {
       throw new Error("invalid attach mode");
     }
-    // This epoch's output stream decodes inside the core that receives it.
+    // This attachment's output stream decodes inside the core that receives it.
     record.core.resetZstdStream();
     record.outputStreamCore = record.core;
     if (record.active && this.#current(record.attempt))
@@ -964,7 +944,7 @@ export class SessionTransport {
   #checkpointChunk(record, frame) {
     this.#requireRecord(record, frame);
     const rawLength = appendCheckpoint(record, frame);
-    this.#sendCredit(record, rawLength + 80);
+    this.#sendCredit(record, rawLength + headerLength(FrameType.CHECKPOINT_CHUNK) + 16);
   }
 
   async #checkpointEnd(record, frame, socket) {
@@ -1053,7 +1033,7 @@ export class SessionTransport {
     }
     record.eventSeq = eventSeq;
     // Return exactly the native charge, not a little extra on every frame.
-    this.#sendAck(record, kind === 0 ? rawLength + 96 : 128);
+    this.#sendAck(record, kind === 0 ? rawLength + headerLength(FrameType.EVENT_BATCH) + 32 : 128);
     if (kind !== 0 && record.active && this.#current(record.attempt))
       this.#attachmentEmitter.emit(record, kind === 1 ? "resize" : "exit");
   }
@@ -1096,10 +1076,10 @@ export class SessionTransport {
 
   #lease(record, frame) {
     this.#requireRecord(record, frame);
-    if (frame.payload.byteLength !== 24) throw new Error("invalid LEASE_CHANGED");
+    if (frame.payload.byteLength !== 32) throw new Error("invalid LEASE_CHANGED");
     record.leaseEpoch = readUint64LE(frame.payload, 0);
-    record.controller = readUint64LE(frame.payload, 8) === record.attachmentId;
-    record.metadata.geometry = readGeometry(frame.payload, 16);
+    record.controller = readUint128LE(frame.payload, 8) === record.attachmentId;
+    record.metadata.geometry = readGeometry(frame.payload, 24);
     if (record === this.#activeRecord && record.controller && this.#pendingSize)
       this.#sendResize(this.#pendingSize);
     this.#markHealthy();
@@ -1133,8 +1113,9 @@ export class SessionTransport {
     record.state = "resync";
     rememberStaleAttachment(this.#staleAttachmentIds, record);
     this.#records.delete(record.attachmentId.toString());
-    record.attachmentId = randomUint64();
-    record.epoch = 0n;
+    record.previousAttachmentId = record.attachmentId;
+    record.attachmentId = randomUint128();
+    record.accepted = false;
     this.#records.set(record.attachmentId.toString(), record);
     // Request a full replay without erasing the committed core's identity and
     // cursor. Shadow replay must be able to roll back if restoration fails.
@@ -1159,8 +1140,6 @@ export class SessionTransport {
     if (
       frame.payload.byteLength < 4 ||
       (!record && !isConnectionFrame(frame)) ||
-      (record && !equalBytes(frame.sessionId, record.sessionId)) ||
-      (record && record.epoch !== 0n && frame.attachmentEpoch !== record.epoch) ||
       (record &&
         !record.bindingLive &&
         record.attachRequestId !== 0n &&
@@ -1194,20 +1173,15 @@ export class SessionTransport {
     record.attachSubmitted = false;
     if (this.#attempt) this.#attempt.readyAt = null;
     record.pendingCredit = 0;
-    const payload = new Uint8Array(40);
+    const payload = new Uint8Array(56);
     if (!fullReplay) {
       payload.set(record.generation, 0);
       writeUint64LE(payload, 16, record.eventSeq);
       writeUint64LE(payload, 24, record.outputOffset);
     }
     writeUint32LE(payload, 32, INITIAL_CREDIT);
-    this.#send(
-      FrameType.ATTACH,
-      payload,
-      record,
-      (record.attachRequestId = this.#nextRequestId()),
-      0n,
-    );
+    writeUint128LE(payload, 40, record.previousAttachmentId ?? 0n);
+    this.#send(FrameType.ATTACH, payload, record, (record.attachRequestId = this.#nextRequestId()));
   }
 
   #sendInput(record, data) {
@@ -1219,10 +1193,11 @@ export class SessionTransport {
     )
       return;
     if (
-      data.byteLength + 88 > MAX_FRAME_LENGTH ||
+      data.byteLength + 24 > MAX_PAYLOAD_LENGTH ||
       this.#attempt?.sends.length ||
       this.#attempt?.controls.length ||
-      this.#socket?.bufferedAmount + data.byteLength + 88 > MAX_BUFFERED_AMOUNT - CONTROL_RESERVE
+      this.#socket?.bufferedAmount + data.byteLength + headerLength(FrameType.INPUT) + 24 >
+        MAX_BUFFERED_AMOUNT - CONTROL_RESERVE
     ) {
       this.#errorEmitter.emit(
         new Error("terminal input dropped because websocket is backpressured"),
@@ -1288,7 +1263,7 @@ export class SessionTransport {
   #flushCredits() {
     if (this.#attempt?.queueBytes > this.#applicationBudget() / 2) return;
     for (const record of this.#records.values())
-      if (record.pendingCredit && record.epoch) this.#sendCredit(record, 0);
+      if (record.pendingCredit && record.accepted) this.#sendCredit(record, 0);
   }
 
   #applicationBudget() {
@@ -1298,7 +1273,7 @@ export class SessionTransport {
     );
   }
 
-  #send(type, payload, record, requestId = 0n, epoch = record?.epoch ?? 0n) {
+  #send(type, payload, record, requestId = 0n) {
     const attempt = this.#attempt;
     if (
       !this.#current(attempt) ||
@@ -1312,9 +1287,8 @@ export class SessionTransport {
       payload,
       requestId,
       attachmentId: record?.attachmentId ?? 0n,
-      attachmentEpoch: epoch,
-      sessionId: record?.sessionId ?? ZERO_SESSION_ID,
-      bytes: 64 + payload.byteLength,
+      sessionId: type === FrameType.ATTACH ? record.sessionId : undefined,
+      bytes: headerLength(type) + payload.byteLength,
       created: this.#clock.now(),
     };
     const limit = control ? MAX_BUFFERED_AMOUNT : MAX_BUFFERED_AMOUNT - CONTROL_RESERVE;
@@ -1341,19 +1315,14 @@ export class SessionTransport {
 
   #submit(attempt, item) {
     if (!this.#current(attempt) || attempt.socket.readyState !== 1) return false;
-    // Sequence assignment belongs to submission, after bounded admission and
-    // control prioritization. Already-submitted WebSocket bytes never reorder.
-    const frame = encodeFrame({
-      ...item,
-      connectionSequence: ++attempt.sendSequence,
-    });
+    const frame = encodeClientFrame(item);
     try {
       attempt.socket.send(frame);
     } catch (error) {
       this.#retire(attempt, error, "socket-io");
       return false;
     }
-    if (item.type === FrameType.PING && attempt.probe?.nonce === item.requestId)
+    if (item.type === FrameType.PING && attempt.probe?.nonce === readUint64LE(item.payload, 0))
       attempt.probe.submitted = this.#clock.now();
     if (item.type === FrameType.ATTACH) {
       const record = this.#records.get(item.attachmentId.toString());
@@ -1396,12 +1365,11 @@ export class SessionTransport {
       suspect: false,
       hedgeAfter: this.#hedgeAfter(),
     };
-    this.#send(FrameType.PING, payload, null, nonce);
+    this.#send(FrameType.PING, payload, null);
   }
 
   #pong(frame) {
     const nonce = readUint64LE(frame.payload, 0);
-    if (nonce !== frame.requestId) throw new Error("invalid PONG");
     const attempt = this.#attempt;
     this.#observeExecution(attempt);
     const pending = attempt.probe;
@@ -1766,7 +1734,7 @@ export class SessionTransport {
       this.#current(attempt) &&
       record.attempt === attempt &&
       record.attachSubmitted &&
-      !record.epoch
+      !record.accepted
     ) {
       // attach() reserves this bounded cleanup capacity before sending ATTACH.
       attempt.canceledAttaches.set(record.attachmentId.toString(), {
@@ -1775,7 +1743,7 @@ export class SessionTransport {
         attachmentId: record.attachmentId,
         sessionId: record.sessionId,
         attachRequestId: record.attachRequestId,
-        epoch: 0n,
+        accepted: false,
       });
     }
     this.#cancelRecordSends(record);
@@ -1798,8 +1766,8 @@ export class SessionTransport {
   #cancelRecordSends(record) {
     const attempt = this.#attempt;
     if (!attempt || record.attempt !== attempt) return;
-    // Nothing queued has a wire sequence yet. Do not let old binding ACKs or
-    // resize/claim requests leak into a same-attempt resync or detach.
+    // Do not let old binding ACKs or resize/claim requests leak into a
+    // same-attempt resync or detach.
     attempt.sends = attempt.sends.filter(
       (item) => item.attachmentId !== record.attachmentId || item.type === FrameType.DETACH,
     );
@@ -1820,10 +1788,7 @@ export class SessionTransport {
       !record.active ||
       record.attempt !== this.#attempt ||
       this.#records.get(frame.attachmentId.toString()) !== record ||
-      !equalBytes(frame.sessionId, record.sessionId) ||
-      (record.epoch === 0n
-        ? frame.type !== FrameType.ATTACH_BEGIN
-        : frame.attachmentEpoch !== record.epoch)
+      (!record.accepted && frame.type !== FrameType.ATTACH_BEGIN)
     )
       throw new Error("stale attachment frame");
   }

@@ -720,17 +720,16 @@ func TestResizeTelemetryIsStructuredAndCorrelated(t *testing.T) {
 	var output bytes.Buffer
 	logger := slog.New(slog.NewJSONHandler(&output, &slog.HandlerOptions{Level: slog.LevelDebug})).With("connection_id", 17)
 	conn := &socketConn{logger: logger}
-	frame := make([]byte, 88)
-	binary.LittleEndian.PutUint32(frame[0:4], 0x53574342)
-	frame[4] = 20
-	binary.LittleEndian.PutUint64(frame[16:24], 3)
-	binary.LittleEndian.PutUint64(frame[24:32], 9)
-	binary.LittleEndian.PutUint64(frame[32:40], 11)
-	frame[48] = 0xaa
-	binary.LittleEndian.PutUint16(frame[80:82], 120)
-	binary.LittleEndian.PutUint16(frame[82:84], 40)
-	binary.LittleEndian.PutUint16(frame[84:86], 9)
-	binary.LittleEndian.PutUint16(frame[86:88], 18)
+	frame := make([]byte, 26+24)
+	frame[0] = 20
+	binary.LittleEndian.PutUint64(frame[2:10], 11)
+	frame[17] = 0xaa
+	binary.LittleEndian.PutUint64(frame[18:26], 9)
+	geometry := frame[26+16:]
+	binary.LittleEndian.PutUint16(geometry[0:2], 120)
+	binary.LittleEndian.PutUint16(geometry[2:4], 40)
+	binary.LittleEndian.PutUint16(geometry[4:6], 9)
+	binary.LittleEndian.PutUint16(geometry[6:8], 18)
 	conn.logFrame("in", frame)
 
 	var event map[string]any
@@ -740,10 +739,33 @@ func TestResizeTelemetryIsStructuredAndCorrelated(t *testing.T) {
 	for field, expected := range map[string]any{
 		"msg": "terminal resize lifecycle", "connection_id": float64(17),
 		"frame_type": "resize_request", "sigwinch_stage": "requested",
+		"attachment_id": "aa00000000000000000000000000000b", "request_id": float64(9),
 		"cols": float64(120), "rows": float64(40),
 	} {
 		if event[field] != expected {
 			t.Errorf("%s=%v, want %v", field, event[field], expected)
+		}
+	}
+}
+
+func TestFrameTelemetryBoundsUntrustedHeaders(t *testing.T) {
+	for _, test := range []struct {
+		opcode byte
+		length int
+	}{{20, 0}, {20, 1}, {255, 2}, {11, 17}, {20, 25}, {5, 41}} {
+		frame := make([]byte, test.length)
+		if len(frame) > 0 {
+			frame[0] = test.opcode
+		}
+		var output bytes.Buffer
+		conn := &socketConn{logger: slog.New(slog.NewJSONHandler(&output, &slog.HandlerOptions{Level: slog.LevelDebug}))}
+		conn.logFrame("in", frame)
+		var event map[string]any
+		if err := json.Unmarshal(output.Bytes(), &event); err != nil {
+			t.Fatal(err)
+		}
+		if event["valid_header"] != false || conn.inBytes.Load() != uint64(len(frame)) {
+			t.Fatalf("truncated header %x: event=%v bytes=%d", frame, event, conn.inBytes.Load())
 		}
 	}
 }

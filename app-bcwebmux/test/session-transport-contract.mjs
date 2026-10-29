@@ -5,6 +5,9 @@ import assert from "node:assert/strict";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { test } from "node:test";
+import { zstdCompressSync, zstdDecompressSync } from "node:zlib";
+import { crc32c } from "./test-support.mjs";
+import { encodeServerFixture, decodeClientFixture, readId, writeId } from "./protocol-fixtures.mjs";
 
 // Use installed assets, laid out as the normal web build produces them.
 const root = resolve(process.env.BCWEBMUX_TEST_WEB_ROOT ?? process.argv[2] ?? "zig-out/web");
@@ -14,8 +17,7 @@ const { ABI_DIGEST, uuidBytes, writeGeometry } = await load("SessionWire.js");
 const {
   FrameType: F,
   MAX_FRAME_LENGTH,
-  encodeFrame,
-  decodeFrame,
+  MAX_PAYLOAD_LENGTH,
   writeUint32LE,
   writeUint64LE,
   readUint32LE,
@@ -78,7 +80,6 @@ class Socket extends Target {
   static CLOSED = 3;
   readyState = Socket.CONNECTING;
   sent = [];
-  serverSequence = 0n;
   bufferedAmount = 0;
   closeCalls = 0;
   open() {
@@ -86,7 +87,7 @@ class Socket extends Target {
     this.emit("open");
   }
   send(bytes) {
-    this.sent.push(decodeFrame(bytes));
+    this.sent.push(decodeClientFixture(bytes));
   }
   // Deliberately never completes the close handshake.
   close() {
@@ -99,7 +100,7 @@ class Socket extends Target {
   }
   frame(type, payload = new Uint8Array(), fields = {}) {
     this.emit("message", {
-      data: encodeFrame({ type, payload, connectionSequence: ++this.serverSequence, ...fields }),
+      data: encodeServerFixture({ type, payload, ...fields }),
     });
   }
   frames(type) {
@@ -156,7 +157,6 @@ function harness(t, options = {}) {
     },
     ...options,
   });
-  transport.configureServer({ capabilities: { attachmentResume: true } });
   transport.onError((error) => errors.push(error));
   t.after(() => transport.dispose());
   return { clock, sockets, window, document, errors, transport };
@@ -204,20 +204,17 @@ async function healthy(h) {
 function attachmentFields(attach) {
   return {
     attachmentId: attach.attachmentId,
-    attachmentEpoch: attach.serverEpoch ?? 1n,
-    sessionId: attach.sessionId,
   };
 }
 async function begin(socket, mode = 2, controller = false, options = {}) {
   const attach = socket.last(F.ATTACH);
-  attach.serverEpoch = options.epoch ?? 1n;
-  const payload = new Uint8Array(80);
+  const payload = new Uint8Array(88);
   payload.set(uuidBytes(metadata.generation));
   payload[16] = mode;
   writeGeometry(payload, 20, geometry);
   writeGeometry(payload, 28, geometry);
   writeUint64LE(payload, 64, options.leaseEpoch ?? 1n);
-  writeUint64LE(payload, 72, controller ? attach.attachmentId : 0n);
+  writeId(payload, 72, controller ? attach.attachmentId : 0n);
   socket.frame(F.ATTACH_BEGIN, payload, {
     ...attachmentFields(attach),
     requestId: attach.requestId,
@@ -233,13 +230,69 @@ async function live(socket, attach, eventSeq = 0n, outputOffset = 0n) {
   await flush();
 }
 async function lease(socket, attach) {
-  const payload = new Uint8Array(24);
+  const payload = new Uint8Array(32);
   writeUint64LE(payload, 0, 1n);
-  writeUint64LE(payload, 8, attach.attachmentId);
-  writeGeometry(payload, 16, geometry);
+  writeId(payload, 8, attach.attachmentId);
+  writeGeometry(payload, 24, geometry);
   socket.frame(F.LEASE_CHANGED, payload, attachmentFields(attach));
   await flush();
 }
+
+test("checkpoint and output credit returns raw bytes plus each actual v2 envelope", async (t) => {
+  const h = harness(t),
+    socket = await healthy(h),
+    core = new Core();
+  const raw = new TextEncoder().encode("credit-accounting-".repeat(100));
+  const compressed = zstdCompressSync(raw),
+    crc = crc32c(raw);
+  let restored, output;
+  core.decodeZstdFrame = (body, target, checksum) => {
+    const decoded = zstdDecompressSync(body);
+    assert.equal(crc32c(decoded), checksum);
+    target.set(decoded);
+  };
+  core.restoreSnapshot = (bytes) => {
+    restored = bytes.slice();
+  };
+  core.writeZstd = (body, length, checksum) => {
+    output = zstdDecompressSync(body);
+    assert.equal(output.length, length);
+    assert.equal(crc32c(output), checksum);
+  };
+  const attached = h.transport.attach(metadata, core);
+  await flush();
+  const attach = await begin(socket, 1);
+  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", raw));
+  const checkpoint = new Uint8Array(56);
+  writeUint32LE(checkpoint, 0, raw.length);
+  checkpoint.set(digest, 24);
+  socket.frame(F.CHECKPOINT_BEGIN, checkpoint, attachmentFields(attach));
+  const chunk = new Uint8Array(16 + compressed.length);
+  writeUint32LE(chunk, 4, raw.length);
+  writeUint32LE(chunk, 8, crc);
+  writeUint32LE(chunk, 12, compressed.length);
+  chunk.set(compressed, 16);
+  socket.frame(F.CHECKPOINT_CHUNK, chunk, { ...attachmentFields(attach), flags: 1 });
+  await flush();
+  assert.equal(readUint32LE(socket.last(F.CREDIT).payload, 0), raw.length + 18 + 16);
+  socket.frame(F.CHECKPOINT_END, digest, attachmentFields(attach));
+  await live(socket, attach);
+  await attached;
+  assert.deepEqual(restored, raw);
+  const event = new Uint8Array(32 + compressed.length);
+  writeUint32LE(event, 4, raw.length);
+  writeUint32LE(event, 8, crc);
+  writeUint32LE(event, 12, compressed.length);
+  writeUint64LE(event, 16, 1n);
+  event.set(compressed, 32);
+  socket.frame(F.EVENT_BATCH, event, { ...attachmentFields(attach), flags: 1 });
+  await flush();
+  assert.deepEqual(new Uint8Array(output), raw);
+  assert.equal(readUint32LE(socket.last(F.ACK).payload, 16), raw.length + 18 + 32);
+  assert.equal(readUint64LE(socket.last(F.ACK).payload, 8), BigInt(raw.length));
+  assert.equal(socket.closeCalls, 0);
+  assert.deepEqual(h.errors, []);
+});
 
 test("old callbacks and rejected async message work cannot retire or block replacement", async (t) => {
   const h = harness(t),
@@ -297,7 +350,8 @@ test("input is never replayed and disconnected input is dropped", async (t) => {
   await h.clock.advance(PROFILE.retryFloorMs);
   const replacement = h.sockets.at(-1);
   replacement.open();
-  assert.equal(replacement.last(F.ATTACH).attachmentId, initial.attachmentId);
+  assert.notEqual(replacement.last(F.ATTACH).attachmentId, initial.attachmentId);
+  assert.equal(readId(replacement.last(F.ATTACH).payload, 40), initial.attachmentId);
   assert.notEqual(replacement.last(F.ATTACH).requestId, initial.requestId);
   assert.equal(h.transport.state.connected, false);
   assert.equal(replacement.closeCalls, 0);
@@ -330,7 +384,7 @@ test("dispose during negotiation rejects readiness and cancels deadlines", async
   assert.equal(h.clock.timers.size, 0);
 });
 
-test("stable attachment handover carries controller lease, ACK precedes input, and unchanged size does not resize", async (t) => {
+test("fresh attachment handover carries controller lease, ACK precedes input, and unchanged size does not resize", async (t) => {
   const h = harness(t),
     socket = await healthy(h),
     core = new Core();
@@ -362,14 +416,13 @@ test("stable attachment handover carries controller lease, ACK precedes input, a
   const replacement = h.sockets.at(-1);
   replacement.open();
   const resumedRequest = replacement.last(F.ATTACH);
-  assert.equal(resumedRequest.attachmentId, initial.attachmentId);
+  assert.notEqual(resumedRequest.attachmentId, initial.attachmentId);
+  assert.equal(readId(resumedRequest.payload, 40), initial.attachmentId);
   assert.notEqual(resumedRequest.requestId, initial.requestId);
-  assert.equal(resumedRequest.attachmentEpoch, 0n);
   await welcome(h, replacement);
-  const resumed = await begin(replacement, 2, true, { epoch: 7n, leaseEpoch: 73n });
+  const resumed = await begin(replacement, 2, true, { leaseEpoch: 73n });
   assert.equal(record.controller, true);
   assert.equal(record.live, false);
-  assert.equal(record.epoch, 7n);
   core.setReplayMode = (mode) => {
     if (!mode) core.input(new TextEncoder().encode("activation must not precede ACK"));
   };
@@ -388,7 +441,7 @@ test("stable attachment handover carries controller lease, ACK precedes input, a
   const input = replacement.last(F.INPUT);
   const ack = replacement.frames(F.ACK).at(-1);
   assert.equal(readUint64LE(input.payload, 0), 73n);
-  assert.equal(input.attachmentEpoch, 7n);
+  assert.equal(input.attachmentId, resumed.attachmentId);
   assert.ok(replacement.sent.indexOf(ack) < replacement.sent.indexOf(input));
   assert.equal(record.live, true);
   resize({ cols: 81, rows: 24 });
@@ -396,11 +449,10 @@ test("stable attachment handover carries controller lease, ACK precedes input, a
   assert.equal(readUint64LE(replacement.last(F.RESIZE_REQUEST).payload, 0), 73n);
 });
 
-test("old-server absent capability uses a fresh ID and still claims after ACK", async (t) => {
+test("reconnect without a controller lease claims only after ACK", async (t) => {
   const h = harness(t),
     socket = await healthy(h),
     core = new Core();
-  h.transport.configureServer({});
   const attached = h.transport.attach(metadata, core);
   await flush();
   const initial = await begin(socket, 2, true);
@@ -410,11 +462,10 @@ test("old-server absent capability uses a fresh ID and still claims after ACK", 
   socket.emit("error");
   await h.clock.advance(PROFILE.retryFloorMs);
   const replacement = await welcome(h);
-  const resumed = await begin(replacement, 2, false, { epoch: 2n });
+  const resumed = await begin(replacement, 2, false, {});
   await live(replacement, resumed);
   assert.equal(record.controller, false);
   assert.notEqual(resumed.attachmentId, initial.attachmentId);
-  assert.equal(record.epoch, 2n);
   assert.equal(replacement.frames(F.CLAIM_CONTROL).length, 1);
   const ack = replacement.frames(F.ACK).at(-1);
   const claim = replacement.frames(F.CLAIM_CONTROL).at(-1);
@@ -467,26 +518,38 @@ test("matched PONG arrival bypasses deferred core creation while application fra
   assert.equal(h.errors.length, 0);
 });
 
-test("fast PONG path still enforces wire sequence, connection scope, and nonce", async (t) => {
-  for (const kind of ["sequence", "scope", "nonce"]) {
+test("fast PONG path rejects malformed messages without sampling RTT", async (t) => {
+  for (const length of [7, 9]) {
     const h = harness(t),
       socket = await healthy(h);
     await h.clock.advance(1000);
-    const ping = socket.last(F.PING);
-    const payload = ping.payload.slice();
-    const fields = { requestId: ping.requestId };
-    if (kind === "sequence") fields.connectionSequence = socket.serverSequence + 2n;
-    if (kind === "scope") fields.attachmentId = 1n;
-    if (kind === "nonce") writeUint64LE(payload, 0, ping.requestId + 1n);
     const samples = h.transport.state._rttSamples.length;
-    socket.frame(F.PONG, payload, fields);
+    socket.frame(F.PONG, new Uint8Array(length));
     assert.equal(socket.closeCalls, 1);
     assert.equal(h.transport.state.connected, false);
     assert.equal(h.transport.state._rttSamples.length, samples);
-    assert.match(h.errors.at(-1).message, /sequence gap|invalid PONG/);
+    assert.match(h.errors.at(-1).message, /invalid PONG/);
     h.transport.dispose();
     assert.equal(h.clock.timers.size, 0);
   }
+});
+
+test("PONG correlates the payload nonce, ignoring unmatched replies without renewing the probe", async (t) => {
+  const h = harness(t),
+    socket = await healthy(h);
+  await h.clock.advance(PROFILE.probeIntervalMs);
+  const ping = socket.last(F.PING),
+    samples = h.transport.state._rttSamples.length;
+  assert.equal(ping.requestId, 0n);
+  const wrong = ping.payload.slice();
+  writeUint64LE(wrong, 0, readUint64LE(wrong, 0) + 1n);
+  socket.frame(F.PONG, wrong);
+  assert.equal(h.transport.state.unmatchedPongs, 1);
+  assert.equal(h.transport.state._rttSamples.length, samples);
+  assert.equal(socket.closeCalls, 0);
+  await pong(h, 75, socket);
+  assert.equal(h.transport.state.wsRttLatestMs, 75);
+  assert.equal(h.transport.state._rttSamples.length, samples + 1);
 });
 
 test("genuine geometry changes made offline remain pending through carried-lease resume", async (t) => {
@@ -514,7 +577,7 @@ test("genuine geometry changes made offline remain pending through carried-lease
   assert.equal(socket.frames(F.RESIZE_REQUEST).length, 0);
   await h.clock.advance(PROFILE.retryFloorMs);
   const replacement = await welcome(h);
-  const resumed = await begin(replacement, 2, true, { epoch: 3n, leaseEpoch: 9n });
+  const resumed = await begin(replacement, 2, true, { leaseEpoch: 9n });
   await live(replacement, resumed);
   assert.equal(replacement.frames(F.CLAIM_CONTROL).length, 0);
   assert.equal(replacement.frames(F.RESIZE_REQUEST).length, 1);
@@ -632,7 +695,20 @@ test("resync from journal uses a shadow and preserves the committed cursor on ca
   record.outputOffset = 9n;
   socket.frame(F.RESYNC_REQUIRED, new Uint8Array(), attachmentFields(initial));
   await flush();
-  await begin(socket, 0);
+  const resumed = await begin(socket, 0);
+  assert.notEqual(resumed.attachmentId, initial.attachmentId);
+  assert.equal(readId(initial.payload, 40), 0n);
+  assert.equal(readId(resumed.payload, 40), initial.attachmentId);
+  const acks = socket.frames(F.ACK).length;
+  await live(socket, initial, 999n, 999n);
+  await lease(socket, initial);
+  assert.equal(
+    socket.frames(F.ACK).length,
+    acks,
+    "retired attachment ID cannot authorize ACK or commit",
+  );
+  assert.equal(record.controller, false, "retired lease cannot grant input authority");
+  assert.equal(socket.closeCalls, 0, "late frames for a retired incarnation are harmless");
   assert.equal(record.core, shadow);
   assert.equal(resets, 1);
   assert.equal(record.eventSeq, 0n);
@@ -757,7 +833,6 @@ test("queued ACK stays ahead of input and controls get bounded reserved priority
   core.input(new Uint8Array([2]));
   assert.equal(socket.frames(F.INPUT).length, 1);
   assert.ok(socket.sent.indexOf(socket.last(F.ACK)) < socket.sent.indexOf(socket.last(F.INPUT)));
-  socket.sent.forEach((frame, i) => assert.equal(frame.connectionSequence, BigInt(i + 1)));
 });
 
 test("local core creation failure belongs to attachment operation, not connection failure", async (t) => {
@@ -883,7 +958,7 @@ test("abort during restore releases ordered work and late core without closing s
   assert.equal(h.errors.length, 0);
 });
 
-test("abort after ATTACH submission detaches when its admitted server epoch arrives", async (t) => {
+test("abort after ATTACH submission detaches only the canceled incarnation when admitted", async (t) => {
   const h = harness(t),
     socket = await healthy(h),
     abort = new AbortController();
@@ -894,9 +969,23 @@ test("abort after ATTACH submission detaches when its admitted server epoch arri
   abort.abort(reason);
   await rejected;
   assert.equal(socket.frames(F.DETACH).length, 0);
-  await begin(socket, 2);
+  const canceled = await begin(socket, 2);
   assert.equal(socket.frames(F.DETACH).length, 1);
-  assert.equal(socket.last(F.DETACH).attachmentEpoch, 1n);
+  assert.equal(socket.last(F.DETACH).attachmentId, socket.last(F.ATTACH).attachmentId);
+  const next = h.transport.attach(metadata, new Core());
+  await flush();
+  const fresh = await begin(socket, 2);
+  assert.notEqual(fresh.attachmentId, canceled.attachmentId);
+  await live(socket, canceled);
+  assert.equal(
+    socket.frames(F.ACK).length,
+    0,
+    "canceled incarnation cannot commit the replacement",
+  );
+  await live(socket, fresh);
+  assert.equal((await next).live, true);
+  assert.equal(socket.last(F.ACK).attachmentId, fresh.attachmentId);
+  assert.equal(socket.frames(F.DETACH).length, 1);
   assert.equal(socket.closeCalls, 0);
 });
 
@@ -1192,8 +1281,9 @@ test("a ready hedge replaces the incumbent without a disconnected state", async 
   assert.equal(record.live, true, "the incumbent core stays presented while the hedge attaches");
   assert.equal(record.core, core);
   const resumed = hedge.last(F.ATTACH);
-  assert.equal(resumed.attachmentId, initial.attachmentId);
-  const rebound = await begin(hedge, 2, true, { epoch: 2n, leaseEpoch: 2n });
+  assert.notEqual(resumed.attachmentId, initial.attachmentId);
+  assert.equal(readId(resumed.payload, 40), initial.attachmentId);
+  const rebound = await begin(hedge, 2, true, { leaseEpoch: 2n });
   await live(hedge, rebound);
   assert.equal(h.transport.state.status, "ready");
   core.input(new Uint8Array([9]));
@@ -1357,7 +1447,7 @@ test("continuous one-way application traffic and unmatched PONG do not renew res
   assert.equal(h.errors.length, 0);
 });
 
-test("healthy burst/jitter traffic keeps paced probes and FIFO without disconnects", async (t) => {
+test("healthy burst/jitter traffic keeps paced probes without disconnects", async (t) => {
   const h = harness(t),
     socket = await healthy(h);
   for (const delay of [40, 110, 600, 1600, 35, 8000, 50, 3000]) {
@@ -1370,7 +1460,6 @@ test("healthy burst/jitter traffic keeps paced probes and FIFO without disconnec
   assert.equal(socket.closeCalls, 0);
   assert.ok(h.sockets.slice(1).every((candidate) => candidate.closeCalls === 1));
   assert.equal(h.errors.length, 0);
-  socket.sent.forEach((frame, i) => assert.equal(frame.connectionSequence, BigInt(i + 1)));
 });
 
 test("control submission stalls retire after their fixed window, never from RTT", async (t) => {
@@ -1472,7 +1561,7 @@ test("fatal negotiation and malformed ERROR retry without granting peer authorit
       fields = {};
     if (kind === "flag") payload[2] = 2;
     if (kind === "code") payload[0] = 99;
-    if (kind === "scope") fields.attachmentEpoch = 1n;
+    if (kind === "scope") fields.attachmentId = 1n;
     if (kind === "context") fields.requestId = 1n;
     if (kind === "utf8") payload[4] = 255;
     old.frame(F.ERROR, payload, fields);
@@ -1529,10 +1618,10 @@ test("resume invalidates old probes once; hints and pre-suspension PONG cannot r
   h.document.hidden = false;
   await h.clock.advance(0); // timer-before-visibility ordering
   const fresh = socket.last(F.PING);
-  assert.notEqual(fresh.requestId, old.requestId);
+  assert.notEqual(readUint64LE(fresh.payload, 0), readUint64LE(old.payload, 0));
   h.document.emit("visibilitychange");
   h.window.emit("online");
-  assert.equal(socket.last(F.PING).requestId, fresh.requestId);
+  assert.deepEqual(socket.last(F.PING).payload, fresh.payload);
   socket.frame(F.PONG, old.payload, { requestId: old.requestId });
   assert.equal(h.transport.state._rttSamples.length, samples);
   await h.clock.advance(PROFILE.responseMs - 1);
@@ -1552,9 +1641,9 @@ test("unannounced scheduling gap and visible freeze grant fresh observation, not
   h.clock.time += 60000;
   socket.frame(F.PONG, old.payload, { requestId: old.requestId }); // message-before-timer ordering
   const fresh = socket.last(F.PING);
-  assert.notEqual(fresh.requestId, old.requestId);
+  assert.notEqual(readUint64LE(fresh.payload, 0), readUint64LE(old.payload, 0));
   h.window.emit("online");
-  assert.equal(socket.last(F.PING).requestId, fresh.requestId);
+  assert.deepEqual(socket.last(F.PING).payload, fresh.payload);
   const resumeHedge = h.sockets[1];
   assert.ok(resumeHedge, "a long gap races one replacement against the fresh probe");
   await h.clock.advance(0);
@@ -1645,7 +1734,7 @@ test("bounded receive queue is released on retirement while restore remains pend
   attached.catch(() => {});
   await flush();
   const attach = await begin(socket, 1);
-  const bytes = new Uint8Array(MAX_FRAME_LENGTH - 64);
+  const bytes = new Uint8Array(MAX_PAYLOAD_LENGTH);
   for (let i = 0; i < 70; i++) socket.frame(F.CHECKPOINT_CHUNK, bytes, attachmentFields(attach));
   assert.equal(socket.closeCalls, 1);
   assert.equal(h.transport.state.lastOutcome.kind, "receive-overload");

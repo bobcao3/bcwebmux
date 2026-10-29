@@ -328,8 +328,7 @@ export class SessionController {
     ]);
     if (this.#disposed) throw new Error("session controller is disposed");
     this.#serverInfo = info ?? {};
-    if (info?.protocol !== "bcw.sessions") throw new Error("unsupported session protocol");
-    this.#transport.configureServer?.(info);
+    if (info?.protocol !== "bcw.sessions.v2") throw new Error("unsupported session protocol");
     this.#setStorageScope(
       this.#serverInfo.serverInstance ?? this.#serverInfo.server_instance ?? "server",
       this.#serverInfo.principal ?? "principal",
@@ -406,7 +405,7 @@ export class SessionController {
 
   async #reconcileServer(instance) {
     const info = await this.#api.info();
-    if (info?.protocol !== "bcw.sessions" || info.serverInstance !== instance)
+    if (info?.protocol !== "bcw.sessions.v2" || info.serverInstance !== instance)
       throw new Error("server instance changed during session refresh");
     const list = await this.#api.list();
     if (this.#disposed || this.#transport.state?.serverInstance !== instance) return;
@@ -417,7 +416,6 @@ export class SessionController {
     this.#listRevision = 0;
     this.#removedIds.clear();
     this.#serverInfo = info;
-    this.#transport.configureServer?.(info);
     this.#setStorageScope(info.serverInstance, info.principal);
     this.#replaceList(list);
     if (!missingActive) return;

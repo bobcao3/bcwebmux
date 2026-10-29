@@ -161,7 +161,7 @@ class MockApi {
 
   async info() {
     return {
-      protocol: "bcw.sessions",
+      protocol: "bcw.sessions.v2",
       serverInstance: this.serverInstance,
       principal: "contract-user",
     };

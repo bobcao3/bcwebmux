@@ -1,7 +1,13 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Cheng Cao
 
-import { readUint16LE, readUint32LE, readUint64LE, writeUint16LE } from "./protocol.js";
+import {
+  readUint16LE,
+  readUint32LE,
+  readUint64LE,
+  readUint128LE,
+  writeUint16LE,
+} from "./protocol.js";
 
 export const ABI_DIGEST = hexBytes(
   "f2af43df1a7117276892bb2260938c52bdc6b76c93c55e3ebec217c4418387cd",
@@ -82,6 +88,10 @@ export function randomUint64() {
   return value || 1n;
 }
 
+export function randomUint128() {
+  return readUint128LE(crypto.getRandomValues(new Uint8Array(16)), 0) || 1n;
+}
+
 export function hexBytes(text) {
   return Uint8Array.from(text.match(/../g) || [], (pair) => Number.parseInt(pair, 16));
 }
@@ -93,11 +103,7 @@ export function equalBytes(left, right) {
 }
 
 export function isConnectionFrame(frame) {
-  return (
-    frame.attachmentId === 0n &&
-    frame.attachmentEpoch === 0n &&
-    frame.sessionId.every((byte) => byte === 0)
-  );
+  return frame.attachmentId === 0n;
 }
 
 export function validWelcomeCapabilities(payload, maxFrameLength, maxCredit) {
@@ -135,8 +141,8 @@ export function handleInputStatus(record, status, emitError) {
   }
 }
 
-export function acceptAttachmentEpoch(record, frame) {
-  record.epoch = frame.attachmentEpoch;
+export function acceptAttachment(record) {
+  record.accepted = true;
   record.attachRequestId = 0n;
 }
 
@@ -144,7 +150,7 @@ export function markRecordDetached(record) {
   record.live = false;
   record.controller = false;
   record.state = "detached";
-  record.epoch = 0n;
+  record.accepted = false;
   record.attachRequestId = 0n;
   record.frozen = [];
   record.frozenBytes = 0;

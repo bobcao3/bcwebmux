@@ -63,24 +63,27 @@ pub fn beginAttach(
     session: *Session,
     allocator: std.mem.Allocator,
     connection_id: u64,
-    attachment_id: u64,
+    attachment_id: u128,
+    previous_attachment_id: u128,
     client_id: Session.Id,
     generation: Session.Id,
     event_seq: u64,
     output_offset: u64,
 ) !Replay {
-    if (connection_id == 0 or attachment_id == 0) return error.InvalidAttachment;
+    if (connection_id == 0 or attachment_id == 0 or attachment_id == previous_attachment_id) return error.InvalidAttachment;
     session.mutex.lockUncancelable(session.io);
     defer session.mutex.unlock(session.io);
-    if (findByConnectionAttachment(session, connection_id, attachment_id) != null) return error.AttachmentExists;
+    for (session.attachments) |attachment| {
+        if (attachment.active and attachment.key.attachment_id == attachment_id) return error.AttachmentExists;
+    }
     const generation_matches = std.mem.eql(u8, &generation, &session.generation);
     // Logical resume continues the same owner; session-owned pending resize operations remain intact.
     var replacement_index: ?usize = null;
-    if (generation_matches) {
+    if (generation_matches and previous_attachment_id != 0) {
         for (session.attachments, 0..) |attachment, index| {
             if (attachment.active and
                 std.mem.eql(u8, &attachment.client_id, &client_id) and
-                attachment.key.attachment_id == attachment_id and
+                attachment.key.attachment_id == previous_attachment_id and
                 attachment.key.connection_id != connection_id)
             {
                 replacement_index = index;
@@ -325,12 +328,6 @@ fn freeSlot(session: *Session) ?usize {
     return null;
 }
 
-fn findByConnectionAttachment(session: *Session, connection_id: u64, attachment_id: u64) ?usize {
-    for (session.attachments, 0..) |slot, index|
-        if (slot.active and slot.key.connection_id == connection_id and slot.key.attachment_id == attachment_id) return index;
-    return null;
-}
-
 fn findSlot(session: *Session, key: Session.AttachmentKey) ?usize {
     for (session.attachments, 0..) |slot, index|
         if (slot.active and keyEqual(slot.key, key)) return index;
@@ -475,17 +472,21 @@ test "logical resume at capacity fences old controller and waits for replay ACK"
     var session = resumeTestSession(&revision);
     defer session.journal.deinit();
     const client: Session.Id = @splat(2);
-    var old = try beginAttach(&session, std.testing.allocator, 1, 10, client, session.generation, 0, 0);
+    var old = try beginAttach(&session, std.testing.allocator, 1, 10, 0, client, session.generation, 0, 0);
     defer old.deinit();
     try acknowledge(&session, old.key, 0, 0);
     const old_lease = try claimControl(&session, old.key);
-    try std.testing.expectError(error.AttachmentExists, beginAttach(&session, std.testing.allocator, 1, 10, client, session.generation, 0, 0));
-    try std.testing.expectError(error.AttachmentLimit, beginAttach(&session, std.testing.allocator, 2, 10, @splat(3), session.generation, 0, 0));
-    try std.testing.expectError(error.AttachmentLimit, beginAttach(&session, std.testing.allocator, 2, 11, client, session.generation, 0, 0));
-    try std.testing.expectError(error.AttachmentLimit, beginAttach(&session, std.testing.allocator, 2, 10, client, @splat(9), 0, 0));
-    var resumed = try beginAttach(&session, std.testing.allocator, 2, 10, client, session.generation, 0, 0);
+    try std.testing.expectError(error.AttachmentExists, beginAttach(&session, std.testing.allocator, 1, 10, 0, client, session.generation, 0, 0));
+    try std.testing.expectError(error.InvalidAttachment, beginAttach(&session, std.testing.allocator, 2, 10, 10, client, session.generation, 0, 0));
+    try std.testing.expectError(error.AttachmentLimit, beginAttach(&session, std.testing.allocator, 2, 20, 10, @splat(3), session.generation, 0, 0));
+    try std.testing.expectError(error.AttachmentLimit, beginAttach(&session, std.testing.allocator, 2, 20, 0, client, session.generation, 0, 0));
+    try std.testing.expectError(error.AttachmentLimit, beginAttach(&session, std.testing.allocator, 2, 20, 99, client, session.generation, 0, 0));
+    try std.testing.expectError(error.AttachmentLimit, beginAttach(&session, std.testing.allocator, 2, 20, 10, client, @splat(9), 0, 0));
+    const fresh_id: u128 = (@as(u128, 1) << 120) | 20;
+    var resumed = try beginAttach(&session, std.testing.allocator, 2, fresh_id, 10, client, session.generation, 0, 0);
     defer resumed.deinit();
     try std.testing.expectEqual(@as(u8, 1), session.attachment_count);
+    try std.testing.expectEqual(fresh_id, resumed.key.attachment_id);
     try std.testing.expectEqual(old.key.epoch + 1, resumed.key.epoch);
     try std.testing.expectEqual(old_lease.epoch + 1, resumed.lease.epoch);
     try std.testing.expect(keyEqual(session.controller_key, resumed.key));
@@ -509,13 +510,13 @@ test "logical resume preserves readers and pending resize owners" {
     defer session.journal.deinit();
     session.limits.max_attachments_per_session = 2;
     const client: Session.Id = @splat(2);
-    var controller = try beginAttach(&session, std.testing.allocator, 1, 10, client, session.generation, 0, 0);
+    var controller = try beginAttach(&session, std.testing.allocator, 1, 10, 0, client, session.generation, 0, 0);
     defer controller.deinit();
     try acknowledge(&session, controller.key, 0, 0);
     const lease = try claimControl(&session, controller.key);
-    var reader = try beginAttach(&session, std.testing.allocator, 1, 11, client, session.generation, 0, 0);
+    var reader = try beginAttach(&session, std.testing.allocator, 1, 11, 0, client, session.generation, 0, 0);
     defer reader.deinit();
-    var resumed = try beginAttach(&session, std.testing.allocator, 2, 11, client, session.generation, 0, 0);
+    var resumed = try beginAttach(&session, std.testing.allocator, 2, 21, 11, client, session.generation, 0, 0);
     defer resumed.deinit();
     try std.testing.expectEqual(lease.epoch, resumed.lease.epoch);
     try std.testing.expect(keyEqual(session.controller_key, controller.key));
@@ -527,7 +528,7 @@ test "logical resume preserves readers and pending resize owners" {
     session.next_resize_operation = 43;
     const pending = session.pending_resizes;
     try std.testing.expectError(error.ResizePending, claimControl(&session, resumed.key));
-    var handover = try beginAttach(&session, std.testing.allocator, 3, 10, client, session.generation, 0, 0);
+    var handover = try beginAttach(&session, std.testing.allocator, 3, 20, 10, client, session.generation, 0, 0);
     defer handover.deinit();
     try std.testing.expectEqual(@as(u8, 2), session.attachment_count);
     try std.testing.expectEqual(lease.epoch + 1, handover.lease.epoch);
@@ -551,17 +552,17 @@ test "logical resume epoch failures preserve old slot and counters" {
     var session = resumeTestSession(&revision);
     defer session.journal.deinit();
     const client: Session.Id = @splat(2);
-    var old = try beginAttach(&session, std.testing.allocator, 1, 10, client, session.generation, 0, 0);
+    var old = try beginAttach(&session, std.testing.allocator, 1, 10, 0, client, session.generation, 0, 0);
     defer old.deinit();
     try acknowledge(&session, old.key, 0, 0);
     _ = try claimControl(&session, old.key);
     const activity = session.activity_order;
     const rev = revision.load(.monotonic);
     session.next_attachment_epoch = std.math.maxInt(u64);
-    try std.testing.expectError(error.EpochExhausted, beginAttach(&session, std.testing.allocator, 2, 10, client, session.generation, 0, 0));
+    try std.testing.expectError(error.EpochExhausted, beginAttach(&session, std.testing.allocator, 2, 20, 10, client, session.generation, 0, 0));
     session.next_attachment_epoch = 2;
     session.lease_epoch = std.math.maxInt(u64);
-    try std.testing.expectError(error.EpochExhausted, beginAttach(&session, std.testing.allocator, 2, 10, client, session.generation, 0, 0));
+    try std.testing.expectError(error.EpochExhausted, beginAttach(&session, std.testing.allocator, 2, 20, 10, client, session.generation, 0, 0));
     try std.testing.expectEqual(@as(u64, 2), session.next_attachment_epoch);
     try std.testing.expectEqual(activity, session.activity_order);
     try std.testing.expectEqual(rev, revision.load(.monotonic));
@@ -577,7 +578,7 @@ test "logical resume replay allocation failures leave old attachment valid" {
             var session = resumeTestSession(&revision);
             defer session.journal.deinit();
             const client: Session.Id = @splat(2);
-            var old = try beginAttach(&session, std.testing.allocator, 1, 10, client, session.generation, 0, 0);
+            var old = try beginAttach(&session, std.testing.allocator, 1, 10, 0, client, session.generation, 0, 0);
             defer old.deinit();
             try acknowledge(&session, old.key, 0, 0);
             const lease = try claimControl(&session, old.key);
@@ -586,7 +587,7 @@ test "logical resume replay allocation failures leave old attachment valid" {
             session.output_offset = 3;
             const rev = revision.load(.monotonic);
             const activity = session.activity_order;
-            var resumed = beginAttach(&session, allocator, 2, 10, client, session.generation, 0, 0) catch |err| {
+            var resumed = beginAttach(&session, allocator, 2, 20, 10, client, session.generation, 0, 0) catch |err| {
                 try std.testing.expectEqual(@as(u8, 1), session.attachment_count);
                 try std.testing.expectEqual(@as(u64, 2), session.next_attachment_epoch);
                 try std.testing.expectEqual(lease.epoch, session.lease_epoch);

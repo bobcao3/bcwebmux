@@ -104,7 +104,7 @@ func TestNativeEngineABI(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !ok || len(message) < 64 || message[4] != 2 { // WELCOME
+	if !ok || len(message) < 10 || messageType(message) != 2 { // WELCOME
 		t.Fatalf("WELCOME message = ok %v, %d bytes, type %d", ok, len(message), messageType(message))
 	}
 
@@ -162,30 +162,27 @@ func TestNativeEngineABI(t *testing.T) {
 }
 
 func helloFrame() []byte {
-	const headerLength = 64
+	const headerLength = 10
 	const payloadLength = 56
 	frame := make([]byte, headerLength+payloadLength)
-	binary.LittleEndian.PutUint32(frame[0:], 0x53574342)
-	frame[4] = 1 // HELLO
-	binary.LittleEndian.PutUint16(frame[6:], headerLength)
-	binary.LittleEndian.PutUint32(frame[8:], payloadLength)
-	binary.LittleEndian.PutUint64(frame[16:], 1)
-	binary.LittleEndian.PutUint64(frame[24:], 1)
+	frame[0] = 1 // HELLO
+	binary.LittleEndian.PutUint64(frame[2:], 1)
+	payload := frame[headerLength:]
 	for index := 0; index < 16; index++ {
-		frame[64+index] = byte(index + 1)
+		payload[index] = byte(index + 1)
 	}
 	digest := sha256.Sum256([]byte(terminalABI))
-	copy(frame[80:112], digest[:])
-	binary.LittleEndian.PutUint32(frame[112:], 32*1024*1024)
-	binary.LittleEndian.PutUint32(frame[116:], MaxFrameLength)
+	copy(payload[16:48], digest[:])
+	binary.LittleEndian.PutUint32(payload[48:], 32*1024*1024)
+	binary.LittleEndian.PutUint32(payload[52:], MaxFrameLength)
 	return frame
 }
 
 func messageType(message []byte) byte {
-	if len(message) <= 4 {
+	if len(message) < 2 {
 		return 0
 	}
-	return message[4]
+	return message[0]
 }
 
 func TestNativeProtocolTerminationLeavesOrderedOutputDrainable(t *testing.T) {
@@ -217,9 +214,6 @@ func TestNativeProtocolTerminationLeavesOrderedOutputDrainable(t *testing.T) {
 		if err != nil || !ok || messageType(message) != kind {
 			t.Fatalf("drain %d: ok=%v type=%d err=%v", i, ok, messageType(message), err)
 		}
-		if seq := binary.LittleEndian.Uint64(message[16:]); seq != uint64(i+1) {
-			t.Fatalf("drain sequence %d", seq)
-		}
 	}
 	if _, _, err := socket.Drain(); !errors.Is(err, ErrClosed) {
 		t.Fatalf("exhausted terminal queue: %v", err)
@@ -247,7 +241,7 @@ func TestNativeABIMismatchErrorIsDrainable(t *testing.T) {
 	}
 	defer socket.Close()
 	hello := helloFrame()
-	hello[80] ^= 1
+	hello[10+16] ^= 1
 	if err := socket.Receive(hello); !errors.Is(err, ErrProtocol) {
 		t.Fatalf("ABI mismatch: %v", err)
 	}

@@ -173,8 +173,7 @@ const ErrorCode = enum(u16) {
 
 const InputStatus = enum(u16) { accepted = 0, duplicate = 1, lease_lost = 2, stale = 3, not_running = 4, invalid = 5 };
 
-// Private, bounded per-connection bookkeeping; wire identity is session_id plus
-// attachment key/epoch, never the array index.
+// Private, bounded bookkeeping; only the unique attachment ID crosses the wire.
 const ConnectionAttachment = struct {
     active: bool = false,
     live: bool = false,
@@ -201,8 +200,6 @@ state_mutex: std.Io.Mutex = .init,
 send_mutex: std.Io.Mutex = .init,
 attachments: [manifest.max_connection_attachments]ConnectionAttachment = @splat(.{}),
 output_compressors: [manifest.max_connection_attachments]OutputCompressor,
-sender_sequence: u64 = 0,
-receiver_sequence: u64 = 0,
 last_pong_ms: i64,
 last_ping_ms: i64,
 // Embedders with their own transport watchdog must opt in before HELLO.
@@ -322,31 +319,28 @@ pub fn receiveBinary(self: *Self, bytes: []const u8) !void {
 }
 
 fn negotiate(self: *Self, bytes: []const u8) !void {
-    const frame = protocol.decodeFrame(bytes) catch return error.InvalidFrame;
-    try self.acceptSequence(frame.connection_sequence);
-    if (frame.frame_type != .hello or frame.request_id == 0 or frame.payload.len != 56 or frame.attachment_id != 0 or
-        frame.attachment_epoch != 0 or !std.mem.eql(u8, &frame.session_id, &zero_id)) return error.HelloRequired;
+    const frame = protocol.decodeClientFrame(bytes) catch return error.InvalidFrame;
+    if (frame.frame_type != .hello or frame.request_id == 0 or frame.payload.len != 56) return error.HelloRequired;
     @memcpy(&self.client_id, frame.payload[0..16]);
     if (idIsZero(self.client_id)) return error.InvalidHello;
     var expected_abi: [32]u8 = undefined;
     std.crypto.hash.sha2.Sha256.hash(manifest.terminal_abi, &expected_abi, .{});
     if (!std.mem.eql(u8, frame.payload[16..48], &expected_abi)) {
-        try self.sendError(.incompatible_abi, true, frame.request_id, zero_id, 0, 0, "terminal ABI mismatch; reload/update required");
+        try self.sendError(.incompatible_abi, true, frame.request_id, 0, "terminal ABI mismatch; reload/update required");
         return error.IncompatibleTerminalAbi;
     }
     const requested_credit = protocol.readU32LE(frame.payload, 48);
     const requested_frame = protocol.readU32LE(frame.payload, 52);
     if (requested_credit == 0 or requested_credit > manifest.max_credit_bytes or
-        requested_frame < protocol.header_length or requested_frame > protocol.max_frame_length) return error.InvalidHello;
+        requested_frame < protocol.max_header_length or requested_frame > protocol.max_frame_length) return error.InvalidHello;
     try self.sendWelcome(frame.request_id);
 }
 
 fn receiveFrame(self: *Self, bytes: []const u8) !void {
-    const frame = protocol.decodeFrame(bytes) catch {
-        try self.sendError(.protocol_error, true, 0, zero_id, 0, 0, "invalid frame");
+    const frame = protocol.decodeClientFrame(bytes) catch {
+        try self.sendError(.protocol_error, true, 0, 0, "invalid frame");
         return error.InvalidFrame;
     };
-    try self.acceptSequence(frame.connection_sequence);
     switch (frame.frame_type) {
         .attach => try self.receiveAttach(frame),
         .detach => try self.receiveDetach(frame),
@@ -358,27 +352,30 @@ fn receiveFrame(self: *Self, bytes: []const u8) !void {
         .pong => try self.receivePong(frame),
         .ping => try self.receivePing(frame),
         else => {
-            try self.sendError(.protocol_error, true, frame.request_id, frame.session_id, frame.attachment_id, frame.attachment_epoch, "client frame type is not allowed");
+            try self.sendError(.protocol_error, true, frame.request_id, frame.attachment_id, "client frame type is not allowed");
             return error.InvalidClientFrame;
         },
     }
 }
 
 fn receiveAttach(self: *Self, frame: protocol.Frame) !void {
-    if (frame.payload.len != 40 or frame.request_id == 0 or frame.attachment_id == 0 or frame.attachment_epoch != 0 or idIsZero(frame.session_id))
-        return self.sendError(.invalid_attachment, false, frame.request_id, frame.session_id, frame.attachment_id, 0, "invalid attach");
+    if (frame.payload.len != 56 or frame.request_id == 0 or frame.attachment_id == 0 or idIsZero(frame.session_id))
+        return self.sendError(.invalid_attachment, false, frame.request_id, frame.attachment_id, "invalid attach");
+    if (self.findSlot(frame.attachment_id) != null)
+        return self.sendError(.invalid_attachment, false, frame.request_id, frame.attachment_id, "attachment ID already in use");
     var generation: Session.Id = undefined;
     @memcpy(&generation, frame.payload[0..16]);
     const event_seq = protocol.readU64LE(frame.payload, 16);
     const output_offset = protocol.readU64LE(frame.payload, 24);
     const credit: usize = protocol.readU32LE(frame.payload, 32);
     if (credit == 0 or credit > manifest.max_credit_bytes or protocol.readU32LE(frame.payload, 36) != 0)
-        return self.sendError(.flow_control, false, frame.request_id, frame.session_id, frame.attachment_id, 0, "invalid attachment credit");
+        return self.sendError(.flow_control, false, frame.request_id, frame.attachment_id, "invalid attachment credit");
     var replay = self.registry.realtimeAttach(
         self.connection_id,
         self.client_id,
         frame.session_id,
         frame.attachment_id,
+        protocol.readU128LE(frame.payload, 40),
         generation,
         event_seq,
         output_offset,
@@ -389,7 +386,7 @@ fn receiveAttach(self: *Self, frame: protocol.Frame) !void {
             error.ReplayUnavailable => .replay_unavailable,
             else => .invalid_attachment,
         };
-        return self.sendError(code, false, frame.request_id, frame.session_id, frame.attachment_id, 0, @errorName(err));
+        return self.sendError(code, false, frame.request_id, frame.attachment_id, @errorName(err));
     };
     defer replay.deinit();
     const index = self.reserveAttachment(frame.session_id, replay.key, credit, replay.lease.epoch) catch |err| {
@@ -398,13 +395,13 @@ fn receiveAttach(self: *Self, frame: protocol.Frame) !void {
             error.ConnectionAttachmentLimit => .attachment_limit,
             else => .internal,
         };
-        return self.sendError(code, false, frame.request_id, frame.session_id, frame.attachment_id, replay.key.epoch, @errorName(err));
+        return self.sendError(code, false, frame.request_id, frame.attachment_id, @errorName(err));
     };
     errdefer self.detachIndex(index);
     const replay_credit_cost = replayCreditCost(&replay);
     if (replay_credit_cost > credit) {
         self.detachIndex(index);
-        return self.sendError(.flow_control, false, frame.request_id, frame.session_id, frame.attachment_id, replay.key.epoch, "initial credit is insufficient for replay");
+        return self.sendError(.flow_control, false, frame.request_id, frame.attachment_id, "initial credit is insufficient for replay");
     }
     try self.sendReplay(index, frame.request_id, &replay);
     self.state_mutex.lockUncancelable(self.io);
@@ -418,7 +415,7 @@ fn receiveAttach(self: *Self, frame: protocol.Frame) !void {
 
 fn receiveDetach(self: *Self, frame: protocol.Frame) !void {
     if (frame.payload.len != 0 or frame.request_id == 0) return error.InvalidDetach;
-    const index = self.findSlot(frame.session_id, frame.attachment_id, frame.attachment_epoch) orelse return;
+    const index = self.findSlot(frame.attachment_id) orelse return;
     self.detachIndex(index);
 }
 
@@ -428,10 +425,10 @@ fn receiveAck(self: *Self, frame: protocol.Frame) !void {
     const output_offset = protocol.readU64LE(frame.payload, 8);
     const credit: usize = protocol.readU32LE(frame.payload, 16);
     if (credit > manifest.max_credit_bytes) return error.InvalidAck;
-    const index = self.findSlot(frame.session_id, frame.attachment_id, frame.attachment_epoch) orelse return;
+    const index = self.findSlot(frame.attachment_id) orelse return;
     const slot = self.slotSnapshot(index) orelse return;
     if (event_seq > slot.event_seq or (event_seq == slot.event_seq and output_offset > slot.output_offset)) {
-        try self.sendError(.protocol_error, false, frame.request_id, frame.session_id, frame.attachment_id, frame.attachment_epoch, "acknowledges unsent data");
+        try self.sendError(.protocol_error, false, frame.request_id, frame.attachment_id, "acknowledges unsent data");
         return;
     }
     self.registry.realtimeAck(slot.session_id, slot.key, event_seq, output_offset) catch return;
@@ -442,23 +439,23 @@ fn receiveCredit(self: *Self, frame: protocol.Frame) !void {
     if (frame.payload.len != 8 or frame.request_id != 0 or protocol.readU32LE(frame.payload, 4) != 0) return error.InvalidCredit;
     const credit: usize = protocol.readU32LE(frame.payload, 0);
     if (credit == 0 or credit > manifest.max_credit_bytes) return error.InvalidCredit;
-    const index = self.findSlot(frame.session_id, frame.attachment_id, frame.attachment_epoch) orelse return;
+    const index = self.findSlot(frame.attachment_id) orelse return;
     self.addCredit(index, credit);
 }
 
 fn receiveClaim(self: *Self, frame: protocol.Frame) !void {
     if (frame.payload.len != 0 or frame.request_id == 0) return error.InvalidClaim;
-    const index = self.findSlot(frame.session_id, frame.attachment_id, frame.attachment_epoch) orelse return;
+    const index = self.findSlot(frame.attachment_id) orelse return;
     const slot = self.slotSnapshot(index) orelse return;
     if (slot.last_claim_request == frame.request_id) {
         const lease = self.registry.realtimeLease(slot.session_id, slot.key) catch |err| {
-            return self.sendError(.invalid_attachment, false, frame.request_id, frame.session_id, frame.attachment_id, frame.attachment_epoch, @errorName(err));
+            return self.sendError(.invalid_attachment, false, frame.request_id, frame.attachment_id, @errorName(err));
         };
         try self.sendLease(frame.request_id, slot, lease);
         return;
     }
     const lease = self.registry.realtimeClaim(slot.session_id, slot.key) catch |err| {
-        return self.sendError(.invalid_attachment, false, frame.request_id, frame.session_id, frame.attachment_id, frame.attachment_epoch, @errorName(err));
+        return self.sendError(.invalid_attachment, false, frame.request_id, frame.attachment_id, @errorName(err));
     };
     self.setClaimRequest(index, slot.key.epoch, frame.request_id);
     self.setLeaseSeen(index, lease.epoch);
@@ -467,7 +464,7 @@ fn receiveClaim(self: *Self, frame: protocol.Frame) !void {
 
 fn receiveInput(self: *Self, frame: protocol.Frame) !void {
     if (frame.payload.len < 25 or frame.request_id == 0) return error.InvalidInput;
-    const index = self.findSlot(frame.session_id, frame.attachment_id, frame.attachment_epoch) orelse return;
+    const index = self.findSlot(frame.attachment_id) orelse return;
     const slot = self.slotSnapshot(index) orelse return;
     const lease_epoch = protocol.readU64LE(frame.payload, 0);
     const based_event_seq = protocol.readU64LE(frame.payload, 8);
@@ -484,16 +481,16 @@ fn receiveInput(self: *Self, frame: protocol.Frame) !void {
     var payload: [12]u8 = @splat(0);
     protocol.writeU64LE(&payload, 0, input_seq);
     protocol.writeU16LE(&payload, 8, @backingInt(status));
-    try self.sendParts(.input_ack, 0, frame.request_id, frame.attachment_id, frame.attachment_epoch, frame.session_id, &.{&payload});
+    try self.sendParts(.input_ack, 0, frame.request_id, frame.attachment_id, &.{&payload});
 }
 
 fn receiveResize(self: *Self, frame: protocol.Frame) !void {
     if (frame.payload.len != 24 or frame.request_id == 0) return error.InvalidResize;
-    const index = self.findSlot(frame.session_id, frame.attachment_id, frame.attachment_epoch) orelse return;
+    const index = self.findSlot(frame.attachment_id) orelse return;
     const slot = self.slotSnapshot(index) orelse return;
     if (slot.last_resize_request == frame.request_id) {
         if (!std.mem.eql(u8, slot.last_resize_payload[0..], frame.payload)) {
-            try self.sendError(.protocol_error, false, frame.request_id, frame.session_id, frame.attachment_id, frame.attachment_epoch, "idempotency conflict");
+            try self.sendError(.protocol_error, false, frame.request_id, frame.attachment_id, "idempotency conflict");
             return;
         }
         try self.sendResizeAccepted(frame, slot.last_resize_operation, readGeometry(slot.last_resize_payload[16..24]));
@@ -508,7 +505,7 @@ fn receiveResize(self: *Self, frame: protocol.Frame) !void {
             error.StaleTerminal => .stale_terminal,
             else => .invalid_attachment,
         };
-        return self.sendError(code, false, frame.request_id, frame.session_id, frame.attachment_id, frame.attachment_epoch, @errorName(err));
+        return self.sendError(code, false, frame.request_id, frame.attachment_id, @errorName(err));
     };
     self.setResizeRequest(index, slot.key.epoch, frame.request_id, operation_id, frame.payload);
     try self.sendResizeAccepted(frame, operation_id, geometry);
@@ -519,12 +516,11 @@ fn sendResizeAccepted(self: *Self, frame: protocol.Frame, operation_id: u64, geo
     protocol.writeU64LE(&payload, 0, protocol.readU64LE(frame.payload, 0));
     protocol.writeU64LE(&payload, 8, operation_id);
     writeGeometry(payload[16..24], geometry);
-    try self.sendParts(.canonical_resize, 0, frame.request_id, frame.attachment_id, frame.attachment_epoch, frame.session_id, &.{&payload});
+    try self.sendParts(.canonical_resize, 0, frame.request_id, frame.attachment_id, &.{&payload});
 }
 
 fn receivePong(self: *Self, frame: protocol.Frame) !void {
-    if (frame.payload.len != 8 or frame.request_id != 0 or frame.attachment_id != 0 or frame.attachment_epoch != 0 or !idIsZero(frame.session_id))
-        return error.InvalidPong;
+    if (frame.payload.len != 8) return error.InvalidPong;
     const ping_ms: i64 = @bitCast(protocol.readU64LE(frame.payload, 0));
     self.state_mutex.lockUncancelable(self.io);
     // Stale/superseded/duplicate nonces are observations, not framing errors,
@@ -537,14 +533,14 @@ fn receivePong(self: *Self, frame: protocol.Frame) !void {
 }
 
 fn receivePing(self: *Self, frame: protocol.Frame) !void {
-    if (frame.payload.len != 8 or frame.request_id == 0 or protocol.readU64LE(frame.payload, 0) != frame.request_id or frame.attachment_id != 0 or frame.attachment_epoch != 0 or !idIsZero(frame.session_id))
+    if (frame.payload.len != 8)
         return error.InvalidPing;
-    try self.sendParts(.pong, 0, frame.request_id, 0, 0, zero_id, &.{frame.payload});
+    try self.sendParts(.pong, 0, 0, 0, &.{frame.payload});
 }
 
 fn sendReplay(self: *Self, index: usize, request_id: u64, replay: *const realtime.Replay) !void {
-    const slot = self.slotSnapshot(index) orelse return;
-    var begin: [80]u8 = @splat(0);
+    if (self.slotSnapshot(index) == null) return;
+    var begin: [88]u8 = @splat(0);
     @memcpy(begin[0..16], &replay.generation);
     begin[16] = @backingInt(replay.mode);
     begin[17] = @backingInt(replay.state);
@@ -553,28 +549,28 @@ fn sendReplay(self: *Self, index: usize, request_id: u64, replay: *const realtim
     protocol.writeU64LE(&begin, 48, replay.high_event_seq);
     protocol.writeU64LE(&begin, 56, replay.high_output_offset);
     protocol.writeU64LE(&begin, 64, replay.lease.epoch);
-    protocol.writeU64LE(&begin, 72, replay.lease.controller_attachment_id orelse 0);
-    try self.sendParts(.attach_begin, 0, request_id, replay.key.attachment_id, replay.key.epoch, slot.session_id, &.{&begin});
-    if (replay.mode == .checkpoint) try self.sendCheckpoint(index, slot.session_id, replay);
-    for (replay.events) |event| try self.sendEvent(index, replay.key, slot.session_id, event, replay.output(event));
+    protocol.writeU128LE(&begin, 72, replay.lease.controller_attachment_id orelse 0);
+    try self.sendParts(.attach_begin, 0, request_id, replay.key.attachment_id, &.{&begin});
+    if (replay.mode == .checkpoint) try self.sendCheckpoint(index, replay);
+    for (replay.events) |event| try self.sendEvent(index, replay.key, event, replay.output(event));
     var barrier: [16]u8 = undefined;
     protocol.writeU64LE(&barrier, 0, replay.high_event_seq);
     protocol.writeU64LE(&barrier, 8, replay.high_output_offset);
-    try self.sendParts(.live_barrier, 0, request_id, replay.key.attachment_id, replay.key.epoch, slot.session_id, &.{&barrier});
+    try self.sendParts(.live_barrier, 0, request_id, replay.key.attachment_id, &.{&barrier});
 }
 
-fn sendCheckpoint(self: *Self, index: usize, session_id: Session.Id, replay: *const realtime.Replay) !void {
+fn sendCheckpoint(self: *Self, index: usize, replay: *const realtime.Replay) !void {
     var begin: [56]u8 = undefined;
     protocol.writeU32LE(&begin, 0, @intCast(replay.checkpoint.len));
     protocol.writeU32LE(&begin, 4, manifest.checkpoint_chunk_bytes);
     protocol.writeU64LE(&begin, 8, replay.checkpoint_event_seq);
     protocol.writeU64LE(&begin, 16, replay.checkpoint_output_offset);
     @memcpy(begin[24..56], &replay.checkpoint_sha256);
-    try self.sendParts(.checkpoint_begin, 0, 0, replay.key.attachment_id, replay.key.epoch, session_id, &.{&begin});
+    try self.sendParts(.checkpoint_begin, 0, 0, replay.key.attachment_id, &.{&begin});
     var offset: usize = 0;
     while (offset < replay.checkpoint.len) {
         const raw = replay.checkpoint[offset..][0..@min(manifest.checkpoint_chunk_bytes, replay.checkpoint.len - offset)];
-        try self.consumeCredit(index, replay.key, raw.len + protocol.header_length + checkpoint_chunk_prefix_length);
+        try self.consumeCredit(index, replay.key, raw.len + protocol.headerLengthForType(.checkpoint_chunk) + checkpoint_chunk_prefix_length);
         const compressed = try compress(self.allocator, raw);
         defer self.allocator.free(compressed);
         var prefix: [checkpoint_chunk_prefix_length]u8 = undefined;
@@ -582,26 +578,26 @@ fn sendCheckpoint(self: *Self, index: usize, session_id: Session.Id, replay: *co
         protocol.writeU32LE(&prefix, 4, @intCast(raw.len));
         protocol.writeU32LE(&prefix, 8, std.hash.crc.@"CRC-32/ISCSI".hash(raw));
         protocol.writeU32LE(&prefix, 12, @intCast(compressed.len));
-        try self.sendParts(.checkpoint_chunk, protocol.compressed_flag, 0, replay.key.attachment_id, replay.key.epoch, session_id, &.{ &prefix, compressed });
+        try self.sendParts(.checkpoint_chunk, protocol.compressed_flag, 0, replay.key.attachment_id, &.{ &prefix, compressed });
         offset += raw.len;
     }
-    try self.sendParts(.checkpoint_end, 0, 0, replay.key.attachment_id, replay.key.epoch, session_id, &.{&replay.checkpoint_sha256});
+    try self.sendParts(.checkpoint_end, 0, 0, replay.key.attachment_id, &.{&replay.checkpoint_sha256});
 }
 
-fn sendEvent(self: *Self, index: usize, key: Session.AttachmentKey, session_id: Session.Id, event: Session.Event, output: []const u8) !void {
+fn sendEvent(self: *Self, index: usize, key: Session.AttachmentKey, event: Session.Event, output: []const u8) !void {
     var prefix: [event_prefix_length]u8 = @splat(0);
     prefix[0] = @backingInt(event.kind);
     protocol.writeU64LE(&prefix, 16, event.seq);
     protocol.writeU64LE(&prefix, 24, event.output_offset);
     switch (event.kind) {
         .output => {
-            try self.consumeCredit(index, key, output.len + protocol.header_length + event_prefix_length);
+            try self.consumeCredit(index, key, output.len + protocol.headerLengthForType(.event_batch) + event_prefix_length);
             const compressed = try self.compressOutput(index, key, output);
             defer self.allocator.free(compressed);
             protocol.writeU32LE(&prefix, 4, @intCast(output.len));
             protocol.writeU32LE(&prefix, 8, event.crc32c);
             protocol.writeU32LE(&prefix, 12, @intCast(compressed.len));
-            try self.sendParts(.event_batch, protocol.compressed_flag, 0, key.attachment_id, key.epoch, session_id, &.{ &prefix, compressed });
+            try self.sendParts(.event_batch, protocol.compressed_flag, 0, key.attachment_id, &.{ &prefix, compressed });
         },
         .resize => {
             try self.consumeCredit(index, key, 128);
@@ -609,7 +605,7 @@ fn sendEvent(self: *Self, index: usize, key: Session.AttachmentKey, session_id: 
             protocol.writeU32LE(&prefix, 12, 8);
             var geometry: [8]u8 = undefined;
             writeGeometry(&geometry, .{ .cols = event.cols, .rows = event.rows, .cell_width_px = event.cell_width_px, .cell_height_px = event.cell_height_px });
-            try self.sendParts(.event_batch, 0, 0, key.attachment_id, key.epoch, session_id, &.{ &prefix, &geometry });
+            try self.sendParts(.event_batch, 0, 0, key.attachment_id, &.{ &prefix, &geometry });
         },
         .exit => {
             try self.consumeCredit(index, key, 128);
@@ -618,7 +614,7 @@ fn sendEvent(self: *Self, index: usize, key: Session.AttachmentKey, session_id: 
             var body: [12]u8 = undefined;
             protocol.writeU32LE(&body, 0, @bitCast(event.wait_status));
             protocol.writeU64LE(&body, 4, @bitCast(event.timestamp_ms));
-            try self.sendParts(.event_batch, 0, 0, key.attachment_id, key.epoch, session_id, &.{ &prefix, &body });
+            try self.sendParts(.event_batch, 0, 0, key.attachment_id, &.{ &prefix, &body });
         },
     }
 }
@@ -635,24 +631,24 @@ fn sendWelcome(self: *Self, request_id: u64) !void {
     protocol.writeU16LE(&payload, 68, @intCast(manifest.max_connection_attachments));
     protocol.writeU64LE(&payload, 72, self.registry.currentRevision());
     protocol.writeU64LE(&payload, 80, self.connection_id);
-    try self.sendParts(.welcome, 0, request_id, 0, 0, zero_id, &.{&payload});
+    try self.sendParts(.welcome, 0, request_id, 0, &.{&payload});
 }
 
-fn sendError(self: *Self, code: ErrorCode, fatal: bool, request_id: u64, session_id: Session.Id, attachment_id: u64, epoch: u64, detail: []const u8) !void {
+fn sendError(self: *Self, code: ErrorCode, fatal: bool, request_id: u64, attachment_id: u128, detail: []const u8) !void {
     var prefix: [4]u8 = @splat(0);
     protocol.writeU16LE(&prefix, 0, @backingInt(code));
     protocol.writeU16LE(&prefix, 2, @intFromBool(fatal));
     const bounded = detail[0..@min(detail.len, 512)];
-    try self.sendParts(.error_frame, 0, request_id, attachment_id, epoch, session_id, &.{ &prefix, bounded });
+    try self.sendParts(.error_frame, 0, request_id, attachment_id, &.{ &prefix, bounded });
     if (fatal) self.stopped.store(true, .release);
 }
 
 fn sendLease(self: *Self, request_id: u64, attachment: ConnectionAttachment, lease: Session.LeaseState) !void {
-    var payload: [24]u8 = undefined;
+    var payload: [32]u8 = undefined;
     protocol.writeU64LE(&payload, 0, lease.epoch);
-    protocol.writeU64LE(&payload, 8, lease.controller_attachment_id orelse 0);
-    writeGeometry(payload[16..24], lease.geometry);
-    try self.sendParts(.lease_changed, 0, request_id, attachment.key.attachment_id, attachment.key.epoch, attachment.session_id, &.{&payload});
+    protocol.writeU128LE(&payload, 8, lease.controller_attachment_id orelse 0);
+    writeGeometry(payload[24..32], lease.geometry);
+    try self.sendParts(.lease_changed, 0, request_id, attachment.key.attachment_id, &.{&payload});
 }
 
 fn sendParts(
@@ -660,9 +656,7 @@ fn sendParts(
     frame_type: protocol.FrameType,
     flags: u8,
     request_id: u64,
-    attachment_id: u64,
-    attachment_epoch: u64,
-    session_id: Session.Id,
+    attachment_id: u128,
     parts: []const []const u8,
 ) !void {
     var payload_length: usize = 0;
@@ -670,22 +664,17 @@ fn sendParts(
     if (payload_length > protocol.max_payload_length or parts.len > 7) return error.FrameTooLarge;
     try self.send_mutex.lock(self.io);
     defer self.send_mutex.unlock(self.io);
-    self.sender_sequence = std.math.add(u64, self.sender_sequence, 1) catch return error.SequenceExhausted;
-    var header: [protocol.header_length]u8 = undefined;
-    _ = try protocol.encodeFrame(.{
+    var header: [protocol.max_header_length]u8 = undefined;
+    const encoded_header = try protocol.encodeServerFrame(.{
         .frame_type = frame_type,
         .flags = flags,
-        .connection_sequence = self.sender_sequence,
         .request_id = request_id,
         .attachment_id = attachment_id,
-        .attachment_epoch = attachment_epoch,
-        .session_id = session_id,
     }, &header);
-    protocol.writeU32LE(&header, protocol.payload_length_offset, @intCast(payload_length));
-    const payload = try self.allocator.alloc(u8, protocol.header_length + payload_length);
+    const payload = try self.allocator.alloc(u8, encoded_header.len + payload_length);
     defer self.allocator.free(payload);
-    @memcpy(payload[0..protocol.header_length], &header);
-    var offset: usize = protocol.header_length;
+    @memcpy(payload[0..encoded_header.len], encoded_header);
+    var offset: usize = encoded_header.len;
     for (parts) |part| {
         @memcpy(payload[offset..][0..part.len], part);
         offset += part.len;
@@ -713,12 +702,12 @@ fn publishControl(self: *Self) !void {
     if (send_ping) {
         var payload: [8]u8 = undefined;
         protocol.writeU64LE(&payload, 0, @bitCast(now));
-        try self.sendParts(.ping, 0, 0, 0, 0, zero_id, &.{&payload});
+        try self.sendParts(.ping, 0, 0, 0, &.{&payload});
     }
     if (send_revision) {
         var payload: [8]u8 = undefined;
         protocol.writeU64LE(&payload, 0, revision);
-        try self.sendParts(.session_changed, 0, 0, 0, 0, zero_id, &.{&payload});
+        try self.sendParts(.session_changed, 0, 0, 0, &.{&payload});
     }
 }
 
@@ -747,7 +736,7 @@ fn publishSlot(self: *Self, index: usize) !void {
     for (batch.events) |event| {
         const next_output_offset = event.output_offset + if (event.kind == .output) event.byte_len else 0;
         self.updateCursor(index, slot.key.epoch, event.seq, next_output_offset);
-        try self.sendEvent(index, slot.key, slot.session_id, event, batch.output(event));
+        try self.sendEvent(index, slot.key, event, batch.output(event));
     }
     const metadata = self.registry.get(slot.session_id) orelse return;
     if ((metadata.state == .exited or metadata.state == .failed) and !slot.exit_sent) {
@@ -755,7 +744,7 @@ fn publishSlot(self: *Self, index: usize) !void {
         protocol.writeU64LE(&payload, 0, metadata.event_seq);
         protocol.writeU32LE(&payload, 8, @bitCast(metadata.exit_status orelse -1));
         protocol.writeU64LE(&payload, 12, @bitCast(metadata.last_activity_ms));
-        try self.sendParts(.exited, 0, 0, slot.key.attachment_id, slot.key.epoch, slot.session_id, &.{&payload});
+        try self.sendParts(.exited, 0, 0, slot.key.attachment_id, &.{&payload});
         self.markExitSent(index, slot.key.epoch);
     }
 }
@@ -767,7 +756,7 @@ fn resyncAndDetach(self: *Self, index: usize, slot: ConnectionAttachment) !void 
         protocol.writeU64LE(&payload, 0, value.checkpoint_event_seq);
         protocol.writeU64LE(&payload, 8, value.output_offset);
     }
-    try self.sendParts(.resync_required, 0, 0, slot.key.attachment_id, slot.key.epoch, slot.session_id, &.{&payload});
+    try self.sendParts(.resync_required, 0, 0, slot.key.attachment_id, &.{&payload});
     self.detachIndex(index);
 }
 
@@ -784,12 +773,11 @@ fn reserveAttachment(self: *Self, session_id: Session.Id, key: Session.Attachmen
     return error.ConnectionAttachmentLimit;
 }
 
-fn findSlot(self: *Self, session_id: Session.Id, attachment_id: u64, epoch: u64) ?usize {
+fn findSlot(self: *Self, attachment_id: u128) ?usize {
     self.state_mutex.lockUncancelable(self.io);
     defer self.state_mutex.unlock(self.io);
     for (self.attachments, 0..) |slot, index| {
-        if (slot.active and slot.key.attachment_id == attachment_id and slot.key.epoch == epoch and
-            std.mem.eql(u8, &slot.session_id, &session_id)) return index;
+        if (slot.active and slot.key.attachment_id == attachment_id) return index;
     }
     return null;
 }
@@ -874,12 +862,6 @@ fn deinitOutputCompressors(self: *Self) void {
     for (&self.output_compressors) |*compressor| compressor.deinit();
 }
 
-fn acceptSequence(self: *Self, sequence: u64) !void {
-    if (self.receiver_sequence == std.math.maxInt(u64)) return error.SequenceExhausted;
-    if (sequence != self.receiver_sequence + 1) return error.InvalidConnectionSequence;
-    self.receiver_sequence = sequence;
-}
-
 fn readGeometry(bytes: []const u8) Session.Geometry {
     return .{
         .cols = protocol.readU16LE(bytes, 0),
@@ -914,12 +896,12 @@ fn replayCreditCost(replay: *const realtime.Replay) usize {
     var offset: usize = 0;
     while (offset < replay.checkpoint.len) {
         const raw_len = @min(manifest.checkpoint_chunk_bytes, replay.checkpoint.len - offset);
-        total +|= raw_len +| protocol.header_length +| checkpoint_chunk_prefix_length;
+        total +|= raw_len +| protocol.headerLengthForType(.checkpoint_chunk) +| checkpoint_chunk_prefix_length;
         offset += raw_len;
     }
     for (replay.events) |event| {
         total +|= if (event.kind == .output)
-            replay.output(event).len +| protocol.header_length +| event_prefix_length
+            replay.output(event).len +| protocol.headerLengthForType(.event_batch) +| event_prefix_length
         else
             128;
     }

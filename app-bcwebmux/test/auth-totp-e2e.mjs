@@ -343,7 +343,7 @@ try {
     30000,
   );
   const socket = await evaluate(`new Promise((resolve) => {
-    const socket = new WebSocket("ws://" + location.host + "/ws", "bcw.sessions");
+    const socket = new WebSocket("ws://" + location.host + "/ws", "bcw.sessions.v2");
     const done = value => { try { socket.close(); } catch {} resolve(value); };
     socket.onopen = () => done("open");
     socket.onerror = () => done("error");

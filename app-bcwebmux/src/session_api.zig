@@ -90,11 +90,6 @@ fn respondServer(registry: *Registry, request: *MemoryRequest) !void {
     try json.beginObject();
     try json.objectField("protocol");
     try json.write(manifest.protocol);
-    try json.objectField("capabilities");
-    try json.beginObject();
-    try json.objectField("attachmentResume");
-    try json.write(true);
-    try json.endObject();
     try json.objectField("serverInstance");
     try json.write(Registry.formatId(registry.server_instance, &server_id_buffer));
     try json.objectField("principal");
@@ -263,7 +258,7 @@ fn respondMetadata(
 fn writeMetadata(json: *std.json.Stringify, metadata: *const Session.Metadata, revision: u64) !void {
     var id_buffer: [36]u8 = undefined;
     var generation_buffer: [36]u8 = undefined;
-    var attachment_id_buffer: [16]u8 = undefined;
+    var attachment_id_buffer: [32]u8 = undefined;
     var lease_epoch_buffer: [32]u8 = undefined;
     try json.beginObject();
     try json.objectField("id");
@@ -312,7 +307,7 @@ fn writeMetadata(json: *std.json.Stringify, metadata: *const Session.Metadata, r
     try writeField(json, "attachments", metadata.attachment_count);
     try json.objectField("controller");
     if (metadata.controller_attachment_id) |attachment_id| {
-        const attachment_id_text = try std.fmt.bufPrint(&attachment_id_buffer, "{x:0>16}", .{attachment_id});
+        const attachment_id_text = try std.fmt.bufPrint(&attachment_id_buffer, "{x:0>32}", .{attachment_id});
         const lease_epoch_text = try std.fmt.bufPrint(&lease_epoch_buffer, "{d}", .{metadata.lease_epoch});
         try json.beginObject();
         try json.objectField("attachmentId");

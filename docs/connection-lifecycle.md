@@ -17,10 +17,17 @@ diagnostics; do not invent RTT values for them or silently omit them from health
 reporting.
 
 Use a small connection-attempt object, not a generic state-machine framework. It
-owns its socket, generation, wire sequences, readiness settlement, timers, probe
-state, cancellation token, and bounded ordered application queue. Transport owns
+owns its socket, generation, readiness settlement, timers, probe state,
+cancellation token, and bounded ordered application queue. Transport owns
 desired attachments and retry policy. Attachment bindings and restore
 transactions belong to an attempt; cores and committed cursors outlive it.
+
+Each attachment incarnation has a fresh unique ID, including after reconnect.
+ATTACH binds that ID to a session and can name its predecessor for ownership
+handover. Subsequent messages identify the attachment directly, without a second
+wire handle, session UUID, or attachment epoch. Message layouts are defined in
+the [browser codec](../app-bcwebmux/web/protocol.js) and
+[server codec](../app-bcwebmux/src/protocol.zig).
 
 Lifecycle:
 
@@ -36,8 +43,8 @@ Socket readiness, attachment LIVE, and controller/input readiness are distinct.
   proof of network death; latency telemetry has no authority to retire a socket.
 - Retirement is idempotent. Old callbacks and async transactions cannot mutate a
   successor, commit a core, send ACK/input, or report a current failure.
-- Validate framing and sequence once on arrival. Handle safe connection PING and
-  PONG controls there, outside asynchronous application work. Application frames
+- Validate framing once on arrival. Handle safe connection PING and PONG
+  controls there, outside asynchronous application work. Application frames
   remain ordered; receiving bytes does not authorize an application ACK.
 - A user's ensure-ready operation survives transient attempts until
   cancellation, fatal failure, or its own operation deadline. An initial
@@ -140,7 +147,7 @@ gap.
 Apply backpressure before exceeding byte/credit limits: stop granting
 unavailable receive credit and reject input that cannot be admitted. Do not
 queue it for replay. Reserve bounded capacity for connection controls before
-assigning send sequence numbers; this cannot overtake bytes already submitted to
+submitting messages; this cannot overtake bytes already submitted to
 WebSocket/TCP. An application replay/digest backlog alone does not retire the
 connection; its operation can stall or fail independently while connection
 controls remain schedulable. Conversely, application progress does not renew a
@@ -211,13 +218,12 @@ RFC control reception belongs to the network reader, independently of native
 dispatch; it must not acquire an engine/native-operation lock. Dispatch
 application messages through bounded admission to the serialized native owner,
 preserving order. If further input cannot be retained within those bounds,
-select an explicit overload outcome rather than silently dropping sequenced
+select an explicit overload outcome rather than silently dropping application
 messages or blocking control reception indefinitely. Outbound writer isolation
 alone is insufficient if the reader still waits synchronously on native work.
 
-Do not reorder encoded application PONGs ahead of output: native send sequence
-numbers have already been assigned. Control prioritization, if needed, belongs
-before sequence assignment and still cannot overtake bytes queued in TCP.
+Keep native output FIFO. Control prioritization, if needed, belongs before
+submission to that queue and cannot overtake bytes queued in TCP.
 
 Heartbeat probes have explicit outstanding-probe state. A valid late response
 must not become a protocol violation merely because another probe was sent.
@@ -257,13 +263,13 @@ disconnect.
 ### Receiver: terminal evidence precedes retry authorization
 
 Before a current attempt's message callback returns, classify any
-connection-fatal ERROR that can be fully validated against its framing,
-sequence, payload, scope and connection context. Validation and terminal
-classification do not wait behind unrelated asynchronous core creation, digest
-or replay work. Preserve that outcome for the attempt's existing retry/reporting
-owner before retirement can authorize another attempt. Once recorded, a later
-ordinary Close, timeout or cancellation cannot downgrade it to a retryable
-failure. Report it once and stop automatic retry.
+connection-fatal ERROR that can be fully validated against its framing, payload,
+scope and connection context. Validation and terminal classification do not wait
+behind unrelated asynchronous core creation, digest or replay work. Preserve
+that outcome for the attempt's existing retry/reporting owner before retirement
+can authorize another attempt. Once recorded, a later ordinary Close, timeout or
+cancellation cannot downgrade it to a retryable failure. Report it once and stop
+automatic retry.
 
 Preserving an outcome does not apply pending terminal events, advance a cursor,
 send ACK/input, or revive canceled work. Do not fast-path every ERROR
@@ -302,11 +308,11 @@ incumbent.
 
 Promotion is an explicit ownership cutover. Stop old input/application commits
 and snapshot committed cursors before sending replacement ATTACH. Native
-logical-ID handover fences the old key and transfers the lease during ATTACH,
-before barrier ACK. It is not reversible merely because candidate restoration
-later fails. Keep the old viewport as display fallback, not as old controller
-authority. A genuinely atomic make-before-break attachment handoff would need
-protocol work.
+handover uses ATTACH's previous attachment ID to fence the old key and transfer
+the lease before barrier ACK. It is not reversible merely because candidate
+restoration later fails. Keep the old viewport as display fallback, not as old
+controller authority. A genuinely atomic make-before-break attachment handoff
+would need protocol work.
 
 Input sent without a received ACK has uncertain delivery. It may have executed.
 Never automatically replay it; native bounded deduplication is not an
@@ -319,8 +325,8 @@ The Go server emits JSON records and assigns every accepted WebSocket a
 monotonic `connection_id`. Upgrade rejection, negotiation, application-frame
 metadata, heartbeat probes and responses, scheduling gaps, I/O errors,
 retirement, and the final pressure/counter snapshot retain that correlation ID.
-Frame logs include type, sequence, request, attachment, session, and byte
-counts, but never input, terminal output, checkpoint, or error payload content.
+Frame logs include type, byte counts, and the identity fields carried by that
+message, but never input, terminal output, checkpoint, or error payload content.
 
 Resize telemetry records the browser request and native queue stages with
 terminal geometry. The native worker acknowledgement records the resize
@@ -346,8 +352,8 @@ Correctness gates precede recovery speed:
   the work allowed by backoff/capacity. Late closure cannot restart a fatal or
   disposed supervisor or commit retired application state.
 - Delayed core creation/digest, large replay, sustained output, slow writers and
-  zero credit: bounded queues, control handling schedulable, FIFO wire sequence,
-  ACK only after application, and bounded shutdown.
+  zero credit: bounded queues, control handling schedulable, FIFO delivery, ACK
+  only after application, and bounded shutdown.
 - Block native dispatch and delay browser main-thread work while checking that
   Go RFC control processing is independent, native application-heartbeat delay
   does not independently retire the transport, and saturated input admission

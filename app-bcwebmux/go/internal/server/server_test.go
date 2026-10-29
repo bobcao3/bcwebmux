@@ -104,7 +104,7 @@ func TestHTTPAssetsOriginAndBounds(t *testing.T) {
 		return native.RESTResponse{
 			Status:      http.StatusOK,
 			ContentType: "application/json; charset=utf-8",
-			Body:        []byte(`{"protocol":"bcw.sessions"}`),
+			Body:        []byte(`{"protocol":"` + native.Protocol + `"}`),
 		}
 	}}
 	instance, _ := startTestServer(t, Config{Host: "127.0.0.1", Port: 0, Engine: engine})

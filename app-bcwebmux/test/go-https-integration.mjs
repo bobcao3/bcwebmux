@@ -92,7 +92,7 @@ try {
   assert.equal(client.alpnProtocol, "h2", "TLS must negotiate HTTP/2");
   const info = await request("GET", "/api/server");
   assert.equal(info.headers[":status"], 200);
-  assert.equal(JSON.parse(info.body).protocol, "bcw.sessions");
+  assert.equal(JSON.parse(info.body).protocol, "bcw.sessions.v2");
   assert.equal(info.headers["x-content-type-options"], "nosniff");
   const asset = await request("GET", "/");
   assert.equal(asset.headers[":status"], 200);
@@ -153,7 +153,7 @@ try {
       "Upgrade: websocket",
       "Sec-WebSocket-Version: 13",
       `Sec-WebSocket-Key: ${randomBytes(16).toString("base64")}`,
-      "Sec-WebSocket-Protocol: bcw.sessions",
+      "Sec-WebSocket-Protocol: bcw.sessions.v2",
       "",
       "",
     ].join("\r\n"),

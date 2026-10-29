@@ -6,9 +6,9 @@ package native
 import "errors"
 
 const (
-	Protocol         = "bcw.sessions"
+	Protocol         = "bcw.sessions.v2"
 	MaxPayloadLength = 1024 * 1024
-	MaxFrameLength   = 64 + MaxPayloadLength
+	MaxFrameLength   = 42 + MaxPayloadLength
 	MaxRequestBytes  = 4096
 	// MaxResponseBytes bounds one management response. A full listing of 64
 	// retained sessions with maximal escaped titles is a few hundred KiB.

@@ -78,7 +78,7 @@ assert.throws(() =>
 );
 assert.equal(gapRecord.checkpointOffset, 0);
 
-// Same logical ID and epoch in a successor must not authorize old async work.
+// Rebinding a record must not authorize work from its retired attempt.
 const core = () => ({
   disposed: 0,
   onData() {
@@ -94,7 +94,7 @@ const attempt = { cancel: new AbortController(), retired: false };
 const shadowRecord = {
   active: true,
   attachmentId: 1n,
-  epoch: 1n,
+  accepted: true,
   core: original,
   attempt,
   eventSeq: 7n,
@@ -118,6 +118,9 @@ attempt.retired = true;
 attempt.cancel.abort();
 resetCheckpointTransaction(shadowRecord);
 shadowRecord.attempt = { cancel: new AbortController(), retired: false };
+records.delete(shadowRecord.attachmentId.toString());
+shadowRecord.attachmentId = 2n;
+records.set(shadowRecord.attachmentId.toString(), shadowRecord);
 assert.equal(
   await pendingShadow,
   false,
@@ -156,7 +159,7 @@ try {
   const owner = { cancel: new AbortController(), retired: false };
   const restoring = {
     active: true,
-    epoch: 1n,
+    accepted: true,
     attempt: owner,
     checkpoint: new Uint8Array([1]),
     checkpointOffset: 1,
@@ -183,7 +186,7 @@ try {
   const startDigest = () => {
     const record = {
       active: true,
-      epoch: 1n,
+      accepted: true,
       attempt: { cancel: new AbortController(), retired: false },
       restoreCancel: new AbortController(),
       restoreJobs: { digest: pool },

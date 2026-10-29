@@ -160,8 +160,7 @@ async function openGpuTestSession() {
   const connectPromise = transport.connect();
   const [info, sessionList] = await Promise.all([sessionApi.info(), sessionApi.list()]);
   await connectPromise;
-  if (info?.protocol !== "bcw.sessions") throw new Error("unsupported session protocol");
-  transport.configureServer(info);
+  if (info?.protocol !== "bcw.sessions.v2") throw new Error("unsupported session protocol");
   let selected = sessionList.sessions.find((session) => session.state === "running");
   if (!selected) {
     const state = terminal.state;

@@ -30,7 +30,7 @@ pub const max_input_dedup_entries = 64;
 
 pub const AttachmentKey = struct {
     connection_id: u64,
-    attachment_id: u64,
+    attachment_id: u128,
     epoch: u64,
 };
 
@@ -63,7 +63,7 @@ pub const PendingResize = struct {
 
 pub const LeaseState = struct {
     epoch: u64,
-    controller_attachment_id: ?u64,
+    controller_attachment_id: ?u128,
     geometry: Geometry,
 };
 
@@ -232,7 +232,7 @@ pub const Metadata = struct {
     checkpoint_event_seq: u64,
     checkpoint_bytes: usize,
     attachment_count: u8,
-    controller_attachment_id: ?u64,
+    controller_attachment_id: ?u128,
     lease_epoch: u64,
 
     pub fn nameSlice(self: *const Metadata) []const u8 {
@@ -799,14 +799,14 @@ fn configuredHandler(value: *ghostty.Terminal, term: []const u8) Handler {
 }
 
 fn executeGraphics(handler: *Handler, cmd: *ghostty.kitty.graphics.Command) ?ghostty.kitty.graphics.Response {
-    const self: *Self = @fieldParentPtr("mirror_terminal", handler.terminal);
+    const self: *Self = @alignCast(@fieldParentPtr("mirror_terminal", handler.terminal));
     const response = self.graphics.execute(handler.terminal, cmd);
     if (self.graphics.fatal) handler.semantic_failure = true;
     return response;
 }
 
 fn effectSize(handler: *Handler) ?ghostty.size_report.Size {
-    const self: *Self = @fieldParentPtr("mirror_terminal", handler.terminal);
+    const self: *Self = @alignCast(@fieldParentPtr("mirror_terminal", handler.terminal));
     return .{
         .rows = self.geometry.rows,
         .columns = self.geometry.cols,
@@ -829,25 +829,25 @@ fn effectDeviceAttributes(_: *Handler) ghostty.device_attributes.Attributes {
 
 fn effectWritePty(handler: *Handler, bytes: []const u8) void {
     if (bytes.len == 0) return;
-    const self: *Self = @fieldParentPtr("mirror_terminal", handler.terminal);
+    const self: *Self = @alignCast(@fieldParentPtr("mirror_terminal", handler.terminal));
     self.connection.send(self.io, .input, bytes) catch {
         self.mirror_reply_failed = true;
     };
 }
 
 fn effectBell(handler: *Handler) void {
-    const self: *Self = @fieldParentPtr("mirror_terminal", handler.terminal);
+    const self: *Self = @alignCast(@fieldParentPtr("mirror_terminal", handler.terminal));
     self.bell_event_seq = self.next_event_seq - 1;
     self.bumpRevision();
 }
 
 fn effectProgramStatus(handler: *Handler, report: ghostty.osc.Command.ProgramStatus.Report) void {
-    const self: *Self = @fieldParentPtr("mirror_terminal", handler.terminal);
+    const self: *Self = @alignCast(@fieldParentPtr("mirror_terminal", handler.terminal));
     if (self.program_status.update(report)) self.bumpRevision();
 }
 
 fn effectProgressReport(handler: *Handler, report: ghostty.osc.Command.ProgressReport) void {
-    const self: *Self = @fieldParentPtr("mirror_terminal", handler.terminal);
+    const self: *Self = @alignCast(@fieldParentPtr("mirror_terminal", handler.terminal));
     const next: ?ghostty.osc.Command.ProgressReport = if (report.state == .remove) null else report;
     if (std.meta.eql(self.progress_report, next)) return;
     self.progress_report = next;
@@ -862,12 +862,12 @@ fn finishCommand(self: *Self) bool {
 
 fn effectSemanticPrompt(handler: *Handler, event: Handler.SemanticPrompt) void {
     if (event.kind != .prompt_start) return;
-    const self: *Self = @fieldParentPtr("mirror_terminal", handler.terminal);
+    const self: *Self = @alignCast(@fieldParentPtr("mirror_terminal", handler.terminal));
     if (self.finishCommand()) self.bumpRevision();
 }
 
 fn effectTitle(handler: *Handler) void {
-    const self: *Self = @fieldParentPtr("mirror_terminal", handler.terminal);
+    const self: *Self = @alignCast(@fieldParentPtr("mirror_terminal", handler.terminal));
     const title = handler.terminal.getTitle() orelse return;
     const length = @min(title.len, self.title.len);
     if (self.title_len == length and std.mem.eql(u8, self.title[0..length], title[0..length])) return;

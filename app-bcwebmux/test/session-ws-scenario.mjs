@@ -34,7 +34,9 @@ export async function runSessionWebSocketScenario(serverPath, deps) {
   const fixtureDir = await mkdtemp(join(tmpdir(), "bcwebmux-image-retention-"));
   const base = `http://127.0.0.1:${port}`;
   const wsUrl = `ws://127.0.0.1:${port}/ws`;
-  const daemon = await startSessionDaemon(serverPath, { args: ["--max-sessions", "2", "--webp-quality", "0"] });
+  const daemon = await startSessionDaemon(serverPath, {
+    args: ["--max-sessions", "2", "--webp-quality", "0"],
+  });
   const server = spawn(
     serverPath,
     [
@@ -70,13 +72,15 @@ export async function runSessionWebSocketScenario(serverPath, deps) {
       () => `server failed to start\n${logs}`,
     );
     await unsupportedWebSocket(wsUrl, base);
-    const malformed = await new RawClient(wsUrl, base, "malformed").connect();
-    clients.push(malformed);
-    malformed.socket.send(new Uint8Array(64));
-    const malformedError = await malformed.waitError();
-    assert.equal(malformedError.errorCode, 1);
-    assert.equal(malformedError.errorFatal, true);
-    await malformed.close();
+    for (const bytes of [Uint8Array.of(0, 0), Uint8Array.of(2, 0, 0, 0, 0, 0, 0, 0, 0, 0)]) {
+      const malformed = await new RawClient(wsUrl, base, "malformed").connect();
+      clients.push(malformed);
+      malformed.socket.send(bytes);
+      const malformedError = await malformed.waitError();
+      assert.equal(malformedError.errorCode, 1);
+      assert.equal(malformedError.errorFatal, true);
+      await malformed.close();
+    }
     const createdResponse = await createSession(base, "ws-protocol-create");
     assert.equal(createdResponse.status, 201);
     session = await createdResponse.json();
@@ -91,10 +95,46 @@ export async function runSessionWebSocketScenario(serverPath, deps) {
 
     const a = await new RawClient(wsUrl, base, "A").connect();
     clients.push(a);
-    const aAttachment = await a.attach(session, session.generation, 0n, 0n, 0x101n);
+    const aAttachment = await a.attach(
+      session,
+      session.generation,
+      0n,
+      0n,
+      0x10203040506070800000000000000101n,
+    );
     assert.ok([0, 2].includes(aAttachment.mode), "initial attach should not restore checkpoint");
     await a.heartbeat();
     const aLease = await a.claim(aAttachment);
+    const reader = await a.attach(
+      session,
+      session.generation,
+      aAttachment.eventSeq,
+      aAttachment.outputOffset,
+      0x66778899aabbccdd0000000000000101n,
+    );
+    assert.equal(reader.controllerId, aAttachment.id);
+    assert.equal(await a.input(reader, "printf 'NOT-CONTROLLER\\n'\n"), 2);
+    await a.detach(reader);
+    await a.heartbeat();
+    const impostor = await new RawClient(wsUrl, base, "unrelated-client").connect();
+    clients.push(impostor);
+    const impostorAttachment = await impostor.attach(
+      session,
+      session.generation,
+      aAttachment.eventSeq,
+      aAttachment.outputOffset,
+      0x80706050403020100000000000000101n,
+      undefined,
+      undefined,
+      aAttachment.id,
+    );
+    assert.equal(
+      impostorAttachment.controllerId,
+      aAttachment.id,
+      "previous ID alone cannot transfer control across clients",
+    );
+    assert.equal(await impostor.input(impostorAttachment, "printf 'UNAUTHORIZED\\n'\n"), 2);
+    await impostor.detach(impostorAttachment);
     let metadata = await waitSession(
       base,
       session.id,
@@ -134,7 +174,7 @@ export async function runSessionWebSocketScenario(serverPath, deps) {
       session.generation,
       retainedCursor.eventSeq,
       retainedCursor.outputOffset,
-      0x202n,
+      0x20202020202020200000000000000101n,
     );
     assert.equal(bAttachment.mode, 2, "retained cursor should select tail replay");
     const oldBLease = await b.claim(bAttachment);
@@ -147,16 +187,16 @@ export async function runSessionWebSocketScenario(serverPath, deps) {
     const detachedTail = concatBytes([detachedReplay, b.outputSince(bAttachment, detachedStart)]);
     assert.ok(detachedTail.byteLength > 0);
 
-    const a2 = new RawClient(wsUrl, base, "A-reconnect");
+    let a2 = new RawClient(wsUrl, base, "A-reconnect");
     a2.clientId = a.clientId;
     await a2.connect();
     clients.push(a2);
-    const a2Attachment = await a2.attach(
+    let a2Attachment = await a2.attach(
       session,
       session.generation,
       retainedCursor.eventSeq,
       retainedCursor.outputOffset,
-      0x303n,
+      0x30303030303030300000000000000101n,
     );
     assert.equal(a2Attachment.mode, 2);
     const a2Replay = concatBytes(a2Attachment.outputParts);
@@ -176,12 +216,40 @@ export async function runSessionWebSocketScenario(serverPath, deps) {
       0x404n,
     );
     assert.equal(observerAttachment.mode, 2);
-    const latestLease = await a2.claim(a2Attachment);
+    let latestLease = await a2.claim(a2Attachment);
     const duplicatePidStart = a2.outputLength(a2Attachment);
     assert.equal(await a2.input(a2Attachment, pidCommand), 1);
     await a2.waitQuiet(a2Attachment);
     assert.equal(a2.outputLength(a2Attachment), duplicatePidStart);
     assert.ok(latestLease > oldBLease);
+    const incumbent = a2,
+      oldAttachment = a2Attachment;
+    const handoff = new RawClient(wsUrl, base, "A-live-handoff");
+    handoff.clientId = incumbent.clientId;
+    await handoff.connect();
+    clients.push(handoff);
+    const transferred = await handoff.attach(
+      session,
+      session.generation,
+      oldAttachment.eventSeq,
+      oldAttachment.outputOffset,
+      0xabcdef98765432100000000000000101n,
+      undefined,
+      undefined,
+      oldAttachment.id,
+    );
+    assert.notEqual(transferred.id, oldAttachment.id);
+    assert.equal(
+      transferred.controllerId,
+      transferred.id,
+      "same-client handoff carries control to the fresh incarnation",
+    );
+    assert.ok(transferred.leaseEpoch > latestLease);
+    transferred.inputSequence = oldAttachment.inputSequence;
+    latestLease = transferred.leaseEpoch;
+    a2 = handoff;
+    a2Attachment = transferred;
+    await incumbent.close();
     metadata = await waitSession(
       base,
       session.id,

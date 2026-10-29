@@ -60,8 +60,7 @@ try {
   const infoResponse = await fetch(`${base}/api/server`);
   assertSecurity(infoResponse);
   const info = await infoResponse.json();
-  assert.equal(info.protocol, "bcw.sessions");
-  assert.equal(info.capabilities.attachmentResume, true);
+  assert.equal(info.protocol, "bcw.sessions.v2");
   assert.equal(info.principal, "local");
   assert.equal(info.persistence, "memory");
   assert.equal(info.liveSessionLifetime, "daemon");

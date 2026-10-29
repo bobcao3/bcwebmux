@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Cheng Cao
 
-pub const protocol = "bcw.sessions";
+pub const protocol = "bcw.sessions.v2";
 pub const checkpoint_codec = "ghostty-snapshot";
 pub const terminal_abi = "bcwebmux-graphics-frame-v8-checkpoint-v2-continuation-1m-glyph-cell-partitions-pty-zstd-stream-v2-kitty-worker-normalize-v1-ghostty-728bbef6c";
 pub const terminal_config = "xterm-ghostty;grapheme-cluster=1;scrollback=8388608;continuation=1048576";
@@ -23,7 +23,7 @@ pub const Limits = struct {
     max_name_bytes: usize = 80,
     max_request_bytes: usize = 4096,
     max_input_bytes: usize = 64 * 1024,
-    max_frame_bytes: usize = 1024 * 1024,
+    max_frame_bytes: usize = @import("protocol.zig").max_frame_length,
     max_checkpoint_bytes: usize = 16 * 1024 * 1024,
     scrollback_bytes: usize = 8 * 1024 * 1024,
     journal_bytes: usize = 16 * 1024 * 1024,

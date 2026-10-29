@@ -13,8 +13,8 @@ import {
   MAX_FRAME_LENGTH,
   ZERO_SESSION_ID,
   FrameType,
-  encodeFrame,
-  decodeFrame,
+  encodeClientFrame,
+  decodeServerFrame,
   readUint64LE,
   writeUint32LE,
   writeUint64LE,
@@ -100,22 +100,19 @@ async function attachAndRead(metadata, cursor = { eventSeq: 0n, offset: 0n }) {
   });
   ws.binaryType = "arraybuffer";
   const frames = [];
-  let sequence = 0n;
   const send = (type, payload, extra = {}) =>
     ws.send(
-      encodeFrame({
+      encodeClientFrame({
         type,
         payload,
-        connectionSequence: ++sequence,
         requestId: 1n,
         attachmentId: 0n,
-        attachmentEpoch: 0n,
         sessionId: ZERO_SESSION_ID,
         ...extra,
       }),
     );
   ws.addEventListener("message", (event) => {
-    const frame = decodeFrame(new Uint8Array(event.data));
+    const frame = decodeServerFrame(new Uint8Array(event.data));
     if (frame.type === FrameType.PING)
       send(FrameType.PONG, frame.payload, { requestId: frame.requestId });
     else frames.push(frame);
@@ -141,14 +138,14 @@ async function attachAndRead(metadata, cursor = { eventSeq: 0n, offset: 0n }) {
   );
   const uuid = (value) =>
     Uint8Array.from(value.replaceAll("-", "").match(/../g), (hex) => Number.parseInt(hex, 16));
-  const payload = new Uint8Array(40);
+  const payload = new Uint8Array(56);
   payload.set(uuid(metadata.generation));
   writeUint64LE(payload, 16, cursor.eventSeq);
   writeUint64LE(payload, 24, cursor.offset);
   writeUint32LE(payload, 32, 33554432);
   send(FrameType.ATTACH, payload, {
     requestId: 2n,
-    attachmentId: 1n,
+    attachmentId: BigInt(`0x${randomBytes(16).toString("hex")}`),
     sessionId: uuid(metadata.id),
   });
   await waitFor(
