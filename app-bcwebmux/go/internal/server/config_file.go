@@ -51,6 +51,7 @@ func loadConfig(cfg *Config, explicit string) error {
 			WebPQuality       *int     `toml:"webp-quality"`
 			Origin            *string  `toml:"origin"`
 			Origins           []string `toml:"origins"`
+			AllowAnyOrigin    *bool    `toml:"allow-any-origin"`
 			MaxSessions       *uint64  `toml:"max-sessions"`
 			TLSCert           *string  `toml:"tls-cert"`
 			TLSKey            *string  `toml:"tls-key"`
@@ -117,6 +118,9 @@ func loadConfig(cfg *Config, explicit string) error {
 			cfg.Origin = *file.Origin
 		}
 		cfg.Origins = file.Origins
+		if file.AllowAnyOrigin != nil {
+			cfg.AllowAnyOrigin = *file.AllowAnyOrigin
+		}
 		if file.MaxSessions != nil {
 			cfg.DaemonOptions = append(cfg.DaemonOptions, "max-sessions")
 			cfg.MaxSessions = *file.MaxSessions
@@ -254,6 +258,9 @@ func (cfg Config) resolveListeners() ([]string, error) {
 }
 
 func validateBindings(cfg Config) error {
+	if cfg.AllowAnyOrigin && cfg.AuthEnabled {
+		return fmt.Errorf("--allow-any-origin requires --auth=false; only use behind an authenticated forwarder")
+	}
 	for _, origin := range cfg.origins() {
 		if origin == "" {
 			return fmt.Errorf("origin must not be empty")
@@ -274,7 +281,7 @@ func validateBindings(cfg Config) error {
 		} else if err := ValidateHost(host); err != nil {
 			return err
 		}
-		if !loopback && len(cfg.origins()) == 0 {
+		if !loopback && len(cfg.origins()) == 0 && !cfg.AllowAnyOrigin {
 			return fmt.Errorf("--origin is required when binding non-loopback %q (browser-facing scheme://host[:port], e.g. --origin https://%s:3443)", host, host)
 		}
 	}

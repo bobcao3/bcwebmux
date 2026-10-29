@@ -42,7 +42,7 @@ async function collectLicenses(source, destination) {
 }
 
 try {
-  for (const binary of ["bcwebmux-server", "bcwebmux-worker"]) {
+  for (const binary of ["bcwebmux-server", "bcwebmux-sessiond", "bcwebmux-worker"]) {
     const source = resolve("app-bcwebmux/zig-out/bin", binary);
     const headers = execFileSync("readelf", ["-l", source], { encoding: "utf8" });
     const dynamic = execFileSync("readelf", ["-d", source], { encoding: "utf8" });
@@ -101,7 +101,7 @@ try {
       `Target: ${target}`,
       `Commit: ${execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim()}`,
       `Zig: ${execFileSync("zig", ["version"], { encoding: "utf8" }).trim()}`,
-      "Keep bcwebmux-server and bcwebmux-worker in the same directory.",
+      "Keep bcwebmux-server, bcwebmux-sessiond, and bcwebmux-worker in the same directory.",
       "",
     ].join("\n"),
   );

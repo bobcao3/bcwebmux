@@ -41,6 +41,9 @@ type Server struct {
 	origin     string
 	tls        bool
 	logger     *slog.Logger
+
+	allowAnyOrigin bool
+
 	// fileService is what GET /api/client-config publishes; it is empty when
 	// the machine configures none.
 	fileService fileServiceDefaults
@@ -87,7 +90,7 @@ func New(cfg Config) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
-	if len(cfg.origins()) == 0 {
+	if len(cfg.origins()) == 0 && !cfg.AllowAnyOrigin {
 		for _, host := range hosts {
 			if !HostIsLoopback(host) {
 				return nil, fmt.Errorf("--origin is required for non-loopback %s (browser-facing scheme://host[:port])", host)
@@ -180,7 +183,7 @@ func New(cfg Config) (*Server, error) {
 	}
 	result := &Server{
 		engine: cfg.Engine, layout: layout, names: names, assets: assets, listener: listener,
-		http: httpServer, origin: origin, tls: tlsEnabled,
+		http: httpServer, origin: origin, tls: tlsEnabled, allowAnyOrigin: cfg.AllowAnyOrigin,
 		listeners: listeners, udps: udps, origins: make(map[string]bool),
 		logger:      cfg.Logger,
 		fileService: fileServiceDefaults{URL: cfg.FileServiceURL, LocalPrefix: cfg.FileServicePrefix},
@@ -554,6 +557,9 @@ func writeJSON(w http.ResponseWriter, status int, payload any) {
 }
 
 func (s *Server) validOrigin(r *http.Request) bool {
+	if s.allowAnyOrigin {
+		return true
+	}
 	values := r.Header.Values("Origin")
 	return len(values) == 1 && s.origins[values[0]]
 }

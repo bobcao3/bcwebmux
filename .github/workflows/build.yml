@@ -72,6 +72,7 @@ jobs:
           server="$RUNNER_TEMP/bcwebmux-${TARGET_NAME}/bcwebmux-server"
           node app-bcwebmux/test/session-shell-integration.mjs "$server"
           node app-bcwebmux/test/session-api-integration.mjs "$server"
+          node app-bcwebmux/test/session-autostart-integration.mjs "$server"
       - name: Upload server archive and checksum
         if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02

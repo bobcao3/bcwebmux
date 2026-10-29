@@ -47,6 +47,9 @@ type Config struct {
 	TLSKey        string
 	HTTP3         bool
 	Worker        string
+
+	AllowAnyOrigin bool
+
 	// WebPQuality optionally re-encodes Kitty images as WebP, lossy at this
 	// quality (1-100), before browsers receive them. A quality of 0 disables
 	// optional transcoding; resolution clamping remains active.
@@ -91,6 +94,7 @@ func parseConfig(args []string, validateListeners bool) (Config, bool, error) {
 	flags.BoolVar(&cfg.KittyGraphics, "kitty-graphics", cfg.KittyGraphics, "advertise Kitty graphics to session shells")
 	flags.IntVar(&cfg.WebPQuality, "webp-quality", cfg.WebPQuality, "optionally re-encode Kitty images as WebP, lossy at this quality (1-100); 0 disables optional transcoding while resolution clamping remains active")
 	flags.BoolVar(&cfg.AuthEnabled, "auth", cfg.AuthEnabled, "require a FIDO2 security key login once credentials are enrolled")
+	flags.BoolVar(&cfg.AllowAnyOrigin, "allow-any-origin", false, "disable Origin checks (requires --auth=false; only behind an authenticated forwarder)")
 	flags.StringVar(&cfg.AuthFile, "auth-file", "", "FIDO2 authentication state file")
 	flags.StringVar(&cfg.MetadataFile, "metadata-file", "", "session metadata state file")
 	flags.DurationVar(&cfg.AuthSessionTTL, "auth-session-ttl", 0, "browser login session lifetime (default 168h)")
@@ -161,6 +165,8 @@ func parseConfig(args []string, validateListeners bool) (Config, bool, error) {
 			cfg.WebPQuality = cli.WebPQuality
 		case "auth":
 			cfg.AuthEnabled = cli.AuthEnabled
+		case "allow-any-origin":
+			cfg.AllowAnyOrigin = cli.AllowAnyOrigin
 		case "auth-file":
 			cfg.AuthFile = cli.AuthFile
 		case "metadata-file":
@@ -466,8 +472,11 @@ func Usage(program string) string {
 		"\n"+
 		"OPTIONS:\n"+
 		"  --origin URL                 browser-facing origin, scheme://host[:port];\n"+
-		"                               repeatable, required for any non-loopback\n"+
-		"                               address (also binds that host)\n"+
+		"                               repeatable (also binds that host); required\n"+
+		"                               for non-loopback unless --allow-any-origin\n"+
+		"  --allow-any-origin[=false]    disable WebSocket and API Origin checks\n"+
+		"                               (default: false); requires --auth=false\n"+
+		"                               UNSAFE except behind an authenticated forwarder\n"+
 		"  --listen TARGET              bind address override: HOST:PORT, IP:PORT,\n"+
 		"                               or CIDR:PORT; repeatable, one shared port\n"+
 		"  --config FILE                TOML config file (default: XDG/HOME discovery)\n"+

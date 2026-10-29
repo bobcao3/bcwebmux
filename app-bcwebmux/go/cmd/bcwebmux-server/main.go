@@ -10,7 +10,6 @@ import (
 	"path/filepath"
 	"syscall"
 
-	"bcwebmux/go/internal/native"
 	"bcwebmux/go/internal/server"
 )
 
@@ -53,7 +52,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "%s: session options %v must be configured on bcwebmux-sessiond, not the web frontend\n", name, cfg.DaemonOptions)
 		os.Exit(2)
 	}
-	engine, err := native.OpenRemoteEngine(cfg.SessionSocket)
+	engine, err := connectSessionDaemon(cfg.SessionSocket, logger)
 	if err != nil {
 		logger.Error("session daemon connection failed", "socket", cfg.SessionSocket, "error", err)
 		os.Exit(1)
@@ -80,6 +79,9 @@ func main() {
 	}
 	if !cfg.AuthEnabled {
 		logger.Warn("authentication is disabled; the terminal is reachable without a sign-in")
+	}
+	if cfg.AllowAnyOrigin {
+		logger.Warn("Origin checks are disabled; access must be protected by an authenticated forwarder")
 	}
 
 	serveErr := make(chan error, 1)
