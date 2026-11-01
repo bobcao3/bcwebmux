@@ -41,6 +41,12 @@ async function waitLayout(page, expected) {
     `layout did not become ${JSON.stringify(expected)}`,
   );
 }
+async function groupName(page) {
+  return evaluate(
+    page,
+    "document.querySelector('#fixture-tabs .session-group-label')?.textContent.trim() ?? ''",
+  );
+}
 async function openClient(seed) {
   const { browserContextId } = await browser.call("Target.createBrowserContext");
   const { targetId } = await browser.call("Target.createTarget", {
@@ -95,7 +101,20 @@ async function openClient(seed) {
     drawerElement.append(tabs); root.append(drawerElement); document.body.append(root);
     const seed = ${JSON.stringify(seed)};
     if (seed) localStorage.setItem('bcwebmux.session-layout:v1:' + encodeURIComponent(info.serverInstance) + ':' + encodeURIComponent(info.principal), JSON.stringify(seed));
-    const drawer = new SessionDrawer({ controller, layoutApi: api, elements: { drawer: drawerElement, tabs } }).init();
+    const drawer = new SessionDrawer({
+      controller,
+      layoutApi: api,
+      elements: {
+        drawer: drawerElement,
+        tabs,
+        renameDialog: document.querySelector('#session-rename-dialog'),
+        renameTitle: document.querySelector('#session-rename-title'),
+        renameInput: document.querySelector('#session-rename-input'),
+        renameForm: document.querySelector('#session-rename-dialog form'),
+        renameCancel: document.querySelector('#session-rename-cancel'),
+        renameSubmit: document.querySelector('#session-rename-save'),
+      },
+    }).init();
     drawer.setStorageScope(info); drawer.render();
     window.fixture = { controller, drawer };
   })()`,
@@ -251,9 +270,30 @@ try {
   const grouped = { ids: [ids[2], ids[1], ids[0]], groups: 1 };
   await waitLayout(first, grouped);
   await waitLayout(second, grouped);
+  await evaluate(
+    first,
+    `(() => {
+      document.querySelector('#fixture-tabs .session-group-label').dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+      const input = document.querySelector('#session-rename-dialog input');
+      input.value = 'Work';
+      document.querySelector('#session-rename-dialog form').requestSubmit();
+    })()`,
+  );
+  for (const page of [first, second]) {
+    await waitFor(
+      async () => (await groupName(page)) === "Work",
+      5000,
+      "group name did not synchronize",
+    );
+  }
   // A newly opened browser context also has no local layout.
   const third = await openClient(null);
   await waitLayout(third, grouped);
+  await waitFor(
+    async () => (await groupName(third)) === "Work",
+    5000,
+    "new client did not receive the group name",
+  );
   const terminate = await fetch(`${base}/api/sessions/${ids[0]}/terminate`, {
     method: "POST",
     headers: { Origin: base, "Idempotency-Key": "layout-terminate" },

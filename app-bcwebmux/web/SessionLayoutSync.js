@@ -34,6 +34,16 @@ export class SessionLayoutSync {
     return operation;
   }
 
+  renameGroup(anchor, name) {
+    const operation = this.#tail.then(async () => {
+      await this.#initialize();
+      const result = await this.#api.updateLayout({ group: anchor, name }, this.#abort.signal);
+      this.#apply(result);
+    });
+    this.#tail = operation.catch(() => {});
+    return operation;
+  }
+
   async #initialize() {
     if (this.#version) return;
     if (!this.#initializing) {

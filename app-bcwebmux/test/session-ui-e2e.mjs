@@ -298,9 +298,55 @@ try {
     5000,
     "background progress must mark the inactive session unread",
   );
-  await evaluate(
-    `(() => { const tab = document.querySelector('.session-row[data-session-id="${secondId}"] .session-tab'); tab.focus(); tab.dispatchEvent(new KeyboardEvent('keydown', { key: 'ContextMenu', bubbles: true })); document.querySelector('.session-context-rename').click(); const input = document.querySelector('#session-rename-input'); input.value = 'Renamed beta'; document.querySelector('#session-rename-save').click(); })()`,
+  const renameTitle = await evaluate(`(() => {
+    const rect = document.querySelector('#terminal-identity-primary').getBoundingClientRect();
+    return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+  })()`);
+  for (const clickCount of [1, 2]) {
+    await page.call("Input.dispatchMouseEvent", {
+      type: "mousePressed",
+      ...renameTitle,
+      button: "left",
+      buttons: 1,
+      clickCount,
+    });
+    await page.call("Input.dispatchMouseEvent", {
+      type: "mouseReleased",
+      ...renameTitle,
+      button: "left",
+      buttons: 0,
+      clickCount,
+    });
+  }
+  await waitBrowser(
+    "document.querySelector('#session-rename-dialog').open",
+    1000,
+    "title double-click did not open rename",
   );
+  await evaluate("document.querySelector('#session-rename-input').value = 'Renamed beta'");
+  await page.call("Input.dispatchKeyEvent", {
+    type: "rawKeyDown",
+    key: "Enter",
+    code: "Enter",
+    windowsVirtualKeyCode: 13,
+    nativeVirtualKeyCode: 13,
+  });
+  await page.call("Input.dispatchKeyEvent", {
+    type: "char",
+    key: "Enter",
+    code: "Enter",
+    text: "\r",
+    unmodifiedText: "\r",
+    windowsVirtualKeyCode: 13,
+    nativeVirtualKeyCode: 13,
+  });
+  await page.call("Input.dispatchKeyEvent", {
+    type: "keyUp",
+    key: "Enter",
+    code: "Enter",
+    windowsVirtualKeyCode: 13,
+    nativeVirtualKeyCode: 13,
+  });
   await waitBrowser(
     `window.bcwebmux.sessions.some(session => session.id === ${JSON.stringify(secondId)} && session.name === 'Renamed beta')`,
     5000,
@@ -369,6 +415,7 @@ try {
   assert.ok(tabNavigation.selectedId);
   assert.equal(tabNavigation.selectedCount, 1);
 
+  await page.call("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 1 });
   await evaluate(
     `(() => { const tab = document.querySelector('.session-row[data-session-id="${secondId}"] .session-tab'); const rect = tab.getBoundingClientRect(); tab.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerId: 41, pointerType: 'touch', button: 0, buttons: 1, isPrimary: true, clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2 })); })()`,
   );
@@ -381,6 +428,7 @@ try {
   await evaluate(
     `(() => { const tab = document.querySelector('.session-row[data-session-id="${secondId}"] .session-tab'); const rect = tab.getBoundingClientRect(); tab.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerId: 41, pointerType: 'touch', button: 0, buttons: 0, isPrimary: true, clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2 })); })()`,
   );
+  await page.call("Emulation.setTouchEmulationEnabled", { enabled: false });
   await stillGolden("session-context-menu");
   await evaluate("document.querySelector('.session-context-rename').click()");
   await waitBrowser(
@@ -513,6 +561,50 @@ try {
   await dragSession(firstId, secondId, 0.5);
   await waitDrawerLayout({ ids: [secondId, firstId], groups: 1 });
   assert.deepEqual(await drawerLayout(), { ids: [secondId, firstId], groups: 1 });
+  await doubleClick(".session-group-label");
+  await waitBrowser(
+    "document.querySelector('#session-rename-dialog').open",
+    1000,
+    "group label double-click did not open rename",
+  );
+  assert.equal(
+    await evaluate("document.querySelector('#session-rename-title').textContent.trim()"),
+    "[ RENAME GROUP ]",
+  );
+  await evaluate("document.querySelector('#session-rename-input').value = 'Work'");
+  await page.call("Input.dispatchKeyEvent", {
+    type: "rawKeyDown",
+    key: "Enter",
+    code: "Enter",
+    windowsVirtualKeyCode: 13,
+    nativeVirtualKeyCode: 13,
+  });
+  await page.call("Input.dispatchKeyEvent", {
+    type: "char",
+    key: "Enter",
+    code: "Enter",
+    text: "\r",
+    unmodifiedText: "\r",
+    windowsVirtualKeyCode: 13,
+    nativeVirtualKeyCode: 13,
+  });
+  await page.call("Input.dispatchKeyEvent", {
+    type: "keyUp",
+    key: "Enter",
+    code: "Enter",
+    windowsVirtualKeyCode: 13,
+    nativeVirtualKeyCode: 13,
+  });
+  await waitFor(
+    async () =>
+      (await evaluate("document.querySelector('.session-group-label')?.textContent.trim()")) ===
+      "Work",
+    5000,
+    "group rename did not render",
+  );
+  assert.deepEqual((await (await fetch(`${base}/api/session-layout`)).json()).layout, [
+    { name: "Work", members: [secondId, firstId] },
+  ]);
 
   await evaluate("document.querySelector('#session-toggle').click()");
   await waitBrowser(
@@ -538,6 +630,10 @@ try {
   assert.equal((await evaluate("window.bcwebmux.sessions")).length, 2);
   await waitDrawerLayout({ ids: [secondId, firstId], groups: 1 });
   assert.deepEqual(await drawerLayout(), { ids: [secondId, firstId], groups: 1 });
+  assert.equal(
+    await evaluate("document.querySelector('.session-group-label')?.textContent.trim()"),
+    "Work",
+  );
   await dragSession(firstId, secondId, 0.1);
   await waitDrawerLayout({ ids: [firstId, secondId], groups: 0 });
   assert.deepEqual(await drawerLayout(), { ids: [firstId, secondId], groups: 0 });
@@ -1225,6 +1321,29 @@ async function waitDrawerLayout(expected) {
   );
 }
 
+async function doubleClick(selector) {
+  const point = await evaluate(`(() => {
+    const rect = document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect();
+    return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+  })()`);
+  for (const clickCount of [1, 2]) {
+    await page.call("Input.dispatchMouseEvent", {
+      type: "mousePressed",
+      ...point,
+      button: "left",
+      buttons: 1,
+      clickCount,
+    });
+    await page.call("Input.dispatchMouseEvent", {
+      type: "mouseReleased",
+      ...point,
+      button: "left",
+      buttons: 0,
+      clickCount,
+    });
+  }
+}
+
 async function dragSession(source, target, fraction) {
   const points = await evaluate(`(() => {
     const source = document.querySelector(${JSON.stringify(`.session-row[data-session-id="${source}"] .session-tab`)}).getBoundingClientRect();
@@ -1240,7 +1359,6 @@ async function dragSession(source, target, fraction) {
     buttons: 1,
     clickCount: 1,
   });
-  await delay(650);
   await page.call("Input.dispatchMouseEvent", {
     type: "mouseMoved",
     x: points.targetX,

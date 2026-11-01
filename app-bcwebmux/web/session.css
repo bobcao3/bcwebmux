@@ -79,11 +79,24 @@
 }
 
 .session-group-label {
+  display: block;
+  width: 100%;
   padding: 8px 10px 2px;
+  border: 0;
+  background: none;
   color: var(--color-accent);
   font-family: var(--terminal-font);
   font-size: 11px;
   font-weight: 700;
+  text-align: left;
+  cursor: pointer;
+}
+
+.session-group-label:hover,
+.session-group-label:focus-visible {
+  color: var(--color-foreground);
+  outline: 1px dotted currentcolor;
+  outline-offset: -2px;
 }
 
 .session-row[data-grouped] {
@@ -101,7 +114,7 @@
 }
 
 .session-row.is-dragging {
-  opacity: 0.5;
+  opacity: 0;
 }
 
 .session-row[data-drop-position="group"] {
@@ -133,6 +146,31 @@
 
 .session-row:focus-within {
   border-color: var(--session-row-emphasis);
+}
+
+.session-row.is-drag-preview {
+  position: fixed;
+  z-index: 90;
+  top: 0;
+  left: 0;
+  margin: 0;
+  border-color: var(--color-accent);
+  background: var(--color-surface);
+  box-shadow: 4px 4px 0 var(--color-border);
+  pointer-events: none;
+  transition: transform 70ms linear;
+  will-change: transform;
+}
+
+.is-session-dragging,
+.is-session-dragging * {
+  cursor: grabbing !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .session-row.is-drag-preview {
+    transition: none;
+  }
 }
 
 .session-row.is-active {

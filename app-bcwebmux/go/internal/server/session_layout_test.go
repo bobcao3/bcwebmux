@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -117,12 +118,30 @@ func TestSessionLayoutAcrossClients(t *testing.T) {
 	if status != 200 || string(got) != `[["c"],["b","a"]]` {
 		t.Fatalf("group: %d %s", status, got)
 	}
+	status, _ = post(`{"group":"a","name":"`+strings.Repeat("x", maxGroupName+1)+`"}`, base)
+	if status != http.StatusBadRequest {
+		t.Fatalf("oversized group name status = %d", status)
+	}
+	status, _ = post(`{"group":"missing","name":"Work"}`, base)
+	if status != http.StatusConflict {
+		t.Fatalf("missing group status = %d", status)
+	}
+	status, named := post(`{"group":"b","name":"Work"}`, base)
+	got, _ = json.Marshal(named.Layout)
+	if status != 200 || string(got) != `[["c"],{"name":"Work","members":["b","a"]}]` {
+		t.Fatalf("rename group: %d %s", status, got)
+	}
+	status, movedGroup := post(`{"source":"c","target":"a","position":"group"}`, base)
+	got, _ = json.Marshal(movedGroup.Layout)
+	if status != 200 || string(got) != `[{"name":"Work","members":["b","a","c"]}]` {
+		t.Fatalf("move into named group: %d %s", status, got)
+	}
 	engine.mu.Lock()
 	sessions = `{"sessions":[{"id":"b"},{"id":"c"},{"id":"d"}]}`
 	engine.mu.Unlock()
 	reconciled := get("/api/session-layout")
 	got, _ = json.Marshal(reconciled.Layout)
-	if reconciled.Revision != grouped.Revision+1 || string(got) != `[["c"],["b"],["d"]]` {
+	if reconciled.Revision != movedGroup.Revision+1 || string(got) != `[{"name":"Work","members":["b","c"]},["d"]]` {
 		t.Fatalf("session changes: %+v %s", reconciled, got)
 	}
 }

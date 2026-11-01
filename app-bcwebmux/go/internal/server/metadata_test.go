@@ -92,7 +92,7 @@ func TestMetadataRestartAndReconciliation(t *testing.T) {
 	cfg.Engine = engine()
 	second, _ := startTestServer(t, cfg)
 	status, got := metadataHTTP(t, second.Origin(), "GET", "")
-	want := [][]string{{"c"}, {"b"}, {"d"}}
+	want := []layoutGroup{{Members: []string{"c"}}, {Members: []string{"b"}}, {Members: []string{"d"}}}
 	if status != 200 || !reflect.DeepEqual(got.Layout, want) || got.Revision != 2 || got.Epoch == seeded.Epoch {
 		t.Fatalf("restart: %d %+v", status, got)
 	}
@@ -208,6 +208,47 @@ func TestMetadataWriteFailureAndConcurrentMoves(t *testing.T) {
 	}
 	var persisted layoutState
 	if err := json.Unmarshal(data, &persisted); err != nil || persisted.Revision != final.Revision || !reflect.DeepEqual(persisted.Layout, final.Layout) {
+		t.Fatalf("persisted: %+v %v", persisted, err)
+	}
+}
+
+func TestMetadataGroupNamePersistence(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "metadata.json")
+	engine := func() *fakeEngine {
+		return &fakeEngine{response: func(native.RESTRequest) native.RESTResponse {
+			return native.RESTResponse{Status: http.StatusOK, Body: []byte(`{"sessions":[{"id":"a"},{"id":"b"}]}`)}
+		}}
+	}
+	cfg := Config{Host: "127.0.0.1", Port: 0, Engine: engine(), MetadataFile: path}
+	first, _ := startTestServer(t, cfg)
+	base := first.Origin()
+	if status, _ := metadataHTTP(t, base, "POST", `{"seed":["a","b"]}`); status != 200 {
+		t.Fatalf("seed status %d", status)
+	}
+	if status, _ := metadataHTTP(t, base, "POST", `{"source":"a","target":"b","position":"group"}`); status != 200 {
+		t.Fatalf("group status %d", status)
+	}
+	status, named := metadataHTTP(t, base, "POST", `{"group":"b","name":"  Work  "}`)
+	got, _ := json.Marshal(named.Layout)
+	if status != 200 || string(got) != `[{"name":"Work","members":["b","a"]}]` {
+		t.Fatalf("rename: %d %s", status, got)
+	}
+	if err := first.Shutdown(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	cfg.Engine = engine()
+	second, _ := startTestServer(t, cfg)
+	status, restored := metadataHTTP(t, second.Origin(), "GET", "")
+	got, _ = json.Marshal(restored.Layout)
+	if status != 200 || restored.Revision != named.Revision || string(got) != `[{"name":"Work","members":["b","a"]}]` {
+		t.Fatalf("restart: %d %+v %s", status, restored, got)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var persisted layoutState
+	if err := json.Unmarshal(data, &persisted); err != nil || persisted.Version != metadataVersion || !reflect.DeepEqual(persisted.Layout, restored.Layout) {
 		t.Fatalf("persisted: %+v %v", persisted, err)
 	}
 }

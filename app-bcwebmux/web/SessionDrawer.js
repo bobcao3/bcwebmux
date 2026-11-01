@@ -2,7 +2,13 @@
 // Copyright (c) 2026 Cheng Cao
 
 import { programStatusLabel, sessionStatus } from "./SessionStatus.js";
-import { moveSession, reconcileLayout } from "./SessionLayout.js";
+import {
+  groupMembers,
+  isGroupEntry,
+  moveSession,
+  reconcileLayout,
+  renameGroup,
+} from "./SessionLayout.js";
 import { SessionLayoutSync } from "./SessionLayoutSync.js";
 import { html, nothing, render } from "./lib/lit-html/lit-html.js";
 import { repeat } from "./lib/lit-html/directives/repeat.js";
@@ -10,6 +16,7 @@ import { repeat } from "./lib/lit-html/directives/repeat.js";
 const STORAGE_VERSION = "v1";
 const LONG_PRESS_MS = 550;
 const LONG_PRESS_MOVE_PX = 10;
+const DRAG_MOVE_PX = 5;
 
 function lifecycleAction(metadata) {
   return metadata?.state === "creating" ||
@@ -126,9 +133,11 @@ export class SessionDrawer {
       newButton: source.newButton ?? source.createButton,
       toggleButton: source.toggleButton ?? source.hamburger,
       workspace: source.workspace ?? source.terminal,
+      title: source.title,
       backdrop: source.backdrop,
       liveRegion: source.liveRegion ?? source.status,
       renameDialog: source.renameDialog,
+      renameTitle: source.renameTitle,
       renameInput: source.renameInput,
       renameForm: source.renameForm,
       renameCancel: source.renameCancel,
@@ -160,17 +169,40 @@ export class SessionDrawer {
     this.#add(this.#refs.toggleButton, "click", () => this.toggle());
     this.#add(this.#refs.backdrop, "click", () => this.close());
     this.#add(this.#refs.tabs, "pointerdown", (event) => this.#startLongPress(event));
-    this.#add(this.#refs.tabs, "pointermove", (event) => this.#moveLongPress(event));
-    this.#add(this.#refs.tabs, "pointerup", (event) => this.#finishDrag(event));
-    this.#add(this.#refs.tabs, "pointercancel", () => this.#cancelLongPress());
+    this.#add(doc, "pointermove", (event) => this.#moveLongPress(event));
     this.#add(doc, "pointerup", (event) => this.#finishDrag(event));
     this.#add(doc, "pointercancel", (event) => {
       if (this.#longPress?.pointerId === event.pointerId) this.#cancelLongPress();
     });
+    this.#add(this.#refs.tabs, "lostpointercapture", (event) => {
+      if (this.#longPress?.pointerId === event.pointerId) this.#cancelLongPress();
+    });
+    this.#add(globalThis, "blur", () => this.#cancelLongPress());
     this.#add(this.#refs.tabs, "contextmenu", (event) => this.#openPointerContextMenu(event));
     this.#add(this.#refs.tabs, "scroll", () => this.#closeContextMenu());
     this.#add(this.#refs.tabs, "keydown", (event) => this.#tabKey(event));
     this.#add(this.#refs.tabs, "click", (event) => this.#onTabsClick(event));
+    this.#add(this.#refs.tabs, "dblclick", (event) => {
+      const groupLabel = event.target.closest(".session-group-label");
+      if (groupLabel && this.#refs.tabs.contains(groupLabel)) {
+        event.preventDefault();
+        this.#closeContextMenu();
+        this.#showGroupRename(groupLabel.dataset.groupAnchor);
+        return;
+      }
+      const tab = event.target.closest(".session-tab");
+      if (!tab || !this.#refs.tabs.contains(tab)) return;
+      event.preventDefault();
+      this.#closeContextMenu();
+      this.#showRename(tab.dataset.sessionId);
+    });
+    this.#add(this.#refs.title, "dblclick", (event) => {
+      const id = this.#controller.activeSessionId;
+      if (id == null) return;
+      event.preventDefault();
+      this.#tabs.get(String(id))?.focus({ preventScroll: true });
+      this.#showRename(String(id));
+    });
     this.#add(this.#refs.renameForm, "submit", (event) => {
       event.preventDefault();
       if (event.submitter === this.#refs.renameCancel)
@@ -372,13 +404,16 @@ export class SessionDrawer {
     if (available.length && !this.#layoutSync) this.#layout = this.#visibleLayout;
     if (this.#layoutKey && previousLayout !== JSON.stringify(this.#layout)) this.#saveLayout();
     const byId = new Map(available.map((item) => [String(item.id), item]));
-    const sessions = this.#visibleLayout.flatMap((entry) =>
-      (Array.isArray(entry) ? entry : [entry]).map((id, index) => ({
+    const sessions = this.#visibleLayout.flatMap((entry) => {
+      const grouped = isGroupEntry(entry);
+      return groupMembers(entry).map((id, index) => ({
         ...byId.get(id),
-        groupStart: Array.isArray(entry) && index === 0,
-        grouped: Array.isArray(entry),
-      })),
-    );
+        groupStart: grouped && index === 0,
+        grouped,
+        groupName: grouped ? String(entry.name ?? "") : "",
+        groupAnchor: grouped ? entry.members[0] : "",
+      }));
+    });
     const focusId =
       focusedControl === "session-tab" &&
       sessions.some((metadata) => String(metadata.id) === focusedRowId)
@@ -389,6 +424,7 @@ export class SessionDrawer {
             ? String(sessions[0].id)
             : "";
     this.#renderRows(sessions, activeId, focusId);
+    if (this.#longPress && !this.#longPress.row.isConnected) this.#cancelLongPress();
     if (this.#refs.workspace) {
       if (activeId && activeId !== this.#workspaceFor) {
         const tab = this.#tabs.get(activeId);
@@ -445,6 +481,10 @@ export class SessionDrawer {
             status?.paused ? "is-paused" : "",
             metadata.unread ? "is-unread" : "",
             metadata.unreadBell ? "is-unread-bell" : "",
+            this.#longPress?.id === id && this.#longPress.dragging ? "is-dragging" : "",
+            this.#longPress?.id === id && this.#longPress.ready && this.#longPress.requiresHold
+              ? "is-drag-ready"
+              : "",
           ]
             .filter(Boolean)
             .join(" ");
@@ -456,7 +496,19 @@ export class SessionDrawer {
               ? `${label} · unread activity`
               : label;
           const lifecycleLabel = `${action === "terminate" ? "Terminate" : "Remove"} ${label}`;
-          return html`${metadata.groupStart ? html`<div class="session-group-label" aria-hidden="true">[ GROUP ]</div>` : nothing}
+          return html`${
+              metadata.groupStart
+                ? html`<button
+                    type="button"
+                    class="session-group-label"
+                    data-group-anchor=${metadata.groupAnchor}
+                    aria-label=${`Group ${metadata.groupName || "unnamed"}. Double-click or press Enter to rename.`}
+                    title="Double-click or press Enter to rename group"
+                  >
+                    ${metadata.groupName || "[ GROUP ]"}
+                  </button>`
+                : nothing
+            }
             <div
               class=${rowClass}
               data-session-id=${id}
@@ -474,8 +526,8 @@ export class SessionDrawer {
                 .tabIndex=${id === focusId ? 0 : -1}
                 aria-selected=${String(active)}
                 aria-label=${metadata.grouped ? `${tabLabel} · grouped` : tabLabel}
-                aria-description="Hold and drag to reorder or group. Alt+Shift+Up or Down moves; Alt+Shift+G groups; Alt+Shift+U ungroups."
-                title="Hold and drag to reorder or group. Alt+Shift+Up/Down moves; Alt+Shift+G groups; Alt+Shift+U ungroups."
+                aria-description="Drag to reorder or group; on touch screens, hold first. Double-click to rename. Alt+Shift+Up or Down moves; Alt+Shift+G groups; Alt+Shift+U ungroups."
+                title="Drag to reorder or group; hold first on touch screens. Double-click to rename. Alt+Shift+Up/Down moves; Alt+Shift+G groups; Alt+Shift+U ungroups."
                 aria-haspopup="menu"
                 aria-controls=${workspaceId || nothing}
                 aria-describedby=${detailText ? `${tabId}-detail` : nothing}
@@ -645,6 +697,13 @@ export class SessionDrawer {
   }
 
   #onTabsClick(event) {
+    const groupLabel = event.target.closest(".session-group-label");
+    if (groupLabel && this.#refs.tabs.contains(groupLabel) && event.detail === 0) {
+      event.preventDefault();
+      this.#closeContextMenu();
+      this.#showGroupRename(groupLabel.dataset.groupAnchor);
+      return;
+    }
     const lifecycle = event.target.closest(".session-lifecycle");
     if (lifecycle && this.#refs.tabs.contains(lifecycle)) {
       event.stopPropagation();
@@ -691,9 +750,11 @@ export class SessionDrawer {
     ) {
       event.preventDefault();
       const id = currentTab.dataset.sessionId;
-      const group = this.#visibleLayout.find((entry) => Array.isArray(entry) && entry.includes(id));
+      const group = this.#visibleLayout.find(
+        (entry) => isGroupEntry(entry) && entry.members.includes(id),
+      );
       if (event.key.toLowerCase() === "u" && group) {
-        const target = group.find((member) => member !== id);
+        const target = group.members.find((member) => member !== id);
         this.#commitMove(id, target, "outside-after");
       } else if (event.key.toLowerCase() === "g" && current > 0) {
         this.#commitMove(id, tabs[current - 1].dataset.sessionId, "group");
@@ -727,12 +788,16 @@ export class SessionDrawer {
   }
 
   #startLongPress(event) {
+    if (this.#longPress && !event.isPrimary) return;
     this.#cancelLongPress();
     if (!event.isPrimary || event.button !== 0) return;
     const row = event.target.closest(".session-row");
     if (!row || !this.#refs.tabs.contains(row) || event.target.closest(".session-lifecycle"))
       return;
     const id = String(row.dataset.sessionId);
+    const requiresHold =
+      event.pointerType === "touch" &&
+      Boolean(globalThis.matchMedia?.("(pointer: coarse)").matches);
     const press = {
       pointerId: event.pointerId,
       id,
@@ -743,8 +808,10 @@ export class SessionDrawer {
       capture: event.target,
       lastY: event.clientY,
       scrolling: false,
-      ready: false,
+      requiresHold,
+      ready: !requiresHold,
       dragging: false,
+      preview: null,
       target: null,
       scrollTimer: null,
       currentX: event.clientX,
@@ -754,24 +821,26 @@ export class SessionDrawer {
     try {
       press.capture.setPointerCapture(event.pointerId);
     } catch {}
-    press.timeout = globalThis.setTimeout(() => {
-      if (this.#longPress !== press) return;
-      press.ready = true;
-      this.#suppressedClick = { id, until: performance.now() + 1000 };
-      row.classList.add("is-drag-ready");
-      if (press.pointerType !== "mouse") this.#showContextMenu(id, press.x, press.y);
-    }, LONG_PRESS_MS);
     this.#longPress = press;
+    if (requiresHold) {
+      press.timeout = globalThis.setTimeout(() => {
+        if (this.#longPress !== press) return;
+        press.ready = true;
+        this.#suppressedClick = { id, until: performance.now() + 1000 };
+        row.classList.add("is-drag-ready");
+        this.#showContextMenu(id, press.x, press.y);
+      }, LONG_PRESS_MS);
+    }
   }
 
   #moveLongPress(event) {
     const press = this.#longPress;
     if (!press || press.pointerId !== event.pointerId) return;
+    const threshold = press.requiresHold ? LONG_PRESS_MOVE_PX : DRAG_MOVE_PX;
     const moved =
-      Math.abs(event.clientX - press.x) > LONG_PRESS_MOVE_PX ||
-      Math.abs(event.clientY - press.y) > LONG_PRESS_MOVE_PX;
+      Math.abs(event.clientX - press.x) > threshold ||
+      Math.abs(event.clientY - press.y) > threshold;
     if (!press.ready && (moved || press.scrolling)) {
-      if (press.pointerType === "mouse") return this.#cancelLongPress();
       globalThis.clearTimeout(press.timeout);
       press.scrolling = true;
       this.#refs.tabs.parentElement.scrollTop += press.lastY - event.clientY;
@@ -781,11 +850,14 @@ export class SessionDrawer {
     }
     if (!press.ready || (!press.dragging && !moved)) return;
     event.preventDefault();
+    if (!press.dragging) this.#liftDragPreview(press);
     press.dragging = true;
+    this.#suppressedClick = { id: press.id, until: performance.now() + 1000 };
     press.currentX = event.clientX;
     press.currentY = event.clientY;
     this.#closeContextMenu();
     press.row.classList.add("is-dragging");
+    press.preview.style.transform = `translate3d(${press.currentX - press.offsetX}px, ${press.currentY - press.offsetY}px, 0)`;
     if (!press.scrollTimer) {
       press.scrollTimer = globalThis.setInterval(() => {
         const list = this.#refs.tabs.parentElement;
@@ -796,6 +868,25 @@ export class SessionDrawer {
       }, 50);
     }
     this.#updateDropTarget(press);
+  }
+
+  #liftDragPreview(press) {
+    const rect = press.row.getBoundingClientRect();
+    press.offsetX = press.x - rect.left;
+    press.offsetY = press.y - rect.top;
+    const preview = press.row.cloneNode(true);
+    preview.removeAttribute("id");
+    for (const element of preview.querySelectorAll("[id]")) element.removeAttribute("id");
+    preview.classList.add("is-drag-preview");
+    preview.setAttribute("aria-hidden", "true");
+    preview.inert = true;
+    preview.style.width = `${rect.width}px`;
+    preview.style.height = `${rect.height}px`;
+    preview.style.transform = `translate3d(${rect.left}px, ${rect.top}px, 0)`;
+    const doc = this.#refs.tabs.ownerDocument;
+    doc.body.append(preview);
+    doc.documentElement.classList.add("is-session-dragging");
+    press.preview = preview;
   }
 
   #updateDropTarget(press) {
@@ -813,15 +904,18 @@ export class SessionDrawer {
   }
 
   #cancelLongPress() {
-    if (!this.#longPress) return;
-    globalThis.clearTimeout(this.#longPress.timeout);
-    globalThis.clearInterval(this.#longPress.scrollTimer);
-    this.#longPress.row.classList.remove("is-drag-ready", "is-dragging");
+    const press = this.#longPress;
+    if (!press) return;
+    this.#longPress = null;
+    globalThis.clearTimeout(press.timeout);
+    globalThis.clearInterval(press.scrollTimer);
+    press.preview?.remove();
+    press.row.ownerDocument.documentElement.classList.remove("is-session-dragging");
+    press.row.classList.remove("is-drag-ready", "is-dragging");
     try {
-      this.#longPress.capture.releasePointerCapture(this.#longPress.pointerId);
+      press.capture.releasePointerCapture(press.pointerId);
     } catch {}
     this.#clearDropTarget();
-    this.#longPress = null;
   }
 
   #clearDropTarget() {
@@ -833,7 +927,8 @@ export class SessionDrawer {
     const press = this.#longPress;
     if (!press || press.pointerId !== event.pointerId) return;
     const target = press.dragging && press.target;
-    if (press.ready) this.#suppressedClick = { id: press.id, until: performance.now() + 1000 };
+    if (press.dragging || (press.requiresHold && press.ready))
+      this.#suppressedClick = { id: press.id, until: performance.now() + 1000 };
     this.#cancelLongPress();
     if (target) this.#commitMove(press.id, target.id, target.position);
   }
@@ -961,7 +1056,9 @@ export class SessionDrawer {
     const metadata = this.#controller.get(id);
     if (!metadata) return;
     this.#refs.renameInput.value = String(metadata.name ?? "");
+    delete this.#refs.renameDialog.dataset.groupAnchor;
     this.#refs.renameDialog.dataset.sessionId = id;
+    this.#setRenameTitle("session");
     this.#refs.renameDialog.hidden = false;
     try {
       this.#refs.renameDialog.showModal?.();
@@ -969,17 +1066,59 @@ export class SessionDrawer {
     this.#refs.renameInput.focus();
   }
 
+  #showGroupRename(anchor) {
+    const group = this.#visibleLayout.find(
+      (entry) => isGroupEntry(entry) && entry.members.includes(anchor),
+    );
+    if (!group) return;
+    this.#refs.renameInput.value = String(group.name ?? "");
+    delete this.#refs.renameDialog.dataset.sessionId;
+    this.#refs.renameDialog.dataset.groupAnchor = anchor;
+    this.#setRenameTitle("group");
+    this.#refs.renameDialog.hidden = false;
+    try {
+      this.#refs.renameDialog.showModal?.();
+    } catch {}
+    this.#refs.renameInput.focus();
+  }
+
+  #setRenameTitle(kind) {
+    if (this.#refs.renameTitle)
+      this.#refs.renameTitle.textContent =
+        kind === "group" ? "[ RENAME GROUP ]" : "[ RENAME SESSION ]";
+    this.#refs.renameInput?.setAttribute(
+      "aria-label",
+      kind === "group" ? "Group name" : "Session name",
+    );
+  }
+
   async #rename() {
+    const groupAnchor = this.#refs.renameDialog.dataset.groupAnchor;
     const id = this.#refs.renameDialog.dataset.sessionId;
-    if (!id) return;
+    if (!groupAnchor && !id) return;
     const value = this.#refs.renameInput.value.trim();
     this.#closeDialog(this.#refs.renameDialog);
     try {
+      if (groupAnchor) {
+        await this.#renameGroup(groupAnchor, value);
+        this.#announce(value ? "Group renamed" : "Group name cleared");
+        return;
+      }
       await this.#controller.rename(id, value);
       this.#announce(value ? "Session renamed" : "Session name cleared");
     } catch (error) {
       this.#report(error);
     }
+  }
+
+  async #renameGroup(anchor, name) {
+    if (this.#layoutSync) {
+      await this.#layoutSync.renameGroup(anchor, name);
+      return;
+    }
+    this.#layout = renameGroup(this.#layout, anchor, name);
+    this.#saveLayout();
+    this.render();
   }
 
   #showConfirm(id, action) {
@@ -1050,6 +1189,7 @@ export class SessionDrawer {
       this.#ownedDialogs.push(value.dialog);
       Object.assign(this.#refs, {
         renameDialog: value.dialog,
+        renameTitle: value.title,
         renameInput: value.input,
         renameForm: value.form,
         renameCancel: value.cancel,
@@ -1068,11 +1208,13 @@ export class SessionDrawer {
       });
     }
     this.#refs.renameDialog.dataset.sessionId = "";
+    delete this.#refs.renameDialog.dataset.groupAnchor;
     this.#refs.confirmMessage ??= this.#refs.confirmDialog.querySelector("p");
     this.#refs.confirmForm ??= this.#refs.confirmDialog.querySelector("form");
     this.#refs.confirmCancel ??= this.#refs.confirmForm?.querySelector("button");
     this.#refs.confirmSubmit ??= this.#refs.confirmForm?.querySelector("button[type=submit]");
     this.#refs.renameInput ??= this.#refs.renameDialog.querySelector("input");
+    this.#refs.renameTitle ??= this.#refs.renameDialog.querySelector("h1, h2");
     this.#refs.renameForm ??= this.#refs.renameDialog.querySelector("form");
     this.#refs.renameCancel ??= this.#refs.renameForm?.querySelector("button");
     this.#refs.renameSubmit ??= this.#refs.renameForm?.querySelector("button[type=submit]");
@@ -1080,6 +1222,10 @@ export class SessionDrawer {
 
   #closeDialog(dialog) {
     if (!dialog) return;
+    if (dialog === this.#refs.renameDialog) {
+      delete dialog.dataset.sessionId;
+      delete dialog.dataset.groupAnchor;
+    }
     try {
       dialog.close?.();
     } catch {}

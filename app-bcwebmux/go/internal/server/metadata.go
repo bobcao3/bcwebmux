@@ -9,10 +9,12 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 )
 
-const metadataVersion = 1
+const metadataVersion = 2
+const legacyMetadataVersion = 1
 
 func lockMetadata(path string) (func(), error) {
 	if path == "" {
@@ -36,9 +38,9 @@ func lockMetadata(path string) (func(), error) {
 }
 
 type layoutState struct {
-	Version  int        `json:"version"`
-	Revision uint64     `json:"revision"`
-	Layout   [][]string `json:"layout"`
+	Version  int           `json:"version"`
+	Revision uint64        `json:"revision"`
+	Layout   []layoutGroup `json:"layout"`
 }
 
 func readLayoutState(path string) (layoutState, error) {
@@ -64,11 +66,12 @@ func readLayoutState(path string) (layoutState, error) {
 	if err := json.Unmarshal(data, &state); err != nil {
 		return state, err
 	}
-	if state.Version != metadataVersion || state.Revision == 0 || len(state.Layout) > 64 {
+	if (state.Version != metadataVersion && state.Version != legacyMetadataVersion) || state.Revision == 0 || len(state.Layout) > 64 {
 		return state, fmt.Errorf("invalid or unsupported metadata")
 	}
-	for _, group := range state.Layout {
-		if len(group) == 0 || len(group) > 64 {
+	for i := range state.Layout {
+		state.Layout[i].Name = strings.TrimSpace(state.Layout[i].Name)
+		if !validLayoutGroup(state.Layout[i]) {
 			return state, fmt.Errorf("invalid metadata layout")
 		}
 	}

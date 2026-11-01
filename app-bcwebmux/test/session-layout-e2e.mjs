@@ -19,10 +19,9 @@ const server = createServer(async (request, response) => {
     const url = new URL(request.url, "http://localhost");
     if (url.pathname === "/") {
       response.setHeader("content-type", "text/html");
-      response.end(`<!doctype html><style>
-        #session-list { height: 600px; overflow: auto } #session-tabs { width: 240px }
-        .session-row { height: 60px } .session-tab { width: 200px; height: 50px; touch-action: none }
-      </style><div id="session-list"><aside id="drawer"><div id="session-tabs"></div></aside></div>
+      response.end(`<!doctype html><link rel="stylesheet" href="/style.css"><link rel="stylesheet" href="/session.css">
+      <div id="app-shell"><aside id="session-drawer"><div id="session-list"><div id="session-tabs"></div></div></aside>
+      <main id="workspace"><div id="terminal-identity"><span id="terminal-identity-primary">Active session</span></div></main></div>
       <script type="module">
         import { SessionDrawer } from '/SessionDrawer.js';
         const listeners = [];
@@ -30,10 +29,11 @@ const server = createServer(async (request, response) => {
           sessions: ['a', 'b', 'c'].map(id => ({ id, name: id, state: 'running' })),
           activeSessionId: 'a', get(id) { return this.sessions.find(item => item.id === id) },
           switchTo(id) { this.activeSessionId = id },
+          rename(id, name) { this.get(id).name = name; listeners.forEach(fn => fn({ type: 'renamed' })) },
           onChange(fn) { listeners.push(fn); return { dispose() {} } },
           remove(id) { this.sessions = this.sessions.filter(item => item.id !== id); listeners.forEach(fn => fn({ type: 'list' })) },
         };
-        const drawer = new SessionDrawer({ controller, elements: { drawer: document.querySelector('#drawer'), tabs: document.querySelector('#session-tabs') } }).init();
+        const drawer = new SessionDrawer({ controller, elements: { drawer: document.querySelector('#session-drawer'), tabs: document.querySelector('#session-tabs'), title: document.querySelector('#terminal-identity') } }).init();
         drawer.setStorageScope({ serverInstance: 'server', principal: 'user' }); drawer.render();
         window.fixture = { controller, drawer };
       </script>`);
@@ -41,7 +41,7 @@ const server = createServer(async (request, response) => {
     }
     const filename = path.resolve(web, `.${url.pathname}`);
     if (!filename.startsWith(web)) throw new Error("invalid path");
-    response.setHeader("content-type", "text/javascript");
+    response.setHeader("content-type", filename.endsWith(".css") ? "text/css" : "text/javascript");
     response.end(await readFile(filename));
   } catch {
     response.writeHead(404).end();
@@ -99,16 +99,26 @@ try {
       return { x: a.left + a.width / 2, y: a.top + a.height / 2, tx: b.left + b.width / 2, ty: b.top + b.height * ${fraction} };
     })()`);
     if (touch) {
+      await page.call("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 1 });
+      assert.equal(await evaluate("matchMedia('(pointer: coarse)').matches"), true);
       await page.call("Input.dispatchTouchEvent", {
         type: "touchStart",
         touchPoints: [{ x: points.x, y: points.y }],
       });
+      assert.equal(await evaluate("Boolean(document.querySelector('.is-drag-preview'))"), false);
       await delay(650);
+      assert.equal(
+        await evaluate("document.querySelector('#session-context-menu').hidden"),
+        false,
+        "touch hold still opens context actions",
+      );
       await page.call("Input.dispatchTouchEvent", {
         type: "touchMove",
         touchPoints: [{ x: points.tx, y: points.ty }],
       });
+      assert.equal(await evaluate("Boolean(document.querySelector('.is-drag-preview'))"), true);
       await page.call("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+      await page.call("Emulation.setTouchEmulationEnabled", { enabled: false });
     } else {
       await page.call("Input.dispatchMouseEvent", { type: "mouseMoved", x: points.x, y: points.y });
       await page.call("Input.dispatchMouseEvent", {
@@ -119,7 +129,6 @@ try {
         buttons: 1,
         clickCount: 1,
       });
-      await delay(650);
       await page.call("Input.dispatchMouseEvent", {
         type: "mouseMoved",
         x: points.tx,
@@ -127,25 +136,160 @@ try {
         button: "left",
         buttons: 1,
       });
+      const lifted = await evaluate(`(() => {
+        const preview = document.querySelector('.is-drag-preview');
+        const row = document.querySelector('#session-tabs .session-row[data-session-id="${source}"]');
+        const hit = document.elementFromPoint(${points.tx}, ${points.ty});
+        return {
+          floating: preview && !document.querySelector('#session-drawer').contains(preview) && getComputedStyle(preview).position === 'fixed',
+          sourceHidden: getComputedStyle(row).opacity === '0',
+          dropTarget: hit?.closest('.session-row')?.dataset.sessionId,
+          hiddenFromAT: preview?.getAttribute('aria-hidden') === 'true' && preview.inert,
+          reducedMotion: !matchMedia('(prefers-reduced-motion: reduce)').matches || preview?.getAnimations().length === 0,
+        };
+      })()`);
+      assert.deepEqual(lifted, {
+        floating: true,
+        sourceHidden: true,
+        dropTarget: targetId,
+        hiddenFromAT: true,
+        reducedMotion: true,
+      });
+      await page.call("Input.dispatchMouseEvent", {
+        type: "mouseMoved",
+        x: points.tx + 15,
+        y: points.ty,
+        button: "left",
+        buttons: 1,
+      });
+      await waitFor(
+        () =>
+          evaluate(`(() => {
+        const preview = document.querySelector('.is-drag-preview');
+        const row = document.querySelector('#session-tabs .session-row[data-session-id="${source}"]');
+        const rect = preview.getBoundingClientRect();
+        const origin = row.getBoundingClientRect();
+        return Math.abs(rect.left - (origin.left + ${points.tx + 15 - points.x})) < 1 && Math.abs(rect.top - (origin.top + ${points.ty - points.y})) < 1;
+      })()`),
+        1000,
+        "floating session did not follow the pointer",
+      );
       await page.call("Input.dispatchMouseEvent", {
         type: "mouseReleased",
-        x: points.tx,
+        x: points.tx + 15,
         y: points.ty,
         button: "left",
         buttons: 0,
         clickCount: 1,
       });
     }
+    assert.equal(
+      await evaluate(
+        "Boolean(document.querySelector('.is-drag-preview, .is-dragging, [data-drop-position]'))",
+      ),
+      false,
+      "drop cleans up the floating card and target markers",
+    );
+  }
+  async function doubleClick(selector) {
+    const point = await evaluate(`(() => {
+      const rect = document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect();
+      return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+    })()`);
+    for (const clickCount of [1, 2]) {
+      await page.call("Input.dispatchMouseEvent", {
+        type: "mousePressed",
+        ...point,
+        button: "left",
+        buttons: 1,
+        clickCount,
+      });
+      await page.call("Input.dispatchMouseEvent", {
+        type: "mouseReleased",
+        ...point,
+        button: "left",
+        buttons: 0,
+        clickCount,
+      });
+    }
   }
   await ready();
+  await doubleClick('.session-row[data-session-id="b"] .session-name');
+  assert.equal(
+    await evaluate("document.querySelector('#session-rename-dialog').open"),
+    true,
+    "double-clicking a session title opens rename",
+  );
+  await evaluate(`(() => {
+    document.querySelector('#session-rename-dialog input').value = 'Renamed session';
+    document.querySelector('#session-rename-dialog button[type="submit"]').click();
+  })()`);
+  assert.equal(await evaluate("fixture.controller.get('b').name"), "Renamed session");
+  assert.equal(await evaluate("document.querySelector('#session-rename-dialog').open"), false);
+  await doubleClick("#terminal-identity-primary");
+  assert.equal(
+    await evaluate("document.querySelector('#session-rename-dialog').dataset.sessionId"),
+    "b",
+  );
+  assert.equal(await evaluate("document.querySelector('#session-rename-dialog').open"), true);
+  await evaluate("document.querySelector('#session-rename-dialog button[type=button]').click()");
+  await evaluate("fixture.controller.activeSessionId = 'a'");
   await drag("c", "a", 0.1);
   assert.deepEqual(await layout(), { ids: ["c", "a", "b"], groups: 0 });
   assert.equal(await evaluate("fixture.controller.activeSessionId"), "a");
   await drag("a", "c", 0.5);
   assert.deepEqual(await layout(), { ids: ["c", "a", "b"], groups: 1 });
+  await doubleClick(".session-group-label");
+  assert.equal(
+    await evaluate("document.querySelector('#session-rename-dialog').open"),
+    true,
+    "double-clicking a group label opens rename",
+  );
+  assert.equal(
+    await evaluate("document.querySelector('#session-rename-dialog h2').textContent.trim()"),
+    "[ RENAME GROUP ]",
+  );
+  await evaluate("document.querySelector('#session-rename-dialog input').value = 'Work'");
+  await page.call("Input.dispatchKeyEvent", {
+    type: "rawKeyDown",
+    key: "Enter",
+    code: "Enter",
+    windowsVirtualKeyCode: 13,
+    nativeVirtualKeyCode: 13,
+  });
+  await page.call("Input.dispatchKeyEvent", {
+    type: "char",
+    key: "Enter",
+    code: "Enter",
+    text: "\r",
+    unmodifiedText: "\r",
+    windowsVirtualKeyCode: 13,
+    nativeVirtualKeyCode: 13,
+  });
+  await page.call("Input.dispatchKeyEvent", {
+    type: "keyUp",
+    key: "Enter",
+    code: "Enter",
+    windowsVirtualKeyCode: 13,
+    nativeVirtualKeyCode: 13,
+  });
+  assert.equal(
+    await evaluate("document.querySelector('.session-group-label').textContent.trim()"),
+    "Work",
+  );
+  assert.deepEqual(
+    await evaluate(
+      `JSON.parse(localStorage.getItem(Object.keys(localStorage).find(key => key.startsWith('bcwebmux.session-layout:'))) ?? "[]")`,
+    ),
+    [{ name: "Work", members: ["c", "a"] }, "b"],
+  );
   await page.call("Page.reload", { ignoreCache: true });
   await ready();
   assert.deepEqual(await layout(), { ids: ["c", "a", "b"], groups: 1 });
+  assert.equal(
+    await evaluate("document.querySelector('.session-group-label').textContent.trim()"),
+    "Work",
+  );
   await drag("a", "b", 0.5, true);
   assert.deepEqual(await layout(), { ids: ["c", "b", "a"], groups: 1 });
   await evaluate("fixture.controller.remove('a')");
@@ -173,6 +317,89 @@ try {
     `fixture.drawer.setStorageScope({ serverInstance: 'server', principal: 'user' }).render()`,
   );
   assert.deepEqual(await layout(), { ids: ["a", "b", "c"], groups: 1 });
+  await page.call("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 1 });
+  await page.call("Emulation.setEmulatedMedia", {
+    features: [{ name: "prefers-reduced-motion", value: "reduce" }],
+  });
+  await drag("c", "a", 0.1);
+  assert.deepEqual(await layout(), { ids: ["c", "a", "b"], groups: 1 });
+  await evaluate(`(() => {
+    for (let index = 0; index < 20; index++) fixture.controller.sessions.push({ id: 'extra-' + index, name: 'Extra ' + index, state: 'running' });
+    fixture.drawer.render();
+  })()`);
+  const beforeScroll = await layout();
+  const touchPoint = await evaluate(`(() => {
+    const rect = document.querySelector('.session-row[data-session-id="b"] .session-tab').getBoundingClientRect();
+    return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+  })()`);
+  await page.call("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [touchPoint] });
+  await page.call("Input.dispatchTouchEvent", {
+    type: "touchMove",
+    touchPoints: [{ x: touchPoint.x, y: touchPoint.y - 45 }],
+  });
+  await delay(650);
+  assert.equal(
+    await evaluate("document.querySelector('#session-list').scrollTop > 0"),
+    true,
+    "moving before the hold scrolls the list",
+  );
+  assert.equal(await evaluate("Boolean(document.querySelector('.is-drag-preview'))"), false);
+  assert.equal(await evaluate("document.querySelector('#session-context-menu').hidden"), true);
+  await page.call("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+  assert.deepEqual(await layout(), beforeScroll);
+  await page.call("Emulation.setTouchEmulationEnabled", { enabled: false });
+  await evaluate("document.querySelector('#session-list').scrollTop = 0");
+  const origin = await evaluate(`(() => {
+    const rect = document.querySelector('#session-tabs .session-tab').getBoundingClientRect();
+    return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+  })()`);
+  for (const cleanup of ["escape", "remove", "dispose"]) {
+    await page.call("Input.dispatchMouseEvent", {
+      type: "mousePressed",
+      ...origin,
+      button: "left",
+      buttons: 1,
+      clickCount: 1,
+    });
+    await page.call("Input.dispatchMouseEvent", {
+      type: "mouseMoved",
+      x: 400,
+      y: 200,
+      button: "left",
+      buttons: 1,
+    });
+    assert.equal(
+      await evaluate("Boolean(document.querySelector('.is-drag-preview'))"),
+      true,
+      "drag follows outside the drawer",
+    );
+    if (cleanup === "escape") {
+      await page.call("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape" });
+      await page.call("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape" });
+    } else if (cleanup === "remove") {
+      await evaluate(
+        "fixture.controller.remove(document.querySelector('#session-tabs .session-row').dataset.sessionId)",
+      );
+    } else {
+      await evaluate("fixture.drawer.dispose()");
+    }
+    assert.equal(
+      await evaluate(
+        "Boolean(document.querySelector('.is-drag-preview, .is-dragging, .is-session-dragging, [data-drop-position]'))",
+      ),
+      false,
+      cleanup + " cleans up drag state",
+    );
+    await page.call("Input.dispatchMouseEvent", {
+      type: "mouseReleased",
+      x: 400,
+      y: 200,
+      button: "left",
+      buttons: 0,
+      clickCount: 1,
+    });
+    if (cleanup === "escape") assert.deepEqual(await layout(), beforeScroll);
+  }
   console.log("session layout browser test passed");
 } finally {
   page?.close();
